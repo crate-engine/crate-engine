@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# dev-server — supervised, isolated, memory-bounded dev server (Crate Engine).
+# One supervised service per repo, auto-restart, restart-BY-NAME so one team can
+# never broad-`pkill` another team's dev server.
+#
+# P4-7: two backends, picked by platform —
+#   Linux : systemd --user (unchanged: Restart=always, MemoryMax cap, journald logs)
+#   macOS : launchd gui domain (KeepAlive, logs to .agents/state/dev-server.log;
+#           heap is bounded via NODE_OPTIONS — launchd has no MemoryMax equivalent,
+#           documented limit)
+# and the serve command is CONF-DRIVEN (de-Next-ified): rig.conf/dev.conf DEV_CMD
+# wins; else the classic Next binary if the project has one; else `npm run dev`.
+#
+# Usage: dev-server <up|down|restart|status|logs|install> [PROJECT_PATH]
+#   Config layered: <repo>/.agents/rig.conf, then <repo>/.agents/dev.conf, then env, then defaults:
+#     DEV_CMD (serve command; may reference $DEV_PORT/$DEV_BIND — SINGLE-quote the value
+#              in the conf so they expand at run time, not at source time) ·
+#     DEV_PORT (else parsed from DEV_URL, else 3000) · DEV_BIND (0.0.0.0) ·
+#     DEV_HEAP_MB (4096, node --max-old-space-size) · DEV_MEMMAX (6G, systemd-only cap)
+set -uo pipefail
+
+CMD="${1:?usage: dev-server <up|down|restart|status|logs|install> [PROJECT_PATH]}"
+PROJ="${2:-${PROJECT_PATH:-$(pwd)}}"
+[ -d "$PROJ" ] || { echo "dev-server: no such dir: $PROJ" >&2; exit 1; }
+PROJ="$(cd "$PROJ" && pwd)"
+
+# layer config (later sources override earlier)
+[ -f "$PROJ/.agents/rig.conf" ] && . "$PROJ/.agents/rig.conf"
+[ -f "$PROJ/.agents/dev.conf" ] && . "$PROJ/.agents/dev.conf"
+
+PORT="${DEV_PORT:-}"
+if [ -z "$PORT" ] && [ -n "${DEV_URL:-}" ]; then PORT="$(printf '%s' "$DEV_URL" | grep -oE ':[0-9]+' | tail -1 | tr -d :)"; fi
+PORT="${PORT:-3000}"
+BIND="${DEV_BIND:-0.0.0.0}"
+HEAP="${DEV_HEAP_MB:-4096}"
+MEMMAX="${DEV_MEMMAX:-6G}"
+NAME="cratedev-$(basename "$PROJ")"
+
+# ── the serve command (conf-driven; Next is a default, not an assumption) ────
+# ── the serve command — detection DELEGATED to serve-resolve: ONE source of
+#    truth for "how does this project serve"; the gate's smoke rung consumes
+#    the same resolution in prod-first mode (PDR dev/pdr/runtime-smoke-rung.md).
+#    Deferred $DEV_PORT/$DEV_BIND tokens pre-expand here with the SAME values
+#    the service environment carries — outcome identical, now deterministic.
+serve_cmd() {
+  local res cmd
+  res="$(bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/serve-resolve" dev "$PROJ")" || return 1
+  cmd="$(printf '%s\n' "$res" | sed -n 's/^CMD=//p')"
+  if [ -z "$cmd" ]; then
+    echo "dev-server: no DEV_CMD in rig.conf/dev.conf, no next binary, no package.json dev script — set DEV_CMD" >&2
+    return 1
+  fi
+  cmd="${cmd//\$DEV_PORT/$PORT}"
+  cmd="${cmd//\$DEV_BIND/$BIND}"
+  printf '%s' "$cmd"
+}
+
+# Which backend supervises on this host?
+backend() {
+  if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+    echo systemd
+  elif [ "$(uname -s)" = "Darwin" ]; then
+    echo launchd
+  else
+    echo "dev-server: no supervisor available (need systemd --user or macOS launchd)" >&2; return 1
+  fi
+}
+
+# Kill only THIS repo's ad-hoc (non-supervised) dev process — by exact binary path, or
+# by "it LISTENS on our port AND its command names our project path" (covers non-Next
+# servers, e.g. vite, since P4-7 de-Next-ified). Never a broad `pkill -f "next dev"`
+# (that would kill every team's server).
+kill_adhoc() {
+  pkill -f "$PROJ/node_modules/.bin/next dev" 2>/dev/null || true
+  pkill -f "$PROJ/node_modules/next/dist/bin/next" 2>/dev/null || true
+  if command -v lsof >/dev/null 2>&1; then
+    for pid in $(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null); do
+      if ps -o command= -p "$pid" 2>/dev/null | grep -qF "$PROJ" \
+         || lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | grep -qF "n$PROJ"; then
+        kill "$pid" 2>/dev/null || true
+      fi
+    done
+  fi
+}
+
+# ── systemd backend (Linux — unchanged behavior) ─────────────────────────────
+sd_unit() { echo "$HOME/.config/systemd/user/$NAME.service"; }
+sd_write() {
+  local cmdline; cmdline="$(serve_cmd)" || exit 1
+  mkdir -p "$(dirname "$(sd_unit)")"
+  # Optional DB isolation: PREVIEW_DB_URL (a non-prod branch) injected as POSTGRES_URL.
+  local preview_env=""
+  [ -n "${PREVIEW_DB_URL:-}" ] && preview_env="Environment=POSTGRES_URL=$PREVIEW_DB_URL"
+  cat > "$(sd_unit)" <<UNIT
+[Unit]
+Description=Crate Engine dev server — $(basename "$PROJ") (port $PORT)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$PROJ
+Environment=NODE_OPTIONS=--max-old-space-size=$HEAP
+Environment=DEV_PORT=$PORT
+Environment=DEV_BIND=$BIND
+$preview_env
+ExecStart=/bin/bash -lc 'exec $cmdline'
+Restart=always
+RestartSec=3
+MemoryMax=$MEMMAX
+
+[Install]
+WantedBy=default.target
+UNIT
+  systemctl --user daemon-reload
+}
+sd_run() {
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"   # `systemctl --user` over SSH
+  case "$CMD" in
+    install) sd_write; systemctl --user enable "$NAME" >/dev/null 2>&1 || true; echo "installed $NAME (port $PORT · heap ${HEAP}MB · MemoryMax $MEMMAX)";;
+    up)      sd_write; systemctl --user stop "$NAME" 2>/dev/null || true; kill_adhoc; sleep 1; systemctl --user enable --now "$NAME"; echo "UP  $NAME -> $BIND:$PORT (heap ${HEAP}MB · MemoryMax $MEMMAX)";;
+    down)    systemctl --user disable --now "$NAME" 2>/dev/null || true; echo "DOWN $NAME";;
+    restart) systemctl --user restart "$NAME"; echo "restarted $NAME";;
+    status)  systemctl --user --no-pager status "$NAME" 2>&1 | head -14 || true;;
+    logs)    journalctl --user -u "$NAME" --no-pager -n "${LINES:-40}" 2>&1 || true;;
+    *) echo "usage: dev-server <up|down|restart|status|logs|install> [PROJECT_PATH]" >&2; exit 1;;
+  esac
+}
+
+# ── launchd backend (macOS — P4-7) ───────────────────────────────────────────
+LD_UID="$(id -u)"
+ld_plist() { echo "$HOME/Library/LaunchAgents/$NAME.plist"; }
+ld_log() {
+  if [ -d "$PROJ/.agents/state" ]; then echo "$PROJ/.agents/state/dev-server.log"; else echo "${TMPDIR:-/tmp}/$NAME.log"; fi
+}
+ld_write() {
+  local cmdline log; cmdline="$(serve_cmd)" || exit 1; log="$(ld_log)"
+  mkdir -p "$(dirname "$(ld_plist)")"
+  local preview_env=""
+  [ -n "${PREVIEW_DB_URL:-}" ] && preview_env="<key>POSTGRES_URL</key><string>$PREVIEW_DB_URL</string>"
+  cat > "$(ld_plist)" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$NAME</string>
+  <key>WorkingDirectory</key><string>$PROJ</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/bash</string><string>-lc</string><string>exec $cmdline</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>NODE_OPTIONS</key><string>--max-old-space-size=$HEAP</string>
+    <key>DEV_PORT</key><string>$PORT</string>
+    <key>DEV_BIND</key><string>$BIND</string>
+    $preview_env
+  </dict>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>$log</string>
+  <key>StandardErrorPath</key><string>$log</string>
+</dict></plist>
+PLIST
+}
+ld_run() {
+  case "$CMD" in
+    install) ld_write; echo "installed $NAME (port $PORT · heap ${HEAP}MB · launchd; no MemoryMax equivalent — heap bounded via NODE_OPTIONS)";;
+    up)
+      ld_write
+      launchctl bootout "gui/$LD_UID/$NAME" 2>/dev/null || true
+      kill_adhoc; sleep 1
+      launchctl bootstrap "gui/$LD_UID" "$(ld_plist)" || { echo "dev-server: launchctl bootstrap failed" >&2; exit 1; }
+      launchctl kickstart "gui/$LD_UID/$NAME" 2>/dev/null || true
+      echo "UP  $NAME -> $BIND:$PORT (heap ${HEAP}MB · launchd KeepAlive · logs: $(ld_log))"
+      ;;
+    down)
+      launchctl bootout "gui/$LD_UID/$NAME" 2>/dev/null || true
+      echo "DOWN $NAME"
+      ;;
+    restart) launchctl kickstart -k "gui/$LD_UID/$NAME" && echo "restarted $NAME";;
+    status)
+      launchctl print "gui/$LD_UID/$NAME" 2>/dev/null | grep -E "state|pid|last exit" | head -6 \
+        || echo "$NAME: not loaded"
+      ;;
+    logs) tail -n "${LINES:-40}" "$(ld_log)" 2>/dev/null || echo "(no log at $(ld_log))";;
+    *) echo "usage: dev-server <up|down|restart|status|logs|install> [PROJECT_PATH]" >&2; exit 1;;
+  esac
+}
+
+case "$(backend)" in
+  systemd) sd_run;;
+  launchd) ld_run;;
+  *) exit 1;;
+esac

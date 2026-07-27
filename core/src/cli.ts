@@ -1,0 +1,493 @@
+#!/usr/bin/env node
+// crate2 — the 2.0 CLI (Phase 1: up/print/relaunch · Phase 4: setup/update/attach).
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadLoadout, loadoutPath, SEATS, type Seat } from "./manifest.js";
+import { buildInvocation, toShellCommand } from "./invocation.js";
+import { deriveBrainRoot, isUnwalledSeat, planSeats } from "./launcher.js";
+import { listOverlayEntries, overlayDirFor } from "./overlay.js";
+import { loadUserDefaults, parseRigConf, resolveSeatDetailed } from "./staffing.js";
+import { setupTier, tierPaths, updateEngine } from "./usertier.js";
+
+function fail(msg: string): never {
+  console.error(`crate2: ${msg}`);
+  process.exit(1);
+}
+
+async function promptYesNo(question: string): Promise<boolean> {
+  const { createInterface } = await import("node:readline/promises");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const answer = (await rl.question(`${question} [y/N] `)).trim().toLowerCase();
+  rl.close();
+  return answer === "y" || answer === "yes";
+}
+
+const HOME = process.env.HOME ?? "";
+
+/** Dev default engine source = this working clone (gate answer Q3); the
+ * product default for Phase 6 is PRODUCT_ENGINE_ORIGIN (see usertier.ts). */
+function defaultEngineSource(): string {
+  return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+}
+
+/** Staffing table with provenance for ALL five seats (P4-1). */
+function printStaffingTable(projectRoot: string): void {
+  const brainRoot = deriveBrainRoot(projectRoot);
+  const confFile = join(projectRoot, ".agents", "rig.conf");
+  const conf = existsSync(confFile) ? parseRigConf(readFileSync(confFile, "utf8")) : {};
+  const userDefaults = loadUserDefaults(HOME);
+  console.log(`staffing for ${projectRoot}`);
+  console.log(`(precedence: rig.conf → user default (~/.crate/defaults.yaml) → loadout floor)`);
+  const refusals: [string, string][] = [];
+  for (const seat of SEATS) {
+    const loadout = existsSync(loadoutPath(brainRoot, seat)) ? loadLoadout(brainRoot, seat) : undefined;
+    const d = resolveSeatDetailed(seat, loadout, { rigConf: conf, userDefaults });
+    const model = d.model.value === "" ? "(login picks)" : d.model.value;
+    const flag = isUnwalledSeat(d.agent.value, loadout);
+    if (flag) refusals.push([seat, d.agent.value]);
+    console.log(
+      `  ${seat.padEnd(13)} agent=${d.agent.value.padEnd(8)} [${d.agent.source}]`.padEnd(46) +
+        `  model=${model} [${d.model.source}]${flag ? `  [WILL REFUSE — unwallable ${d.agent.value}]` : ""}`,
+    );
+  }
+  for (const [seat, agent] of refusals) {
+    console.error(
+      `  NOTE: ${seat} staffs ${agent} on a seat that cannot be walled (no loadout / sandbox: none) — ` +
+        `boot will REFUSE (P5-0a: every engine-launched claude/codex seat is walled).`,
+    );
+  }
+  const overlays = listOverlayEntries(overlayDirFor(HOME));
+  if (overlays.length > 0) {
+    console.log(`active overlays (~/.crate/overlay — composed into the brain at launch):`);
+    for (const o of overlays) console.log(`  ${o.relPath} (${o.mode})`);
+  }
+}
+
+const [, , command, ...rest] = process.argv;
+
+switch (command) {
+  case "--version":
+  case "version": {
+    // P6-0: report the engine clone's HEAD + update availability (shipped surface).
+    const { engineVersion } = await import("./gui/server.js");
+    const v = engineVersion(HOME);
+    console.log(`crate (Crate Engine 2.0) — engine ${v.version}${v.updateAvailable ? "  [update available: crate update]" : ""}`);
+    break;
+  }
+  case "setup": {
+    // crate2 setup [--engine-source <path|url>] — create/heal ~/.crate (P4-0).
+    const sIdx = rest.indexOf("--engine-source");
+    const source = sIdx !== -1 ? (rest[sIdx + 1] ?? fail("--engine-source needs a value")) : defaultEngineSource();
+    try {
+      const report = setupTier(HOME, { engineSource: source });
+      const t = tierPaths(HOME);
+      console.log(`crate2 setup — user tier at ${t.root}`);
+      for (const a of report.actions) console.log(`  ${a}`);
+      console.log(`next: set your global team in ${t.defaultsFile}, then attach a repo: crate2 attach`);
+    } catch (e) {
+      fail(e instanceof Error ? e.message : String(e));
+    }
+    break;
+  }
+  case "update": {
+    // crate2 update — fast-forward the pristine engine clone + compat pass (P4-6).
+    try {
+      const r = updateEngine(HOME);
+      if (r.before === r.after) console.log(`crate2 update — already up to date (${r.after.slice(0, 7)})`);
+      else console.log(`crate2 update — engine ${r.before.slice(0, 7)} → ${r.after.slice(0, 7)} (fast-forward)`);
+      if (r.flagged.length > 0) {
+        console.log(`REVIEW — ${r.flagged.length} overlay ${r.flagged.length === 1 ? "entry sits" : "entries sit"} on a changed base:`);
+        for (const f of r.flagged) console.log(`  ⚑ ${f.note}`);
+      } else {
+        console.log(`overlay: all entries compatible (no base changes under your customizations)`);
+      }
+      // Run #14 (Adam): he updated mid-session, pressed a button in the STILL-
+      // RUNNING app, and got pre-update behavior — a running process keeps the
+      // code it loaded at launch (the /login lesson, app edition). Say so.
+      if (r.before !== r.after) {
+        const { appUrlPath } = await import("./usertier.js");
+        const { readFileSync: rf, existsSync: ex } = await import("node:fs");
+        const f = appUrlPath(HOME);
+        if (ex(f)) {
+          const url = rf(f, "utf8").trim();
+          const alive = await fetch(url, { signal: AbortSignal.timeout(2000) }).then(() => true).catch(() => false);
+          if (alive) {
+            console.log(
+              `NOTE: a Crate Engine app is RUNNING — it keeps the old engine (${r.before.slice(0, 7)}) until relaunched. ` +
+                `Quit it (Ctrl+C in the terminal running it, or close the app window), then: crate open`,
+            );
+          }
+        }
+      }
+    } catch (e) {
+      fail(e instanceof Error ? e.message : String(e));
+    }
+    break;
+  }
+  case "attach": {
+    // crate2 attach [<target>] [--create] [--yes] [--git-init] — the guided
+    // disclosing flow (P4-3): plan → disclose → confirm → execute. Nothing silent.
+    const { planAttach, executeAttach, resolveTarget, AttachError } = await import("./attach.js");
+    const flags = new Set(rest.filter((a) => a.startsWith("--")));
+    const targetArg = rest.find((a) => !a.startsWith("--"));
+    const assumeYes = flags.has("--yes") || !process.stdin.isTTY;
+    try {
+      const target = resolveTarget(targetArg);
+      const wantsCreate = flags.has("--create") || (!target.exists && !assumeYes);
+      if (!target.exists && !flags.has("--create")) {
+        if (assumeYes) throw new AttachError(`${target.projectRoot} does not exist — pass --create to start a new project there.`);
+        const ok = await promptYesNo(`${target.projectRoot} does not exist. Create a NEW project there?`);
+        if (!ok) fail("nothing written.");
+      }
+      const { engineDir } = tierPaths(HOME);
+      const plan = planAttach(target, engineDir, { create: wantsCreate && !target.exists ? true : flags.has("--create") });
+
+      // ── the disclosure screen: exactly what will be added, honestly split ──
+      console.log(`\n${plan.mode === "create" ? "Creating a new project" : "Attaching the team"}: ${plan.project} (${plan.projectRoot})`);
+      const creates = plan.writes.filter((w) => w.action !== "keep");
+      const keeps = plan.writes.filter((w) => w.action === "keep");
+      const committed = creates.filter((w) => w.kind === "committed");
+      const local = creates.filter((w) => w.kind === "local");
+      if (committed.length > 0) {
+        console.log(`\nFiles added to YOUR REPO (committed with your code):`);
+        for (const w of committed) console.log(`  ${w.rel.padEnd(24)} ${w.note}`);
+      }
+      if (local.length > 0) {
+        console.log(`\nLocal-only wiring (never pushed — auto-gitignored):`);
+        for (const w of local) console.log(`  ${w.rel.padEnd(24)} ${w.note}${w.action === "heal" ? "  [repair]" : ""}`);
+      }
+      if (keeps.length > 0) {
+        console.log(`\nAlready present (kept as-is): ${keeps.map((w) => w.rel).join(", ")}`);
+      }
+
+      let gitInit = false;
+      if (plan.needsGit && plan.mode === "attach") {
+        console.log(`\nNote: ${plan.project} is not a git repository.`);
+        gitInit = flags.has("--git-init") || (!assumeYes && (await promptYesNo("Initialize git here (recommended)?")));
+        if (!gitInit) console.log("  proceeding WITHOUT git — the team works, but there is no history/rollback.");
+      }
+
+      if (!assumeYes) {
+        const ok = await promptYesNo(`\nProceed?`);
+        if (!ok) fail("nothing written.");
+      }
+
+      const report = executeAttach(plan, { gitInit });
+      console.log(`\ndone — ${report.changed.length} paths written${report.gitInitialized ? ", git initialized" : ""}${report.firstCommit ? `, first commit ${report.firstCommit}` : ""}.`);
+
+      // P4-9: doctor runs at attach — reports, never blocks.
+      const { runDoctor, formatDoctor, heavyDeps, installHeavyDeps } = await import("./doctor.js");
+      console.log(`\ndoctor (advisory — nothing here blocks you):`);
+      console.log(formatDoctor(await runDoctor(plan.projectRoot)));
+
+      // P6-1 (G2): heavy seat-deps land HERE, disclosed — not at install.
+      const heavy = await heavyDeps(plan.projectRoot);
+      if (heavy.length > 0) {
+        console.log(`\nOne-time seat tooling this rig's loadouts declare (large downloads — that's why they wait until now):`);
+        for (const d of heavy) console.log(`  ${d.name.padEnd(20)} (${d.seat})  install: ${d.install}`);
+        const yes =
+          flags.has("--install-deps") || (!assumeYes && (await promptYesNo("Install them now (recommended)?")));
+        if (yes) {
+          for (const r of await installHeavyDeps(heavy)) {
+            console.log(`  ${r.ok ? "[ok]" : "[!!]"} ${r.name} — ${r.detail}`);
+          }
+        } else {
+          console.log(`  skipped — the seats that need them will refuse to boot until you run the install line(s) above.`);
+        }
+      }
+
+      console.log(`\nNext: boot the team (the Orchestrator fills AGENTS.md on your first direction):`);
+      console.log(`  crate2 up ${plan.projectRoot}`);
+    } catch (e) {
+      fail(e instanceof Error ? e.message : String(e));
+    }
+    break;
+  }
+  case "open": {
+    // crate open [--project <path>] — HEADLESS + app-mode window (2.1). Start
+    // the GUI server headless, open the chromeless ⚡ app window, boot the team.
+    // cmux was retired in 2.1 (T8) — this is the only boot path.
+    const { appUrlPath, projectAt } = await import("./usertier.js");
+    const { mkdtempSync, readFileSync: rf, existsSync: ex } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const home = process.env.HOME ?? "";
+    const pIdx0 = rest.indexOf("--project");
+    // Project resolution (run #13): explicit flag → the project you're
+    // STANDING IN (cd my-app && crate open — the multi-rig-safe anchor) →
+    // else the gui falls back to the last attached project.
+    const project = pIdx0 !== -1 ? resolve(rest[pIdx0 + 1] ?? ".") : projectAt(process.cwd());
+    if (project && pIdx0 === -1) console.log(`crate open: opening the project here — ${project}`);
+    const appAlive = async (): Promise<string | undefined> => {
+      const f = appUrlPath(home);
+      if (!ex(f)) return undefined;
+      const url = rf(f, "utf8").trim();
+      try {
+        await fetch(url, { signal: AbortSignal.timeout(2000) });
+        return url; // any HTTP answer = the server lives
+      } catch {
+        return undefined; // stale file from a previous run
+      }
+    };
+    // T8: cmux was retired in 2.1 — headless + the app window is the only path.
+    if (rest.includes("--cmux")) {
+      console.log("note: --cmux was retired in 2.1 — the app is headless now; opening the app window.");
+    }
+    {
+      try {
+        const { openAppWindow } = await import("./gui/appwindow.js");
+        const { writeLastProject } = await import("./usertier.js");
+        let url = await appAlive();
+        if (url && project) {
+          // already open — switch it to this project (idempotent attach)
+          try {
+            const u = new URL(url);
+            await fetch(`${u.origin}/api/attach/execute`, {
+              method: "POST",
+              headers: { "X-Crate-Token": u.searchParams.get("token") ?? "", "Content-Type": "application/json" },
+              body: JSON.stringify({ target: project, create: false }),
+              signal: AbortSignal.timeout(15000),
+            });
+          } catch { /* best-effort switch */ }
+        }
+        if (!url) {
+          // start the GUI server headless (its own detached process) and wait
+          // for the tokened url handshake it writes to --url-file.
+          const { spawn } = await import("node:child_process");
+          const urlFile = join(mkdtempSync(join(tmpdir(), "crate-open-")), "url");
+          const self = process.argv[1]!;
+          const args = ["gui", "--no-pane", "--url-file", urlFile, ...(project ? ["--project", project] : [])];
+          // PHASE-B #1: the server's stdout/stderr land in ~/.crate/logs/gui.log
+          // (stdio:"ignore" made a mid-run server death undiagnosable).
+          const { openGuiLogFd, guiLogPath } = await import("./gui/guilog.js");
+          let logFd: number | "ignore" = "ignore";
+          try {
+            logFd = openGuiLogFd(HOME);
+          } catch { /* no log file — still boot */ }
+          const srv = spawn(process.execPath, [self, ...args], { detached: true, stdio: ["ignore", logFd, logFd] });
+          srv.unref();
+          const started = Date.now();
+          while (Date.now() - started < 60000 && !url) {
+            await new Promise((r) => setTimeout(r, 500));
+            if (ex(urlFile)) url = rf(urlFile, "utf8").trim();
+          }
+          if (!url) throw new Error(`the app server did not come up (headless) — check ${guiLogPath(HOME)} and retry \`crate open\`.`);
+        }
+        if (project) writeLastProject(home, project);
+        // Land the app window on the TEAM cockpit (headless is GUI-primary), not
+        // the legacy /health welcome — carry the token + the active project.
+        const u = new URL(url);
+        const teamUrl = `${u.origin}/team?token=${u.searchParams.get("token") ?? ""}${project ? `&project=${encodeURIComponent(project)}` : ""}`;
+        const win = openAppWindow(teamUrl, { home });
+        // boot the team (GUI-owned lifecycle) so the operator lands on a live rig
+        if (project) {
+          try {
+            await fetch(`${u.origin}/api/team/boot`, {
+              method: "POST",
+              headers: { "X-Crate-Token": u.searchParams.get("token") ?? "" },
+              signal: AbortSignal.timeout(15000),
+            });
+          } catch { /* the Team menu can boot it if this misses */ }
+        }
+        console.log(`Crate Engine is open — ${win.mode === "app" ? "the ⚡ app window" : "your browser"} is loading${project ? ` (${project})` : ""}.`);
+        console.log(teamUrl);
+        break;
+      } catch (e) {
+        fail(e instanceof Error ? e.message : String(e));
+      }
+    }
+    break;
+  }
+  case "gui": {
+    // crate gui [--project <path>] [--url-file <f>] — the headless app server
+    // (tokened loopback). T8: no panes — `crate open` opens the app-mode window
+    // and drives this server; the printed/handshake URL is the way in.
+    const { startGuiServer } = await import("./gui/server.js");
+    const { projectAt: projAt } = await import("./usertier.js");
+    // PHASE-B #1: the black box — fatal errors/signals are logged to
+    // ~/.crate/logs/gui.log and the runner children are reaped before exit.
+    const { installGuiCrashLog, guiLog } = await import("./gui/guilog.js");
+    const { stopAllTeams } = await import("./gui/teamproc.js");
+    installGuiCrashLog(HOME, stopAllTeams);
+    const pIdx = rest.indexOf("--project");
+    // Same resolution as `crate open` (run #13): flag → project-you're-in →
+    // (inside startGuiServer) the persisted last project.
+    const project = pIdx !== -1 ? resolve(rest[pIdx + 1] ?? ".") : projAt(process.cwd());
+    try {
+      const gui = await startGuiServer({ project });
+      guiLog(HOME, `serving on port ${gui.port} (pid ${process.pid}${gui.state.project ? `, project ${gui.state.project}` : ""})`);
+      // With a project attached, land on the Start-engine preflight (W1 — the
+      // /health boot screen retired); with none, the welcome/attach flow.
+      const landing = gui.state.project ? gui.url.replace("/?token=", "/start?token=") : gui.url;
+      console.log(`crate gui — serving on ${landing}`);
+      const { writeFileSync: wf, mkdirSync: mkd } = await import("node:fs");
+      const ufIdx = rest.indexOf("--url-file");
+      if (ufIdx !== -1 && rest[ufIdx + 1]) {
+        wf(rest[ufIdx + 1]!, landing); // the explicit handshake file
+      }
+      // the standing handshake: `crate open` (outside) waits on this file
+      try {
+        const { appUrlPath } = await import("./usertier.js");
+        const home0 = process.env.HOME ?? "";
+        mkd(join(home0, ".crate"), { recursive: true });
+        wf(appUrlPath(home0), landing);
+      } catch {
+        /* best-effort — the URL is printed above either way */
+      }
+      console.log(`  Ctrl+C stops the app server.`);
+      await new Promise(() => {}); // serve until interrupted
+    } catch (e) {
+      fail(e instanceof Error ? e.message : String(e));
+    }
+    break;
+  }
+  case "doctor": {
+    // crate2 doctor [--project <path>] — the P4-9 preview-chain / attach-health table.
+    const { runDoctor, formatDoctor } = await import("./doctor.js");
+    const pIdx = rest.indexOf("--project");
+    const projectRoot = resolve(pIdx !== -1 ? (rest[pIdx + 1] ?? ".") : ".");
+    console.log(formatDoctor(await runDoctor(projectRoot)));
+    break;
+  }
+  case "up": {
+    // T8: `crate up` (cmux-pane boot) retired in 2.1 — boot the team headless.
+    fail("`crate up` was retired in 2.1 (cmux is gone). Boot the team headless with `crate open` (opens the app window), or `crate team` for a headless-only run.");
+    break;
+  }
+  case "runner": {
+    // crate runner <seat> [--project <path>] [--once] — PHASE-8 T1: host one
+    // seat headless (turn-per-invocation; the pane's replacement). --once
+    // processes a single turn and exits (probes/tests); default is the
+    // standing loop. Staffing comes from rig.conf exactly like `up`.
+    const seat = rest[0];
+    if (!seat || !(SEATS as readonly string[]).includes(seat)) fail(`usage: crate runner <${SEATS.join("|")}> [--project <path>] [--once]`);
+    const pIdx = rest.indexOf("--project");
+    const projectRoot = resolve(pIdx !== -1 ? (rest[pIdx + 1] ?? ".") : ".");
+    const confFile = join(projectRoot, ".agents", "rig.conf");
+    if (!existsSync(confFile)) fail(`no rig.conf at ${confFile} — run crate install first`);
+    const conf = parseRigConf(readFileSync(confFile, "utf8"));
+    const agentKey = `${seat === "tester" ? "TESTER" : seat!.toUpperCase()}_AGENT`;
+    const modelKey = agentKey.replace("_AGENT", "_MODEL");
+    const agent = conf[agentKey] || "pi";
+    const model = conf[modelKey] || undefined;
+    const { runTurn, runnerLoop, bootWall } = await import("./runner.js");
+    // T6: resolve + cache the wall at boot — a walled-required seat that cannot
+    // be walled refuses HERE, in plain words, not on its first turn; the first
+    // turn reuses this exact render (no second probe).
+    let wallNote = "unwalled";
+    try {
+      wallNote = bootWall(projectRoot, seat!, agent);
+    } catch (e) {
+      fail(e instanceof Error ? e.message : String(e));
+    }
+    console.log(`crate runner — ${seat} headless (${agent}${model ? `/${model}` : ""}, ${wallNote}) on ${projectRoot}`);
+    if (rest.includes("--once")) {
+      const r = await runTurn({ projectRoot, seat: seat!, agent, model });
+      console.log(r.idle ? "idle (no unread mail)" : r.ok ? `turn ok — log: ${r.logPath}` : `turn FAILED — ${r.error} (mail retained; log: ${r.logPath})`);
+      if (!r.ok) process.exitCode = 1;
+    } else {
+      const autoRefresh = ["1","true","yes","on"].includes((conf.CONTEXT_AUTO_REFRESH||"").toLowerCase());
+      await runnerLoop({ projectRoot, seat: seat!, agent, model, contextAutoRefresh: autoRefresh });
+    }
+    break;
+  }
+  case "team": {
+    // crate team [--project <path>] — PHASE-8 T3: host ALL seats headless in
+    // one supervisor process (the pane-less rig). Each seat gets its own
+    // runnerLoop; the GUI is the window. Staffing from rig.conf.
+    const pIdx = rest.indexOf("--project");
+    const projectRoot = resolve(pIdx !== -1 ? (rest[pIdx + 1] ?? ".") : ".");
+    const confFile = join(projectRoot, ".agents", "rig.conf");
+    if (!existsSync(confFile)) fail(`no rig.conf at ${confFile} — run crate install first`);
+    const conf = parseRigConf(readFileSync(confFile, "utf8"));
+    const { runnerLoop, bootWall } = await import("./runner.js");
+    console.log(`crate team — ${projectRoot} headless (no cmux). Seats:`);
+    const ac = new AbortController();
+    process.on("SIGINT", () => { console.log("\ncrate team: stopping seats…"); ac.abort(); });
+    const autoRefresh = ["1","true","yes","on"].includes((conf.CONTEXT_AUTO_REFRESH||"").toLowerCase());
+    if (autoRefresh) console.log("  context auto-refresh: ON (ceiling)");
+    // T6: resolve + cache every seat's wall at boot — one unwallable
+    // walled-required seat refuses the whole boot, in plain words, before any
+    // turn runs; each first turn reuses its boot render.
+    const staffing = (SEATS as readonly string[]).map((seat) => {
+      const agentKey = `${seat === "tester" ? "TESTER" : seat.toUpperCase()}_AGENT`;
+      const agent = conf[agentKey] || "pi";
+      const model = conf[agentKey.replace("_AGENT", "_MODEL")] || undefined;
+      let wallNote = "unwalled";
+      try {
+        wallNote = bootWall(projectRoot, seat, agent);
+      } catch (e) {
+        fail(e instanceof Error ? e.message : String(e));
+      }
+      return { seat, agent, model, wallNote };
+    });
+    const loops = staffing.map(({ seat, agent, model, wallNote }) => {
+      console.log(`  ${seat.padEnd(13)} ${agent}${model ? `/${model}` : ""}  [${wallNote}]`);
+      return runnerLoop({ projectRoot, seat, agent, model, signal: ac.signal, contextAutoRefresh: autoRefresh });
+    });
+    await Promise.all(loops);
+    break;
+  }
+  case "print": {
+    // crate2 print [<seat>] [--project <path>] — no seat: the staffing table
+    // with provenance for all five seats (P4-1); a seat: its exact launch plan.
+    const pIdx = rest.indexOf("--project");
+    const projectRoot = resolve(pIdx !== -1 ? (rest[pIdx + 1] ?? ".") : ".");
+    if (rest[0] === undefined || rest[0].startsWith("--")) {
+      try {
+        printStaffingTable(projectRoot);
+      } catch (e) {
+        fail(e instanceof Error ? e.message : String(e));
+      }
+      break;
+    }
+    const seat = rest[0] as Seat;
+    if (!SEATS.includes(seat)) fail(`unknown seat "${rest[0]}" (expected one of: ${SEATS.join(", ")})`);
+    // print never refuses (preflight off): it's the tool you debug a missing dep WITH.
+    const { seats, brainRoot } = await planSeats(projectRoot, { preflight: false }).catch((e) =>
+      fail(e instanceof Error ? e.message : String(e)),
+    );
+    const plan = seats.find((s) => s.seat === seat)!;
+    const confFile = join(projectRoot, ".agents", "rig.conf");
+    const conf = existsSync(confFile) ? parseRigConf(readFileSync(confFile, "utf8")) : {};
+    const pristine = deriveBrainRoot(projectRoot);
+    const seatLoadout = existsSync(loadoutPath(pristine, seat)) ? loadLoadout(pristine, seat) : undefined;
+    const prov = resolveSeatDetailed(seat, seatLoadout, {
+      rigConf: conf,
+      userDefaults: loadUserDefaults(HOME),
+    });
+    console.log(`seat:     ${plan.seat} ("${plan.title}")`);
+    console.log(
+      `staffed:  ${plan.staffed.agent}${plan.staffed.model ? `/${plan.staffed.model}` : " (login picks)"}` +
+        `  (agent: ${prov.agent.source}, model: ${prov.model.source})`,
+    );
+    console.log(`path:     ${plan.manifestDriven ? "manifest-driven (2.0)" : "v1 adapter"}`);
+    console.log(`launch:   ${plan.launchCommand}`);
+    if (plan.manifestDriven) {
+      const loadout = loadLoadout(brainRoot, seat);
+      if (loadout.agent === "pi") {
+        const inv = buildInvocation(loadout, plan.staffed, { brainRoot, projectRoot });
+        console.log(`argv:     ${toShellCommand(inv)}`);
+      } else {
+        console.log(`agent:    ${loadout.agent} (own toolkit — launch line from the v1 adapter, see the script)`);
+      }
+      console.log(`sandbox:  ${plan.sandbox}${plan.profilePath ? `  (profile: ${plan.profilePath})` : "  (unwrapped)"}`);
+      if (loadout.policy.sandbox_doors.length > 0) {
+        console.log(`doors:    ${loadout.policy.sandbox_doors.join("  ")}`);
+      }
+    }
+    if (!plan.manifestDriven && plan.profilePath) {
+      console.log(`wall:     ${plan.sandbox} (adapter-launched claude, walled — P5-0a; profile: ${plan.profilePath})`);
+    }
+    break;
+  }
+  case "relaunch": {
+    // T8: `crate relaunch` (cmux pane revive) retired in 2.1. A headless seat's
+    // runner is GUI-owned — relaunch it from the app's Team menu (per-seat
+    // Relaunch), which restarts exactly that runner child.
+    fail("`crate relaunch` was retired in 2.1 (cmux is gone). Relaunch a seat from the app's Team menu (per-seat Relaunch), or stop/reboot the team with `crate open`.");
+    break;
+  }
+  default:
+    fail(`usage: crate <open|setup|attach|gui|doctor|update|up|print|relaunch|version> ...`);
+}

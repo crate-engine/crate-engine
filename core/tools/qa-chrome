@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# qa-chrome — start/stop a WALL-SAFE headless chromium with CDP open, for
+# `agent-browser connect`. Run #12 finding: agent-browser's auto-launch drives
+# the SYSTEM Google Chrome, which cannot start inside a seat's sandbox wall
+# (its profile/crashpad live under ~/Library — write-denied by design, FATAL
+# path_service). The Arm-installed playwright chromium CAN run walled when its
+# profile sits in $TMPDIR and crash reporting is off — this shim encodes that
+# proven launch so a walled QA/Designer seat gets an interactive browser:
+#
+#   qa-chrome start          # boots CDP on :9223 (or: qa-chrome start 9224)
+#   agent-browser connect 9223
+#   ... agent-browser navigate/console/errors/screenshot ...
+#   agent-browser close && qa-chrome stop
+set -euo pipefail
+
+PORT="${2:-9223}"
+TMP="${TMPDIR:-/tmp}"
+PIDFILE="$TMP/qa-chrome-$PORT.pid"
+
+find_shell() {
+  # KEEP IN SYNC with CHROMIUM_CANDIDATES in core/src/tools/qa-sweep.ts (the
+  # canonical list). Linux fix 2026-07-12: the real layout is
+  # chrome-headless-shell-linux64/ + chrome-linux64/ — the bare -linux/
+  # patterns were stale and MISSED Superman's installed shells.
+  local roots=("$HOME/Library/Caches/ms-playwright" "$HOME/.cache/ms-playwright")
+  local pats=(
+    "chromium_headless_shell-*/chrome-headless-shell-mac-arm64/chrome-headless-shell"
+    "chromium_headless_shell-*/chrome-headless-shell-mac-x64/chrome-headless-shell"
+    "chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell"
+    "chromium_headless_shell-*/chrome-headless-shell-linux/chrome-headless-shell"
+    "chromium-*/chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium"
+    "chromium-*/chrome-mac/Chromium.app/Contents/MacOS/Chromium"
+    "chromium-*/chrome-linux64/chrome"
+    "chromium-*/chrome-linux/chrome"
+  )
+  for root in "${roots[@]}"; do
+    for pat in "${pats[@]}"; do
+      # shellcheck disable=SC2086
+      local hit; hit=$(ls -d $root/$pat 2>/dev/null | sort | tail -1) || true
+      [ -n "${hit:-}" ] && [ -x "$hit" ] && { echo "$hit"; return 0; }
+    done
+  done
+  return 1
+}
+
+case "${1:-}" in
+  start)
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+      echo "qa-chrome: already running on :$PORT (pid $(cat "$PIDFILE")) — connect with: agent-browser connect $PORT"
+      exit 0
+    fi
+    BIN="$(find_shell)" || {
+      echo "qa-chrome: no playwright chromium in the browser cache — install it once with:" >&2
+      echo "  npx playwright-core install chromium-headless-shell   (the app's Arm step does this)" >&2
+      exit 1
+    }
+    "$BIN" --headless --no-sandbox --disable-crashpad --disable-breakpad --disable-gpu \
+      --remote-debugging-port="$PORT" --user-data-dir="$TMP/qa-chrome-profile-$PORT" \
+      --no-first-run about:blank >"$TMP/qa-chrome-$PORT.log" 2>&1 &
+    echo $! > "$PIDFILE"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      curl -sf "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1 && break
+      sleep 0.5
+    done
+    if ! curl -sf "http://127.0.0.1:$PORT/json/version" >/dev/null 2>&1; then
+      echo "qa-chrome: chromium did not open CDP on :$PORT — log: $TMP/qa-chrome-$PORT.log" >&2
+      exit 1
+    fi
+    echo "qa-chrome: up on :$PORT ($BIN)"
+    echo "connect with: agent-browser connect $PORT"
+    ;;
+  stop)
+    if [ -f "$PIDFILE" ]; then
+      kill "$(cat "$PIDFILE")" 2>/dev/null || true
+      rm -f "$PIDFILE"
+      echo "qa-chrome: stopped (:$PORT)"
+    else
+      echo "qa-chrome: nothing running on :$PORT"
+    fi
+    ;;
+  *)
+    echo "usage: qa-chrome start [port] | qa-chrome stop [port]   (default port 9223)" >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# qa-sweep — the QA seat's one-call evidence bundle (see core/src/tools/qa-sweep.ts).
+set -euo pipefail
+self="${BASH_SOURCE[0]:-$0}"
+while [ -L "$self" ]; do t="$(readlink "$self")"; case "$t" in /*) self="$t";; *) self="$(dirname "$self")/$t";; esac; done
+CORE="$(cd "$(dirname "$self")/.." && pwd)"
+if [ -f "$CORE/dist/tools/qa-sweep.js" ]; then
+  exec node "$CORE/dist/tools/qa-sweep.js" "$@"
+else
+  exec node --import tsx "$CORE/src/tools/qa-sweep.ts" "$@"
+fi

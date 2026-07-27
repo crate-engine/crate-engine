@@ -1,0 +1,183 @@
+{
+  "$id": "crate-engine/loadout.schema.json",
+  "title": "Crate Engine seat loadout",
+  "description": "GENERATED from core/src/manifest.ts (npm run schema) — do not hand-edit. Rationale: dev/plan/phase-0/manifest-schema.md.",
+  "type": "object",
+  "properties": {
+    "seat": {
+      "type": "string",
+      "enum": [
+        "orchestrator",
+        "coder",
+        "reviewer",
+        "designer",
+        "tester"
+      ]
+    },
+    "agent": {
+      "type": "string",
+      "enum": [
+        "pi",
+        "claude-code"
+      ],
+      "default": "pi"
+    },
+    "binder": {
+      "type": "string",
+      "minLength": 1
+    },
+    "append_system": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "prompt_templates": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "extensions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "pattern": "^(npm:|git:|https:\\/\\/|ssh:\\/\\/|\\.\\/|\\/)"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "pi-extension",
+              "mcp-adapter"
+            ]
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "global",
+              "project"
+            ],
+            "default": "project"
+          },
+          "mcp_servers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "source",
+          "kind"
+        ],
+        "additionalProperties": false
+      },
+      "default": []
+    },
+    "cli_deps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "check": {
+            "type": "string",
+            "minLength": 1
+          },
+          "install": {
+            "type": "string"
+          },
+          "heavy": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "name",
+          "check"
+        ],
+        "additionalProperties": false
+      },
+      "default": []
+    },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "tools": {
+          "type": "string",
+          "pattern": "^[a-z_]+(,[a-z_]+)*$"
+        },
+        "thinking": {
+          "type": "string",
+          "enum": [
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "default": "medium"
+        },
+        "default_model": {
+          "type": "string"
+        },
+        "sandbox": {
+          "type": "string",
+          "enum": [
+            "readonly",
+            "standard",
+            "none"
+          ]
+        },
+        "network": {
+          "type": "boolean",
+          "default": true
+        },
+        "sandbox_doors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "permission_mode": {
+          "type": "string",
+          "enum": [
+            "default",
+            "bypassPermissions"
+          ],
+          "default": "default"
+        }
+      },
+      "required": [
+        "tools",
+        "default_model",
+        "sandbox"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "seat",
+    "binder",
+    "policy"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2019-09/schema#"
+}

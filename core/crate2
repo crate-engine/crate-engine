@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# crate2 — Phase-1 shim for the 2.0 launcher (kept OUT of bin/: spine is
+# read-only in Phases 0–1; merges into `crate` once the launcher is proven).
+set -euo pipefail
+self="${BASH_SOURCE[0]:-$0}"
+while [ -L "$self" ]; do t="$(readlink "$self")"; case "$t" in /*) self="$t";; *) self="$(dirname "$self")/$t";; esac; done
+CORE="$(cd "$(dirname "$self")" && pwd)"
+if [ -f "$CORE/dist/cli.js" ]; then
+  exec node "$CORE/dist/cli.js" "$@"
+else
+  exec node --import tsx "$CORE/src/cli.ts" "$@"
+fi

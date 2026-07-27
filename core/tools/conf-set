@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# conf-set — TS conf writer for shell-style conf files (see core/src/tools/conf-set.ts).
+# P4-8: replaces GNU `sed -i` conf edits (BSD-safe by construction, per the all-TS law).
+set -euo pipefail
+self="${BASH_SOURCE[0]:-$0}"
+while [ -L "$self" ]; do t="$(readlink "$self")"; case "$t" in /*) self="$t";; *) self="$(dirname "$self")/$t";; esac; done
+CORE="$(cd "$(dirname "$self")/.." && pwd)"
+if [ -f "$CORE/dist/tools/conf-set.js" ]; then
+  exec node "$CORE/dist/tools/conf-set.js" "$@"
+else
+  exec node --import tsx "$CORE/src/tools/conf-set.ts" "$@"
+fi

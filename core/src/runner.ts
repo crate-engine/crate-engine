@@ -1,0 +1,338 @@
+// PHASE-8 T1 — the seat runner: the headless replacement for a pane.
+//
+// Lifecycle per turn (D1): read unread mail → compose → invoke the harness
+// one-shot → capture the raw stream to a turn log → on SUCCESS ack the mail
+// (move to cur/) + persist the session id; on failure/timeout the mail
+// STAYS in new/ (at-least-once, D11) and the failure is logged honestly.
+// One turn at a time per seat by construction. The runner never parses
+// meaning from the agent's work — the state machine (events.log) and state
+// files stay the coordination truth; the runner is transport + lifecycle.
+import { spawn } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { deriveBrainRoot } from "./launcher.js";
+import { complete, deadLetter, readNew, type Message } from "./mailbox.js";
+import { gaugeFrom } from "./gui/context.js";
+import { buildHeadlessInvocation, composeTurnPrompt, parseSessionId, parseUsage, type HeadlessInvocation, type TurnUsage } from "./turn.js";
+import { normalizeAgent, resolveHeadlessWall } from "./wall.js";
+
+export interface RunTurnOpts {
+  projectRoot: string;
+  seat: string;
+  /** Staffed agent (pi/claude/codex — must have a T0-verified wire). */
+  agent: string;
+  model?: string;
+  turnTimeoutMs?: number;
+  /** Tests: replace the real harness invocation with a stub. */
+  invocationOverride?: (prompt: string, sessionId?: string) => HeadlessInvocation;
+}
+
+export interface TurnResult {
+  ok: boolean;
+  idle?: boolean;
+  sessionId?: string;
+  usage?: TurnUsage;
+  logPath?: string;
+  error?: string;
+}
+
+const DEFAULT_TURN_TIMEOUT_MS = 15 * 60 * 1000;
+
+export function turnsDir(projectRoot: string, seat: string): string {
+  const d = join(projectRoot, ".agents", "state", "turns", seat);
+  mkdirSync(d, { recursive: true });
+  return d;
+}
+
+export function sessionFile(projectRoot: string, seat: string): string {
+  return join(turnsDir(projectRoot, seat), "session.json");
+}
+
+/**
+ * True iff this seat already holds a LIVE session for THIS agent — i.e. the
+ * binder/docs orientation from a prior turn is still in the model's context,
+ * so the next turn can be composed SLIM (speed law, 2026-07-14). Must be
+ * checked BEFORE loadSession: pi's pre-mint writes the session file on first
+ * load, which would make turn 1 look resumed. A restaffed seat (agent
+ * mismatch) or a D12-refreshed seat (file removed) is NOT resumed.
+ */
+function sessionAlive(projectRoot: string, seat: string, agent: string): boolean {
+  const f = sessionFile(projectRoot, seat);
+  if (!existsSync(f)) return false;
+  try {
+    const j = JSON.parse(readFileSync(f, "utf8")) as { agent?: string; sessionId?: string };
+    return j.agent === agent && !!j.sessionId;
+  } catch {
+    return false;
+  }
+}
+
+function loadSession(projectRoot: string, seat: string, agent: string): string | undefined {
+  const f = sessionFile(projectRoot, seat);
+  if (!existsSync(f)) {
+    // pi CHOOSES its id (T0): mint one up front so every pi turn shares a session.
+    if (agent === "pi") {
+      const sid = randomUUID();
+      writeFileSync(f, JSON.stringify({ agent, sessionId: sid }));
+      return sid;
+    }
+    return undefined;
+  }
+  try {
+    const j = JSON.parse(readFileSync(f, "utf8")) as { agent?: string; sessionId?: string };
+    return j.agent === agent ? j.sessionId : undefined; // restaffed seat = fresh session
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Acknowledgment / "standing by" chatter that must NOT wake a turn — otherwise
+ * two seats ping-pong acks forever after a loop closes (the drive-3 flaw:
+ * orchestrator 27 turns / coder 22 for one tiny feature). A message that is
+ * ONLY an ack is absorbed (marked read) without invoking the agent; real
+ * requests never match this and still wake a turn.
+ */
+export function isAck(body: string): boolean {
+  return /\b(standing by|no further action|ack(nowledged| processed)|loop closed|no new (testing|action)|already (idle|closed|approved|deployed)|still (idle|standing)|nothing (to do|further)|no action (needed|required))\b/i.test(body);
+}
+
+// The wall is rendered ONCE per seat per process (launch-time semantics, like
+// the cmux launcher) — not re-read every turn, and not re-rendered between the
+// boot note and the first turn (bootWall pre-warms this exact cache). Refusals
+// are NOT cached: a throwing resolve re-throws every turn, honestly.
+const wallCache = new Map<string, ReturnType<typeof resolveHeadlessWall>>();
+function cachedWall(projectRoot: string, seat: string, agent: string): ReturnType<typeof resolveHeadlessWall> {
+  const k = `${projectRoot}|${seat}|${normalizeAgent(agent)}`;
+  if (!wallCache.has(k)) wallCache.set(k, resolveHeadlessWall(projectRoot, seat, agent));
+  return wallCache.get(k);
+}
+
+/**
+ * Resolve + cache a seat's wall AT BOOT (so the first turn reuses it — one
+ * render, one bwrap probe) and return the human note. Throws the refusal for a
+ * walled-required agent that cannot be walled — the caller reports it in plain
+ * words before any turn runs. This is the single boot-time entry for both
+ * `crate runner` and `crate team`.
+ */
+export function bootWall(projectRoot: string, seat: string, agent: string): string {
+  const w = cachedWall(projectRoot, seat, agent);
+  return w ? `walled: ${w.sandbox}/${w.backend}` : "unwalled";
+}
+
+/** Process ONE batch of unread mail as one turn. Idle no-op when the box is empty. */
+export async function runTurn(opts: RunTurnOpts): Promise<TurnResult> {
+  const { projectRoot, seat } = opts;
+  const agent = normalizeAgent(opts.agent); // one key for the wall AND the adapter dispatch
+  const inboxRoot = join(projectRoot, ".agents", "state", "inbox");
+  const mail = readNew(inboxRoot, seat);
+  if (mail.length === 0) return { ok: true, idle: true };
+
+  // Loop-breaker: if EVERY unread message is a pure acknowledgment, absorb
+  // them (mark read) WITHOUT a turn. This severs the courtesy-ack ping-pong
+  // at the mechanical layer, regardless of what the agent would have replied.
+  // NEVER the operator's (W4 dry-run finding #4, 2026-07-13): a human
+  // directive ending in "…hold nothing further" matched the ack regex and was
+  // silently swallowed — the operator's one input must ALWAYS wake a turn;
+  // the loop-breaker exists for seat-to-seat chatter only.
+  if (mail.every((m) => m.from !== "operator" && isAck(m.body))) {
+    complete(inboxRoot, seat, mail);
+    appendFileSync(
+      join(turnsDir(projectRoot, seat), "turns.log"),
+      `${new Date().toISOString()} | absorbed | ${mail.length} ack(s), no turn\n`,
+    );
+    return { ok: true, idle: true };
+  }
+
+  const resumed = sessionAlive(projectRoot, seat, agent); // BEFORE loadSession's pi pre-mint
+  const prompt = composeTurnPrompt(projectRoot, seat, mail, { resumed });
+  const sessionId = loadSession(projectRoot, seat, agent);
+  // T6: a real turn launches inside the seat's declared wall (Seatbelt/bwrap
+  // via the D7 seam). A walled-required agent that cannot be walled THROWS
+  // here — the refusal is a boot/turn failure, never a silent unwalled run.
+  // An invocationOverride (tests) replaces the harness itself, so no wall.
+  let inv: HeadlessInvocation;
+  if (opts.invocationOverride) {
+    inv = opts.invocationOverride(prompt, sessionId);
+  } else {
+    const wall = cachedWall(projectRoot, seat, agent);
+    inv = buildHeadlessInvocation(agent, { prompt, sessionId, model: opts.model, walled: wall !== undefined });
+    if (wall) inv.argv = [...wall.argvPrefix, ...inv.argv];
+  }
+
+  const startedAt = new Date();
+  // Handoff-latency instrumentation (speed law): oldest unread mail's enqueue
+  // epoch (the maildir filename prefix) → turn start. Proves wake latency and
+  // catches regressions; the model's own time is durationMs, never this.
+  const oldestMs = Math.min(...mail.map((m) => Number(m.name.split("-")[0] ?? NaN)).filter((n) => Number.isFinite(n)));
+  const waitMs = Number.isFinite(oldestMs) ? Math.max(0, startedAt.getTime() - oldestMs) : undefined;
+  const logPath = join(turnsDir(projectRoot, seat), `${startedAt.toISOString().replaceAll(":", "-")}.jsonl`);
+  const result = await execTurn(inv, projectRoot, logPath, agent, opts.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS, seatEnv(projectRoot));
+
+  const meta = {
+    turnMeta: true, seat, agent, ok: result.ok, mail: mail.length,
+    startedAt: startedAt.toISOString(), durationMs: Date.now() - startedAt.getTime(),
+    ...(waitMs !== undefined ? { waitMs } : {}), resumed,
+    usage: result.usage ?? null, sessionId: result.sessionId ?? sessionId ?? null,
+    ...(result.error ? { error: result.error } : {}),
+  };
+  appendFileSync(logPath, JSON.stringify(meta) + "\n");
+  appendFileSync(join(turnsDir(projectRoot, seat), "turns.log"),
+    `${meta.startedAt} | ${meta.ok ? "ok" : "FAILED"} | mail=${meta.mail} | ${meta.durationMs}ms | in=${meta.usage?.inputTokens ?? "?"} out=${meta.usage?.outputTokens ?? "?"}${waitMs !== undefined ? ` | wait=${waitMs}ms` : ""}${resumed ? "" : " | oriented"}${result.error ? ` | ${result.error}` : ""}\n`);
+
+  if (result.ok) {
+    complete(inboxRoot, seat, mail); // ack ONLY after a finished turn (at-least-once)
+    const sid = result.sessionId ?? sessionId;
+    if (sid) writeFileSync(sessionFile(projectRoot, seat), JSON.stringify({ agent, sessionId: sid }));
+    return { ok: true, sessionId: sid, usage: result.usage, logPath };
+  }
+  return { ok: false, usage: result.usage, logPath, error: result.error };
+}
+
+/** P3-1 parity, headless (W4 finding #2, 2026-07-13): first-choice tools
+ * (qa-sweep, agent-browser, axe-check, rg, …) resolve by NAME inside every
+ * seat. The cmux launcher exported `<brain>/core/tools` on the pane's PATH;
+ * the headless runner inherited nothing — the QA seat reported its in-box
+ * tools "not installed" and self-graded partial. Composed per turn (cheap,
+ * and correct across engine updates). A rig without .agents/bin (test
+ * fixtures) falls back to the plain env — the tools shim needs a brain. */
+function seatEnv(projectRoot: string): NodeJS.ProcessEnv {
+  try {
+    const tools = join(deriveBrainRoot(projectRoot), "core", "tools");
+    return { ...process.env, PATH: `${tools}:${process.env.PATH ?? ""}` };
+  } catch {
+    return process.env;
+  }
+}
+
+function execTurn(
+  inv: HeadlessInvocation, cwd: string, logPath: string, agent: string, timeoutMs: number, env: NodeJS.ProcessEnv,
+): Promise<{ ok: boolean; sessionId?: string; usage?: TurnUsage; error?: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(inv.argv[0]!, inv.argv.slice(1), {
+      cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true, // own pgid → group-kill on timeout
+    });
+    let sessionId: string | undefined;
+    let usage: TurnUsage | undefined;
+    let buf = "";
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ }
+    }, timeoutMs);
+    child.stdout.on("data", (chunk: Buffer) => {
+      buf += chunk.toString();
+      let nl;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+        appendFileSync(logPath, line + "\n"); // raw stream, verbatim
+        sessionId = parseSessionId(agent, line) ?? sessionId;
+        usage = parseUsage(agent, line) ?? usage;
+      }
+    });
+    child.stderr.on("data", (chunk: Buffer) => appendFileSync(logPath, JSON.stringify({ stderr: chunk.toString() }) + "\n"));
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (timedOut) resolve({ ok: false, usage, error: `turn timeout after ${timeoutMs}ms (killed)` });
+      else if (code === 0) resolve({ ok: true, sessionId, usage });
+      else resolve({ ok: false, usage, error: `harness exited ${code}` });
+    });
+    child.on("error", (e) => { clearTimeout(timer); resolve({ ok: false, error: String(e) }); });
+  });
+}
+
+export interface RunnerLoopOpts extends RunTurnOpts {
+  pollMs?: number;
+  /** Retries before a batch is dead-lettered (honest, never silent). */
+  maxRetries?: number;
+  /** D12 auto-mode (opt-in): auto-refresh the session when context crosses
+   * the ceiling, at the turn boundary (state was just written = safe). */
+  contextAutoRefresh?: boolean;
+  signal?: AbortSignal;
+  /** Injectable for tests; defaults to reading process.ppid. */
+  getParentPid?: () => number;
+}
+
+/** The seat's standing loop: watch → turn → ack/retry → watch. */
+export async function runnerLoop(opts: RunnerLoopOpts): Promise<void> {
+  const pollMs = opts.pollMs ?? 1000;
+  const maxRetries = opts.maxRetries ?? 3;
+  const inboxRoot = join(opts.projectRoot, ".agents", "state", "inbox");
+  const failures = new Map<string, number>(); // message name → consecutive failures
+  // PHASE-B #1: the orphan watchdog. A runner is a child of its supervisor
+  // (the GUI server or `crate team`); when the supervisor dies the OS reparents
+  // the runner and ppid changes — the runner must EXIT, not keep burning turns
+  // for a dead cockpit (testuser8 run: the server crashed silently and every
+  // seat kept working, invisible, until a sudo pkill).
+  const getPpid = opts.getParentPid ?? (() => process.ppid);
+  const ppid0 = getPpid();
+  // Event-driven wake (speed law, 2026-07-14): fs.watch on the seat's maildir
+  // new/ fires the INSTANT a .msg lands (the tmp+rename enqueue is atomic, so
+  // a watcher never sees a half-written file). The pollMs sleep stays as the
+  // fallback heartbeat — a missed event costs at most one poll interval, and
+  // the orphan watchdog still ticks every wake.
+  const newDir = join(inboxRoot, opts.seat, "new");
+  mkdirSync(newDir, { recursive: true });
+  let kick: (() => void) | undefined;
+  let watcher: FSWatcher | undefined;
+  try {
+    watcher = watch(newDir, () => kick?.());
+    watcher.on("error", () => { /* watcher died — polling carries the loop */ });
+  } catch {
+    /* watch unavailable on this fs — pure polling still works */
+  }
+  const idleWait = () =>
+    new Promise<void>((res) => {
+      const done = () => {
+        kick = undefined;
+        clearTimeout(t);
+        opts.signal?.removeEventListener("abort", done);
+        res();
+      };
+      const t = setTimeout(done, pollMs);
+      kick = done;
+      opts.signal?.addEventListener("abort", done, { once: true }); // stop is instant, never poll-bounded
+    });
+  try {
+  while (!opts.signal?.aborted) {
+    if (getPpid() !== ppid0) {
+      try {
+        appendFileSync(
+          join(turnsDir(opts.projectRoot, opts.seat), "turns.log"),
+          `${new Date().toISOString()} | orphaned — supervisor (pid ${ppid0}) is gone; runner exiting\n`,
+        );
+      } catch { /* the exit matters more than the note */ }
+      return;
+    }
+    const r = await runTurn(opts);
+    // D12 auto-refresh: a completed turn just wrote fresh state, so dropping
+    // the session here is lossless. Only when opted-in AND over the ceiling.
+    if (opts.contextAutoRefresh && r.ok && !r.idle && r.usage) {
+      const g = gaugeFrom(r.usage.inputTokens, opts.model);
+      if (g?.band === "high") {
+        const sf = sessionFile(opts.projectRoot, opts.seat);
+        if (existsSync(sf)) rmSync(sf);
+        appendFileSync(
+          join(turnsDir(opts.projectRoot, opts.seat), "turns.log"),
+          `${new Date().toISOString()} | auto-refreshed | context ${Math.round(g.pct * 100)}% ≥ ceiling — session dropped\n`,
+        );
+      }
+    }
+    if (r.idle) { await idleWait(); continue; }
+    if (!r.ok) {
+      for (const m of readNew(inboxRoot, opts.seat)) {
+        const n = (failures.get(m.name) ?? 0) + 1;
+        failures.set(m.name, n);
+        if (n >= maxRetries) {
+          deadLetter(inboxRoot, opts.seat, m, `turn failed ${n}x: ${r.error ?? "unknown"}`);
+          failures.delete(m.name);
+        }
+      }
+      await new Promise((res) => setTimeout(res, pollMs * 2)); // backoff, never hot-loop
+    }
+  }
+  } finally {
+    watcher?.close();
+  }
+}

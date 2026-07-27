@@ -1,0 +1,53 @@
+# Session state machine. agentctl.py enforces these transitions.
+# A transition is legal only if the current state is in its "from" list.
+# Format under transitions:  <event>: <from1,from2,...> -> <to>
+# SILENT transitions (advance state only, carry NO signal to another agent):
+#   start_design : initialized,idle,deployed -> designing   (Designer emits before design_locked)
+#   start_impl   : design_locked,initialized,idle,deployed -> implementing  (the coder emits before code_ready; the non-design_locked starts are CODE-ONLY tasks — a code change with no design phase)
+#   close        : deployed -> idle                          (emit at end to land the session at idle)
+#   abandon      : any mid-flight state -> idle              (P4-13: the ORCHESTRATOR drops a feature
+#                  cleanly — bad brief, blocked dependency, or a human kill. NO merge happens; emit
+#                  with reason="..." so events.log reads honestly; stand the workers down first.
+#                  Not legal from idle/initialized (nothing to abandon) or deployed (close instead).)
+#   reopen_design: design_locked -> designing             (orchestrator/Designer emits to revise a design after design_locked but before the human confirms; mirror of reopen)
+#   reopen       : approved -> implementing                  (orchestrator emits when a bug is found at the merge gate, after approved but before merge; the ONLY legal approved->rework path)
+#   fast_merge   : code_ready -> deployed                   (orchestrator/the coder emits AFTER a human-authorized direct [MERGE] that skipped the Reviewer; records a merge already done — then close -> idle)
+#   start_research: initialized,idle,deployed -> researching (a SPIKE: explore/read/prototype with NO merge intent — keeps research on the books instead of masquerading as idle; findings go to state files/LESSONS)
+#   research_done : researching -> idle                      (orchestrator emits with findings="..."; any build that follows is a NEW loop)
+#   rollback      : deployed -> implementing                 (a merge turned out bad BEFORE close — the coder reverts/fixes on a branch and the change goes back through the FULL loop; mirror of reopen for the post-merge moment; emit with reason="...")
+# Full legal chain for one change:
+#   design-led: boot -> start_design -> design_locked -> start_impl -> code_ready -> approved -> deployed -> close
+#   code-only:  start_impl (from idle/initialized/deployed) -> code_ready -> approved -> deployed -> close
+#   Direct-merge variant (Reviewer skipped, human-authorized): ... -> code_ready -> fast_merge -> close
+# ALWAYS-LEGAL events (state never moves; the LOG LINE is the point):
+#   gate_pass    : nm-gate records a green build+verify for a sha
+#   gate_release : the operator's "merge go" (consumed by the next deployed)
+#   verdict      : a VERIFIER's recorded verdict (JOIN PHYSICS, 2026-07-24) —
+#                  `emit verdict --actor reviewer|tester result=approve|reject`.
+#                  In a parallel review+QA loop agentctl refuses approved/
+#                  changes_needed from anyone but the orchestrator, and
+#                  (rig.conf JOIN_ENFORCE=1) until BOTH verdicts are on record
+#                  since the last code_ready. A new code_ready voids verdicts.
+initial: down
+always_legal: checkpoint, gate_pass, gate_release, verdict
+transitions:
+  boot: down,checkpointed -> initialized
+  start_design: initialized,idle,deployed -> designing
+  design_locked: designing -> design_locked
+  start_impl: design_locked,initialized,idle,deployed -> implementing
+  code_ready: implementing -> code_ready
+  changes_needed: code_ready -> implementing
+  reopen: approved -> implementing
+  reopen_design: design_locked -> designing
+  approved: code_ready -> approved
+  deployed: approved -> deployed
+  fast_merge: code_ready -> deployed
+  rollback: deployed -> implementing
+  close: deployed -> idle
+  start_research: initialized,idle,deployed -> researching
+  research_done: researching -> idle
+  abandon: designing,design_locked,implementing,code_ready,approved,testing,researching -> idle
+  start_test: initialized,idle,deployed -> testing
+  bugs_found: testing,code_ready -> implementing
+  retest: deployed -> testing
+  verified: testing -> idle

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# sandbox-test — the P3-3 containment suite (see core/src/tools/sandbox-test.ts).
+set -euo pipefail
+self="${BASH_SOURCE[0]:-$0}"
+while [ -L "$self" ]; do t="$(readlink "$self")"; case "$t" in /*) self="$t";; *) self="$(dirname "$self")/$t";; esac; done
+CORE="$(cd "$(dirname "$self")/.." && pwd)"
+if [ -f "$CORE/dist/tools/sandbox-test.js" ]; then
+  exec node "$CORE/dist/tools/sandbox-test.js" "$@"
+else
+  exec node --import tsx "$CORE/src/tools/sandbox-test.ts" "$@"
+fi

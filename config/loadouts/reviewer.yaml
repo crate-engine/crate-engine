@@ -1,0 +1,27 @@
+# Reviewer seat loadout — the FIRST real manifest (P1-3).
+# Transcribed from the VERIFIED live seat (adapters/pi/adapter.md + PDR §14–16):
+# read+bash only, high thinking, ChatGPT-sub GPT-5.5 as the trial-verified
+# default. the report skill added in Phase 2 (GO-PHASE-2 answer 3): the proven-common
+# report wire as one skill instead of per-brief instructions.
+seat: reviewer
+binder: config/reviewer.md
+append_system: []
+skills:
+  - config/skills/report.md
+prompt_templates: []
+extensions: []
+cli_deps:
+  - name: git
+    check: command -v git
+  - name: rg
+    check: command -v rg
+    # in-box: @vscode/ripgrep platform binary via the core/tools shim on the
+    # seat PATH (P3-11b — no Homebrew assumption; same pattern as agent-browser)
+    install: npm install --prefix "$(dirname "$(command -v qa-sweep)")/.."
+policy:
+  tools: read,bash
+  thinking: high
+  default_model: openai-codex/gpt-5.5
+  sandbox: readonly
+  permission_mode: bypassPermissions   # run #7: full-auto inside the wall (no per-command stalls)
+  network: true

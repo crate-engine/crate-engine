@@ -1,0 +1,43 @@
+# Designer seat loadout (P2-6). The Designer EDITS the real page on a feature
+# branch (binder law) — hence edit,write. Browser stack shared with QA per
+# cap-browser.md; build-preview is the human-preview skill (loads as-is, P0-4).
+seat: designer
+binder: config/designer.md
+append_system: []
+skills:
+  - config/skills/report.md
+  - config/skills/build-preview.md
+  - config/skills/design-method.md   # banked from the DeepSeek rehearsal (image-read mechanics verified)
+prompt_templates: []
+extensions: []
+cli_deps:
+  - name: git
+    check: command -v git
+  - name: playwright-browsers
+    check: ls "$HOME/Library/Caches/ms-playwright" | grep -q chrom
+    install: npx playwright-core install chromium-headless-shell
+    heavy: true
+    why: how your Designer seat looks at the real app (screenshots of the pages it styles)
+  - name: qr-preview
+    # tiny, but offered via the same one-time tooling box (run #7: a fresh
+    # account can't render build-preview QR codes and shouldn't run pip itself)
+    check: python3 -c "import segno"
+    # --force-reinstall: repairs a half-broken state (metadata present, package
+    # missing — pip would otherwise say "already satisfied" and fix nothing)
+    install: python3 -m pip install --user --quiet --force-reinstall segno
+    heavy: true
+    why: makes the QR code on preview cards, so you can open a build on your phone
+  - name: agent-browser
+    check: command -v agent-browser
+    # in-box: a crate-core dependency exposed via the core/tools shim on the
+    # seat PATH (P3-5 — global npm prefixes can be root-owned; never need sudo)
+    install: npm install --prefix "$(dirname "$(command -v qa-sweep)")/.."
+policy:
+  tools: read,bash,edit,write
+  thinking: high
+  default_model: openai-codex/gpt-5.5
+  sandbox: standard
+  permission_mode: bypassPermissions   # run #7: full-auto inside the wall (no per-command stalls)
+  network: true
+  sandbox_doors:
+    - "~/.agent-browser"  # run #12: agent-browser's daemon socket/state dir — without this door the QA browser CLI dies inside the wall ("socket directory not writable")

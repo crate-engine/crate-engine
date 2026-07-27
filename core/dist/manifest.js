@@ -1,0 +1,128 @@
+// Loadout manifest: types + loader + validation (PLAN §2.2, schema per P0-9).
+// Source of truth for the schema is HERE (zod); config/loadouts/schema.json is
+// generated from it by scripts/gen-schema.ts (see adr-ts-scaffold.md).
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { parse } from "yaml";
+import { z } from "zod";
+export const SEATS = ["orchestrator", "coder", "reviewer", "designer", "tester"];
+const ExtensionSchema = z
+    .object({
+    source: z
+        .string()
+        .regex(/^(npm:|git:|https:\/\/|ssh:\/\/|\.\/|\/)/, 'must start with "npm:", "git:", "https://", "ssh://", "./" or "/" (a pi install source)'),
+    kind: z.enum(["pi-extension", "mcp-adapter"]),
+    scope: z.enum(["global", "project"]).default("project"),
+    mcp_servers: z.array(z.string()).optional(),
+})
+    .strict();
+const CliDepSchema = z
+    .object({
+    name: z.string().min(1),
+    check: z.string().min(1),
+    install: z.string().optional(),
+    heavy: z.boolean().default(false),
+    /** Plain-words purpose, shown to the USER by the attach tooling box —
+     * "what your <seat> seat uses this for" (run #7 clarity pass). */
+    why: z.string().optional(),
+})
+    .strict();
+const PolicySchema = z
+    .object({
+    tools: z
+        .string()
+        .regex(/^[a-z_]+(,[a-z_]+)*$/, 'comma-separated tool names, e.g. "read,bash"'),
+    thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]).default("medium"),
+    default_model: z.string(),
+    sandbox: z.enum(["readonly", "standard", "none"]),
+    network: z.boolean().default(true),
+    sandbox_doors: z.array(z.string()).default([]),
+    // P4-12: the permission posture is a first-class, validated loadout field
+    // (was a launcher special-case for claude-code). Coupled to the sandbox:
+    // "bypassPermissions" is legal ONLY behind a wall — enforced right here at
+    // the schema gate, and again at runtime in the launcher (belt-and-suspenders).
+    permission_mode: z.enum(["default", "bypassPermissions"]).default("default"),
+})
+    .strict()
+    .superRefine((p, ctx) => {
+    if (p.permission_mode === "bypassPermissions" && p.sandbox === "none") {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["permission_mode"],
+            message: 'permission_mode "bypassPermissions" requires a sandbox wall (sandbox: readonly|standard) — ' +
+                "a bypass seat without a wall is impossible by construction (the P3 security invariant)",
+        });
+    }
+});
+export const LoadoutSchema = z
+    .object({
+    seat: z.enum(SEATS),
+    // Which harness fills this seat. "pi" = the manifest builds the full pi
+    // invocation; "claude-code" = first-party Claude Code (own toolkit — the
+    // manifest contributes what the WALL needs: sandbox policy/doors/deps;
+    // the launch line comes from the v1 claude adapter). P3-8.
+    agent: z.enum(["pi", "claude-code"]).default("pi"),
+    binder: z.string().min(1),
+    append_system: z.array(z.string()).default([]),
+    skills: z.array(z.string()).default([]),
+    prompt_templates: z.array(z.string()).default([]),
+    extensions: z.array(ExtensionSchema).default([]),
+    cli_deps: z.array(CliDepSchema).default([]),
+    policy: PolicySchema,
+})
+    .strict();
+export class ManifestError extends Error {
+}
+function plainWords(file, error) {
+    const lines = error.issues.map((i) => {
+        const where = i.path.length ? i.path.join(".") : "(top level)";
+        return `  ${where}: ${i.message}`;
+    });
+    return `${file} is not a valid loadout:\n${lines.join("\n")}`;
+}
+/** Path of a seat's manifest inside the brain. */
+export function loadoutPath(brainRoot, seat) {
+    return join(brainRoot, "config", "loadouts", `${seat}.yaml`);
+}
+/**
+ * Load + validate a seat's loadout manifest from the brain.
+ * Every failure is a ManifestError whose message says what to fix, in plain words.
+ */
+export function loadLoadout(brainRoot, seat) {
+    const file = loadoutPath(brainRoot, seat);
+    if (!existsSync(file)) {
+        throw new ManifestError(`no loadout manifest for seat "${seat}" (looked for ${file})`);
+    }
+    let raw;
+    try {
+        raw = parse(readFileSync(file, "utf8"));
+    }
+    catch (e) {
+        throw new ManifestError(`${file} is not valid YAML: ${e instanceof Error ? e.message : e}`);
+    }
+    const parsed = LoadoutSchema.safeParse(raw);
+    if (!parsed.success)
+        throw new ManifestError(plainWords(file, parsed.error));
+    const loadout = parsed.data;
+    if (loadout.seat !== seat) {
+        throw new ManifestError(`${file}: seat is "${loadout.seat}" but the file is named ${seat}.yaml — they must match`);
+    }
+    // Referenced brain files must exist — fail at load, not at launch.
+    const mustExist = [
+        ["binder", loadout.binder],
+        ...loadout.append_system.map((f) => ["append_system", f]),
+        ...loadout.skills.map((f) => ["skills", f]),
+        ...loadout.prompt_templates.map((f) => ["prompt_templates", f]),
+        ...loadout.extensions
+            .filter((e) => e.source.startsWith("./") || e.source.startsWith("/"))
+            .map((e) => ["extensions", e.source]),
+    ];
+    for (const [field, rel] of mustExist) {
+        const abs = resolve(brainRoot, rel);
+        if (!existsSync(abs)) {
+            throw new ManifestError(`${file}: ${field} points at a file that doesn't exist: ${rel} (resolved to ${abs})`);
+        }
+    }
+    return loadout;
+}
+//# sourceMappingURL=manifest.js.map

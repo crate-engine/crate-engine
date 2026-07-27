@@ -1,0 +1,30 @@
+{
+  "name": "crate-core",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "schema": "node --import tsx scripts/gen-schema.ts",
+    "dist-check": "rm -rf .dist-check && tsc -p tsconfig.build.json --outDir .dist-check && diff -r dist .dist-check && rm -rf .dist-check && echo 'dist-sync OK (committed dist == fresh build)'"
+  },
+  "dependencies": {
+    "@vscode/ripgrep": "1.18.0",
+    "agent-browser": "0.31.1",
+    "axe-core": "^4.12.1",
+    "playwright-core": "^1.61.1",
+    "yaml": "^2.5.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0",
+    "zod-to-json-schema": "^3.23.0"
+  }
+}

@@ -1,0 +1,9 @@
+# Per-project retry/escalation state. Gitignored; checkpoint-captured.
+# The orchestrator reads + writes this; never derived from events.log.
+#
+# active_task: the task currently in the loop (matches a key under tasks:)
+# tasks:       one entry per task in the retry cycle
+# resolved:    tasks moved here on close so counts never bleed into the next task
+active_task: ""
+tasks: {}
+resolved: {}

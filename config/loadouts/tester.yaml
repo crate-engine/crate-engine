@@ -1,0 +1,39 @@
+# QA seat loadout (P2-3). Public name: QA; internal id: tester (vision §14.1).
+# Two-mode browser stack per cap-browser.md: qa-sweep (deterministic evidence
+# bundle, CLI) + agent-browser (interactive investigation, CLI). MCP fallback
+# stays out of the default loadout. QA never edits code: read,bash only.
+seat: tester
+binder: config/tester.md
+append_system: []
+skills:
+  - config/skills/report.md
+  - config/skills/qa-method.md   # added after blind run 1 (ladder-driven equip)
+prompt_templates: []
+extensions: []
+cli_deps:
+  - name: git
+    check: command -v git
+  - name: playwright-browsers
+    check: ls "$HOME/Library/Caches/ms-playwright" | grep -q chrom
+    install: npx playwright-core install chromium-headless-shell
+    heavy: true
+    why: how your QA seat drives and screenshots the app to verify what got built
+  - name: agent-browser
+    check: command -v agent-browser
+    # in-box: a crate-core dependency exposed via the core/tools shim on the
+    # seat PATH (P3-5 — global npm prefixes can be root-owned; never need sudo)
+    install: npm install --prefix "$(dirname "$(command -v qa-sweep)")/.."
+  - name: axe-check
+    check: command -v axe-check
+    # in-box (P7-T3): axe-core rides the engine's core deps; degrade-don't-fail
+    install: npm install --prefix "$(dirname "$(command -v qa-sweep)")/.."
+    why: the accessibility pass on changed pages (tester.md test discipline step 5)
+policy:
+  tools: read,bash
+  thinking: high
+  default_model: openai-codex/gpt-5.5
+  sandbox: standard
+  permission_mode: bypassPermissions   # run #7: full-auto inside the wall (no per-command stalls)
+  network: true
+  sandbox_doors:
+    - "~/.agent-browser"  # run #12: agent-browser's daemon socket/state dir — without this door the QA browser CLI dies inside the wall ("socket directory not writable")

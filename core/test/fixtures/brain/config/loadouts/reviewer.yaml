@@ -1,0 +1,13 @@
+seat: reviewer
+binder: config/reviewer.md
+skills:
+  - config/skills/test-skill.md
+cli_deps:
+  - name: git
+    check: command -v git
+policy:
+  tools: read,bash
+  thinking: high
+  default_model: openai-codex/gpt-5.5
+  sandbox: readonly
+  network: true

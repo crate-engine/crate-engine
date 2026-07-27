@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# axe-check — the QA seat's accessibility pass (see core/src/tools/axe-check.ts).
+set -euo pipefail
+self="${BASH_SOURCE[0]:-$0}"
+while [ -L "$self" ]; do t="$(readlink "$self")"; case "$t" in /*) self="$t";; *) self="$(dirname "$self")/$t";; esac; done
+CORE="$(cd "$(dirname "$self")/.." && pwd)"
+if [ -f "$CORE/dist/tools/axe-check.js" ]; then
+  exec node "$CORE/dist/tools/axe-check.js" "$@"
+else
+  exec node --import tsx "$CORE/src/tools/axe-check.ts" "$@"
+fi

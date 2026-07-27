@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# nm-gate [--quick] <branch|ref> — the enforced pre-handoff gate.
+#
+# Promotes precheck.sh (the proven isolated-worktree build harness) into a WALL:
+#   1. delta     — the branch carries a real committed delta vs origin/main
+#   2. env-inject — feed the isolated build its env (e.g. POSTGRES_URL) WITHOUT
+#                   writing secrets into the /tmp worktree (inherited by precheck)
+#   3. precheck  — lint + typecheck + build (+ test if present) in a throwaway
+#                  worktree with its own .next; never touches the live tree/.next
+#   4. gate_pass — on a full green, record a SHA-tied pass in the rig state log.
+#                  agentctl then refuses `code_ready` for a HEAD with no matching
+#                  gate_pass (only when rig.conf NMGATE_ENFORCE=1).
+#
+# This is the deterministic FLOOR: does it build/typecheck/lint/test, with a real
+# delta? Reviewer/QA remain the judgment CEILING — the gate never replaces them.
+# Agent-agnostic: any coder (Codex, Hermes, Claude) runs it over SSH; it is the
+# coder's build command, which is also why the live .next can never be corrupted.
+#
+# Usage:
+#   bash .agents/bin/nm-gate <branch>           full gate; on pass records gate_pass
+#   bash .agents/bin/nm-gate --quick <branch>   build/lint/typecheck only, NO record
+# Exit: 0 iff the gate is green (full mode also requires gate_pass was recorded).
+set -u
+
+QUICK=0
+[ "${1:-}" = "--quick" ] && { QUICK=1; shift; }
+REF="${1:-}"
+[ -z "$REF" ] && { echo "usage: nm-gate [--quick] <branch|ref>" >&2; exit 2; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$REPO_ROOT" || { echo "nm-gate: cannot cd to repo root" >&2; exit 2; }
+
+# PHASE-B #3: when origin is the LOCAL MIRROR (attach creates .agents/mirror.git
+# for projects with no GitHub remote), the local repo is the truth — sync the
+# mainline into the mirror at gate time so origin/main can never go stale.
+OURL="$(git remote get-url origin 2>/dev/null || true)"
+case "$OURL" in
+  */.agents/mirror.git)
+    for B in main master; do
+      git rev-parse -q --verify "$B" >/dev/null 2>&1 && { git push -q origin "$B:$B" 2>/dev/null || true; break; }
+    done
+    ;;
+esac
+
+git fetch -q origin || true
+if git show-ref -q --verify "refs/remotes/origin/$REF"; then RESOLVED="origin/$REF"; else RESOLVED="$REF"; fi
+FULLSHA="$(git rev-parse "$RESOLVED" 2>/dev/null || true)"
+SHORT="$(git rev-parse --short "$RESOLVED" 2>/dev/null || true)"
+[ -z "$FULLSHA" ] && { echo "nm-gate: cannot resolve ref: $REF" >&2; exit 2; }
+
+# ── STAGE 1: delta (a real committed delta vs origin/main) ──────────────────
+git rev-parse -q --verify origin/main >/dev/null 2>&1 || git fetch -q origin main || true
+BASE="origin/main"
+if ! git rev-parse -q --verify "$BASE" >/dev/null 2>&1; then
+  # PHASE-B #3: the codified LOCAL-ONLY path (testuser8 [engine] flaw): no
+  # origin at all — gate the delta against the local mainline. Same intent
+  # (a real committed delta beyond main), no remote required, said out loud.
+  for B in main master; do
+    if git rev-parse -q --verify "$B" >/dev/null 2>&1; then BASE="$B"; break; fi
+  done
+  if [ "$BASE" = "origin/main" ]; then
+    echo "nm-gate: FAIL — no origin/main and no local main/master to gate the delta against." >&2
+    exit 2
+  fi
+  echo "nm-gate: no origin remote — local-only repo; delta gated against local $BASE."
+fi
+BASESHA="$(git rev-parse "$BASE" 2>/dev/null || true)"
+if [ -n "$BASESHA" ] && [ "$BASESHA" = "$FULLSHA" ]; then
+  echo "nm-gate: FAIL delta — $REF (@ $SHORT) has no commits beyond $BASE. Nothing to gate."
+  exit 1
+fi
+if [ -z "$(git diff --name-only "$BASE...$RESOLVED" 2>/dev/null)" ]; then
+  echo "nm-gate: FAIL delta — no file changes vs $BASE."
+  exit 1
+fi
+
+# ── STAGE 2: gate env ── handled inside precheck: it symlinks the repo's .env*
+# into the isolated worktree so Next loads them with its own dotenv parser (robust
+# where a bash `source` of a values-with-spaces line like FROM_ADDRESS would break,
+# silently dropping later vars such as STRIPE_SECRET_KEY).
+
+# per-repo: build is a hard gate by default; rig.conf NMGATE_BUILD_FATAL=0 makes
+# build ADVISORY (e.g. an app whose full build needs prod-like env the gate lacks).
+# delta + typecheck stay hard regardless.
+BF="$(grep -E '^[[:space:]]*NMGATE_BUILD_FATAL' "$REPO_ROOT/.agents/rig.conf" 2>/dev/null | head -1 | cut -d= -f2 | tr -dc '01')"
+[ -n "$BF" ] && export BUILD_FATAL="$BF"
+
+# per-repo: lint is ADVISORY by default; rig.conf NMGATE_LINT_DELTA=1 turns on the
+# per-file no-net-new delta lint gate (fail only on errors a changed file ADDS vs
+# origin/main). Off by default so legacy baseline debt never blocks the gate.
+LD="$(grep -E '^[[:space:]]*NMGATE_LINT_DELTA' "$REPO_ROOT/.agents/rig.conf" 2>/dev/null | head -1 | cut -d= -f2 | tr -dc '01')"
+[ -n "$LD" ] && export LINT_DELTA="$LD"
+
+# per-repo: test-rung timeout override in seconds (default 300 in precheck). A
+# hung suite fails the gate loudly at the deadline instead of wedging the loop (T2).
+TTO="$(grep -E '^[[:space:]]*NMGATE_TEST_TIMEOUT' "$REPO_ROOT/.agents/rig.conf" 2>/dev/null | head -1 | cut -d= -f2 | tr -dc '0-9')"
+[ -n "$TTO" ] && export NMGATE_TEST_TIMEOUT="$TTO"
+
+# per-repo: the runtime SMOKE rung (PDR dev/pdr/runtime-smoke-rung.md) is
+# ADVISORY by default; SMOKE_ENFORCE=1 makes a smoke FAIL fail the gate.
+# SMOKE_READY_SECS tunes the server ready-deadline (default 60; AGENTS.md
+# "Ready deadline:" overrides per project). Full runs only (--quick skips).
+SE="$(grep -E '^[[:space:]]*SMOKE_ENFORCE' "$REPO_ROOT/.agents/rig.conf" 2>/dev/null | head -1 | cut -d= -f2 | tr -dc '01')"
+[ -n "$SE" ] && export SMOKE_ENFORCE="$SE"
+SRS="$(grep -E '^[[:space:]]*SMOKE_READY_SECS' "$REPO_ROOT/.agents/rig.conf" 2>/dev/null | head -1 | cut -d= -f2 | tr -dc '0-9')"
+[ -n "$SRS" ] && export SMOKE_READY_SECS="$SRS"
+
+# Gate DB isolation: if rig.conf sets PREVIEW_DB_URL (a non-prod Neon branch), point
+# the gate BUILD at it. Next's @next/env does NOT override an already-set process.env
+# var, so an exported POSTGRES_URL wins over the symlinked .env. This decouples the gate
+# from prod availability and keeps prod untouched; dev + real deploys still use .env.
+PDB="$(grep -E '^[[:space:]]*PREVIEW_DB_URL=' "$REPO_ROOT/.agents/rig.conf" 2>/dev/null | head -1 | sed -E 's/^[[:space:]]*PREVIEW_DB_URL=//; s/^"//; s/"$//')"
+if [ -n "$PDB" ]; then export POSTGRES_URL="$PDB"; echo "nm-gate: gate DB -> PREVIEW_DB_URL (non-prod branch; prod untouched)"; fi
+
+# ── STAGE 3: delegate the isolated lint/typecheck/build(/test) to precheck ──
+PRECHECK="$REPO_ROOT/.agents/bin/precheck.sh"
+[ -x "$PRECHECK" ] || [ -f "$PRECHECK" ] || { echo "nm-gate: precheck.sh not found at $PRECHECK" >&2; exit 2; }
+if [ "$QUICK" = "1" ]; then
+  bash "$PRECHECK" --quick "$REF" || { echo "nm-gate: --quick FAIL ($REF @ $SHORT)."; exit 1; }
+  echo "nm-gate: --quick PASS ($REF @ $SHORT). No gate_pass recorded (dev iteration)."
+  exit 0
+fi
+bash "$PRECHECK" "$REF" || { echo "nm-gate: FAIL — precheck did not pass for $REF (@ $SHORT). No gate_pass recorded."; exit 1; }
+
+# ── STAGE 4: record the SHA-tied proof (what agentctl checks for code_ready) ──
+if ! python3 "$REPO_ROOT/.agents/bin/agentctl.py" emit gate_pass --actor coder sha="$FULLSHA" ref="$REF" >/dev/null 2>&1; then
+  echo "nm-gate: PASS, but FAILED to record gate_pass via agentctl." >&2
+  echo "         (Ensure state-machine.yaml lists gate_pass in always_legal.)" >&2
+  exit 1
+fi
+echo "nm-gate: ALL PASS — gate_pass recorded for $REF @ $SHORT (sha $FULLSHA)."
+exit 0

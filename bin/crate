@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# crate — the Crate Engine CLI. One front door: link the engine into a repo,
+# spin up the agent team, update the engine, and health-check the install.
+# Engine home is $CRATE_HOME, else the repo this script lives in (../ of bin/).
+set -euo pipefail
+
+# Resolve the engine home = parent of this script's dir, following symlinks
+# (the CLI is usually reached via a ~/.local/bin/crate symlink). BASH_SOURCE is
+# robust even when invoked as a bare `crate` from PATH.
+self="${BASH_SOURCE[0]:-$0}"
+while [ -L "$self" ]; do
+  tgt="$(readlink "$self")"
+  case "$tgt" in /*) self="$tgt" ;; *) self="$(dirname "$self")/$tgt" ;; esac
+done
+ENGINE_HOME="${CRATE_HOME:-$(cd "$(dirname "$self")/.." && pwd)}"
+
+usage() {
+  cat <<EOF
+crate — Crate Engine CLI    (engine home: $ENGINE_HOME)
+
+  crate install          RETIRED in 2.1 — attach projects with the product CLI:
+                         crate open (the app walks you through it) or crate2 attach
+                         <repo>. The old bash path died mid-install on macOS and is
+                         gone for good (FLAWS 2026-07-25).
+  crate up               RETIRED in 2.1 (cmux is gone). Boot the team headless
+                         with the product CLI: crate open (app window) or crate team.
+  crate migrate <repo> [--dry-run]
+                         Move a project from an OLD engine onto this engine home:
+                         backup .agents, repoint symlinks, link adapters, migrate
+                         rig.conf, rename state files. --dry-run shows changes only.
+  crate update           Update the engine home (git pull --ff-only) — every linked
+                         repo upgrades at once.
+  crate home             Print the engine home path.
+  crate doctor           Check the install (engine home, git, layers, adapters, CLI).
+  crate adapter new <n>  Scaffold a new agent adapter (adapters/<n>/ with adapter.md
+                         + launch.sh) to support a new tool. Then staff a station
+                         with it (<STATION>_AGENT=<n>) — the binder never changes.
+  crate help             Show this help.
+
+The product is three layers: the SOP binder (config/, agent-neutral), the staffing
+sheet (each repo's .agents/rig.conf), and the adapters (adapters/<agent>/).
+EOF
+}
+
+cmd="${1:-help}"; shift 2>/dev/null || true
+
+case "$cmd" in
+  install)
+    # RETIRED 2026-07-27 (FLAWS: the bash installer died mid-install on macOS
+    # AND scaffolded into the CWD). Attach is the one supported path.
+    echo "crate install was retired in 2.1."
+    echo "Attach a project with the app: crate open   (it walks you through it)"
+    echo "or headless: crate2 attach <repo>   (guided, discloses every write)"
+    exit 1
+    ;;
+  up)
+    # T8: retired in 2.1 — cmux is gone; the app owns the team lifecycle.
+    echo "crate up was retired in 2.1 (cmux is gone)."
+    echo "Boot the team headless: crate open   (app window)   or: crate team"
+    exit 1
+    ;;
+  migrate)
+    [ -x "$ENGINE_HOME/scripts/migrate.sh" ] || { echo "crate: scripts/migrate.sh not found in engine home ($ENGINE_HOME)"; exit 1; }
+    exec "$ENGINE_HOME/scripts/migrate.sh" "$@"
+    ;;
+  update)
+    git -C "$ENGINE_HOME" pull --ff-only
+    ;;
+  home)
+    echo "$ENGINE_HOME"
+    ;;
+  doctor)
+    echo "=== crate doctor ==="
+    echo "engine home: $ENGINE_HOME"
+    if [ -d "$ENGINE_HOME/.git" ]; then
+      echo "  git:        ok ($(git -C "$ENGINE_HOME" rev-parse --short HEAD 2>/dev/null))"
+    else
+      echo "  git:        MISSING (engine home is not a git checkout)"
+    fi
+    for p in config bin adapters scripts/migrate.sh bin/agentctl.py; do
+      if [ -e "$ENGINE_HOME/$p" ]; then echo "  $p: ok"; else echo "  $p: MISSING"; fi
+    done
+    echo "  adapters:   $(ls "$ENGINE_HOME/adapters" 2>/dev/null | tr '\n' ' ')"
+    if command -v crate >/dev/null 2>&1; then echo "  crate CLI:  on PATH ($(command -v crate))"; else echo "  crate CLI:  NOT on PATH"; fi
+    ;;
+  adapter)
+    sub="${1:-}"; shift 2>/dev/null || true
+    case "$sub" in
+      new)
+        name="${1:-}"
+        [ -z "$name" ] && { echo "usage: crate adapter new <name>"; exit 1; }
+        dir="$ENGINE_HOME/adapters/$name"
+        [ -e "$dir" ] && { echo "crate: adapter '$name' already exists at $dir"; exit 1; }
+        mkdir -p "$dir"
+        cat > "$dir/adapter.md" <<'TMPL'
+# Adapter: {{NAME}}
+
+Onboarding card for staffing a station with **{{NAME}}**. Fill in the four wires
+below + the launch command, then staff a station with `<STATION>_AGENT={{NAME}}`
+in rig.conf. The binder (config/<station>.md) never changes.
+
+Model is NOT part of the adapter — it's the `<STATION>_MODEL` staffing value.
+
+## 1. Run-location
+- Where does it run and how does it reach the repo? (Headless runners execute on
+  the machine the team is booted on; the repo is the working directory.)
+
+## 2. Peer resolution
+- Peers are ROLE KEYS (orchestrator/coder/reviewer/designer/tester) — stable by
+  construction. No live map; nothing to resolve.
+
+## 3. Report delivery (a result must REACH the orchestrator)
+- One wire for every agent: python3 .agents/bin/agentctl.py deliver <role> --from <station> "<msg>"
+  (durable inbox record + maildir wake — see config/skills/report.md).
+
+## 4. State signal
+- The shared emit: `python3 .agents/bin/agentctl.py emit <verb> --actor <station> ...`
+  (a handoff's signal is queued to the target seat automatically).
+
+## Launch
+- Edit `launch.sh` in this folder to echo the command that starts {{NAME}} for a seat.
+TMPL
+        sed -i "s/{{NAME}}/$name/g" "$dir/adapter.md"
+        cat > "$dir/launch.sh" <<'TMPL'
+#!/usr/bin/env bash
+# Launch — prints the command the runner executes for this seat.
+# Contract: launch.sh <model> <project>  ->  echoes one shell command line.
+echo "TODO-launch-command-for-this-agent ${1:+--model $1}"
+TMPL
+        chmod +x "$dir/launch.sh"
+        echo "created $dir"
+        echo "  - adapter.md  (fill in the four wires)"
+        echo "  - launch.sh   (set the launch command)"
+        echo "Then staff a station:  <STATION>_AGENT=$name  in your rig.conf"
+        ;;
+      *)
+        echo "usage: crate adapter new <name>"; exit 1
+        ;;
+    esac
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    echo "crate: unknown command '$cmd'"; echo; usage; exit 1
+    ;;
+esac

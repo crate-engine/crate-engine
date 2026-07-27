@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Crate Engine — Operator's Manual</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600&family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ── the crate-engine.ai brand, in print: steel-blue carbon, one signal-amber
+     accent, Jost display / Archivo body / Plex Mono labels ─────────────── */
+:root {
+  --bg:#0b0e14; --panel:#12161f; --panel2:#161b26; --line:#222835; --line2:#323a4b;
+  --fg:#f1f3f6; --dim:#8b94a5; --faint:#5b6374;
+  --amber:#e2a33c; --amber-hi:#f0b654; --ok:#57c489; --warn:#e2a33c; --bad:#e4614d;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+}
+* { box-sizing:border-box; margin:0; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+@page { size: letter; margin: 0; }
+html,body { background:var(--bg); color:var(--fg);
+  font:15px/1.62 "Archivo",-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif; }
+.page { width:8.5in; height:11in; padding:0.85in 0.9in; page-break-after:always;
+  position:relative; overflow:hidden; background:var(--bg); display:flex; flex-direction:column; }
+.page:last-child { page-break-after:auto; }
+
+.eyebrow { font-family:var(--mono); font-size:11px; letter-spacing:.28em; text-transform:uppercase; color:var(--faint); }
+.eyebrow b { color:var(--amber); font-weight:600; }
+h1 { font-size:34px; line-height:1.15; letter-spacing:-.02em; margin:10px 0 14px; font-weight:700; }
+h2 { font-size:21px; letter-spacing:-.01em; margin:0 0 6px; font-weight:700; }
+p  { color:var(--dim); max-width:42em; }
+p.lead { font-size:16.5px; }
+strong { color:var(--fg); font-weight:600; }
+.amber { color:var(--amber); } .ok { color:var(--ok); } .bad { color:var(--bad); }
+
+.rule { border:0; border-top:1px solid var(--line); margin:20px 0; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px 20px; }
+.card + .card { margin-top:12px; }
+.cmd { font-family:var(--mono); font-size:13.5px; background:#080b11; border:1px solid var(--line2);
+  border-radius:8px; padding:13px 16px; color:var(--amber-hi); overflow:hidden; }
+.cmd .dim { color:var(--faint); }
+.label { font-family:var(--mono); font-size:10.5px; letter-spacing:.22em; text-transform:uppercase; color:var(--faint); margin-bottom:8px; }
+.btn { display:inline-block; font-size:12.5px; font-weight:600; color:#0f1211; background:var(--amber);
+  border-radius:6px; padding:2px 9px; white-space:nowrap; }
+.btn.quiet { background:transparent; color:var(--fg); border:1px solid var(--line2); }
+kbd { font-family:var(--mono); font-size:12.5px; color:var(--fg); background:var(--panel2);
+  border:1px solid var(--line2); border-radius:5px; padding:1px 7px; white-space:nowrap; }
+
+table { width:100%; border-collapse:collapse; font-size:13.5px; }
+th { font-family:var(--mono); font-size:10.5px; letter-spacing:.2em; text-transform:uppercase;
+  color:var(--faint); text-align:left; font-weight:500; padding:0 12px 8px 0; }
+td { padding:9px 12px 9px 0; border-top:1px solid var(--line); color:var(--dim); vertical-align:top; }
+td:first-child { color:var(--fg); white-space:nowrap; }
+.mono { font-family:var(--mono); font-size:12.5px; }
+
+.steps { counter-reset:step; }
+.step { display:flex; gap:16px; padding:13px 0; border-top:1px solid var(--line); }
+.step:first-child { border-top:0; }
+.step .n { counter-increment:step; flex:0 0 30px; height:30px; border:1px solid var(--amber);
+  border-radius:50%; color:var(--amber); font-family:var(--mono); font-size:13px;
+  display:flex; align-items:center; justify-content:center; margin-top:2px; }
+.step .n::before { content:counter(step); }
+.step h3 { font-size:15px; margin:2px 0 3px; font-weight:600; }
+.step p { font-size:13.5px; }
+
+.foot { position:absolute; bottom:0.55in; left:0.9in; right:0.9in; display:flex; justify-content:space-between;
+  font-family:var(--mono); font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:var(--faint);
+  border-top:1px solid var(--line); padding-top:10px; }
+
+/* lifecycle flow */
+.flow { display:flex; gap:10px; align-items:stretch; margin:18px 0 6px; }
+.flow .stage { flex:1; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 15px; }
+.flow .arrow { align-self:center; color:var(--amber); font-size:18px; flex:0 0 auto; }
+.flow .stage .label { margin-bottom:6px; }
+.flow .stage h3 { font-size:14.5px; margin-bottom:4px; }
+.flow .stage p { font-size:12.5px; }
+.flow .stage .tag { margin-top:10px; font-family:var(--mono); font-size:10.5px; color:var(--faint); }
+
+/* cover — the site hero, in print: engine art right, scrimmed copy left */
+.cover { justify-content:space-between;
+  background:
+    linear-gradient(0deg, rgba(11,14,20,.92) 0%, rgba(11,14,20,0) 26%),
+    linear-gradient(90deg, rgba(11,14,20,.97) 0%, rgba(11,14,20,.90) 44%, rgba(11,14,20,.34) 72%, rgba(11,14,20,.14) 100%),
+    url("assets/hero-engine.jpg") right center / cover no-repeat var(--bg); }
+.cover .mark { font-family:"Jost",sans-serif; font-size:30px; letter-spacing:.3em; font-weight:600; text-transform:uppercase; }
+.cover .mark b { color:var(--amber); font-weight:600; }
+.cover h1 { font-size:42px; max-width:12em; }
+.cover .seatgrid .seat { background:rgba(18,22,31,.88); }
+.seatgrid { display:grid; grid-template-columns:repeat(5,1fr); gap:8px; margin-top:22px; }
+.seatgrid .seat { border:1px solid var(--line); border-radius:8px; padding:10px 10px 8px; background:var(--panel); }
+.seatgrid .seat .label { margin-bottom:3px; }
+.seatgrid .seat p { font-size:11px; line-height:1.45; }
+.wizline { font-family:var(--mono); font-size:12px; color:var(--faint); letter-spacing:.06em; }
+.wizline b { color:var(--amber); font-weight:600; }
+</style>
+</head>
+<body>
+
+<!-- ── COVER ─────────────────────────────────────────────────────────────── -->
+<div class="page cover">
+  <div>
+    <p class="eyebrow">Operator's manual · rev 1</p>
+  </div>
+  <div>
+    <div class="mark">Crate <b>Engine</b></div>
+    <p style="margin-top:10px" class="wizline">engine no. CE-2.0 · factory assembled · macOS</p>
+    <h1 style="margin-top:30px">A complete engineering team, shipped as one.</h1>
+    <p class="lead">An orchestrated team — Coder, Reviewer, Designer, QA, and the Orchestrator
+    you talk to — each sandboxed, each running on your own AI subscriptions.
+    You install it with one line, direct it in plain English, and nothing merges
+    without your explicit go.</p>
+    <div class="seatgrid">
+      <div class="seat"><p class="label">Seat 01</p><p><strong style="font-size:12px">Orchestrator</strong><br>your team lead — the one you talk to</p></div>
+      <div class="seat"><p class="label">Seat 02</p><p><strong style="font-size:12px">Coder</strong><br>implements, builds, merges on your go</p></div>
+      <div class="seat"><p class="label">Seat 03</p><p><strong style="font-size:12px">Reviewer</strong><br>adversarial code review, read-only</p></div>
+      <div class="seat"><p class="label">Seat 04</p><p><strong style="font-size:12px">Designer</strong><br>visual &amp; UX design, mobile-first</p></div>
+      <div class="seat"><p class="label">Seat 05</p><p><strong style="font-size:12px">QA</strong><br>runtime testing, screenshots, honesty</p></div>
+    </div>
+  </div>
+  <div class="foot"><span>Crate Engine</span><span>Operator's Manual</span></div>
+</div>
+
+<!-- ── 1. THE DEAL + INSTALL ─────────────────────────────────────────────── -->
+<div class="page">
+  <p class="eyebrow"><b>01</b> · Start from scratch</p>
+  <h1>One line installs everything — you bring the crew</h1>
+  <p class="lead">Crate Engine ships the crate; the AI agents in it are <strong>yours</strong>.
+  It never installs an agent and never signs into one — it detects what's already on your Mac
+  and offers it for staffing. Your accounts stay yours, always.</p>
+
+  <div class="card" style="margin-top:18px">
+    <p class="label">Before you install — once per agent, its own way</p>
+    <table>
+      <tr><th>Agent</th><th>Get ready</th></tr>
+      <tr><td class="mono">claude</td><td>run it in a terminal, finish its one-time setup, sign in with your Claude subscription, then <span class="mono">/exit</span></td></tr>
+      <tr><td class="mono">pi</td><td>run it, <span class="mono">/login</span> with ChatGPT (DeepSeek seats take its API key), quit</td></tr>
+      <tr><td class="mono">codex</td><td>run it, sign in with your ChatGPT account, quit</td></tr>
+    </table>
+    <p style="font-size:12.5px;margin-top:10px">Only the agents you want on the team — any subset works; the app offers what it finds.</p>
+  </div>
+
+  <div class="card">
+    <p class="label">The install line · paste into Terminal, press Enter</p>
+    <div class="cmd">curl -fsSL &lt;your install link&gt; | bash <span class="dim">&nbsp;# the link ships with this manual</span></div>
+    <p style="font-size:13px;margin-top:12px">Four numbered steps run (cmux · node · the engine · the
+    <span class="mono">crate</span> command — long ones print dots so you can see life), then a short
+    <strong>“Your AI agents”</strong> report tells you exactly what was detected. Then the app launches itself:
+    a cmux window appears and the app page fills it. <span class="amber">First-ever cmux launch may show a welcome
+    window — click through it once.</span></p>
+  </div>
+  <p style="font-size:13px;margin-top:14px">That's the only terminal command of day one. Everything from here is clicks.</p>
+  <div class="foot"><span>01 · Start from scratch</span><span>Page 2</span></div>
+</div>
+
+<!-- ── 2. THE WIZARD ─────────────────────────────────────────────────────── -->
+<div class="page">
+  <p class="eyebrow"><b>02</b> · First run</p>
+  <h1>The wizard: five screens, five clicks</h1>
+  <p class="wizline" style="margin-bottom:14px">WELCOME → <b>STAFF</b> → <b>ATTACH</b> → <b>ARM</b> → <b>CHECK</b> → <b>BOOT</b></p>
+
+  <div class="steps">
+    <div class="step"><span class="n"></span><div>
+      <h3>Staff your team</h3>
+      <p>Click <span class="btn">Staff your team &amp; start building</span>. The top card shows your detected
+      agents; below, each seat has a tested default model with an honest note on how it bills
+      (flat-rate on your subscription vs metered). Click <span class="btn">Save defaults</span> —
+      set once, every project uses them — then <span class="btn quiet">Continue → attach a project</span>.</p>
+    </div></div>
+    <div class="step"><span class="n"></span><div>
+      <h3>Attach a project</h3>
+      <p>Attach a folder you already have, or <strong>Start a new project</strong> (Browse… has a
+      ＋ New folder button — no Finder needed). Click <span class="btn">Show me what will be added</span>,
+      read the two honest lists (what goes in your repo, what stays local), then
+      <span class="btn">Looks right — attach the team</span>.</p>
+    </div></div>
+    <div class="step"><span class="n"></span><div>
+      <h3>Arm your team</h3>
+      <p>One-time big downloads some seats need (e.g. QA's browser). If a box appears, click
+      <span class="btn">Install now (recommended)</span> and watch the per-tool progress; otherwise it says
+      “Nothing to download.” Then <span class="btn">Continue → final check</span>.</p>
+    </div></div>
+    <div class="step"><span class="n"></span><div>
+      <h3>Final check</h3>
+      <p>A wiring once-over. <span class="ok">Green</span> = good · grey = optional · <span class="amber">amber</span> shows
+      the one line that fixes it. If an agent's sign-in has gone stale, this is where it's caught —
+      before a dead boot, with the exact fix.</p>
+    </div></div>
+    <div class="step"><span class="n"></span><div>
+      <h3>Boot the team</h3>
+      <p>Click <span class="btn">Boot the team →</span>. A new cmux workspace opens with five panes and every seat
+      boots its harness. The Orchestrator reads its brief, verifies its teammates, onboards them, and greets
+      you: <em>“the rig is up — what shall we build first?”</em></p>
+    </div></div>
+  </div>
+
+  <p style="font-size:13px;margin-top:12px"><strong>If Boot refuses:</strong> that's the app protecting you — the message names
+  which agent isn't ready and exactly what to run. Fix it, click Boot again.</p>
+  <div class="foot"><span>02 · First run</span><span>Page 3</span></div>
+</div>
+
+<!-- ── 3. DIRECTING ──────────────────────────────────────────────────────── -->
+<div class="page">
+  <p class="eyebrow"><b>03</b> · Directing your team</p>
+  <h1>Talk to the Orchestrator — hold the gates</h1>
+  <p class="lead">Click into the <strong>Orchestrator pane</strong> and say what you want, like a message to a team lead:</p>
+
+  <div class="card" style="margin-top:14px">
+    <p class="label">Example direction</p>
+    <p style="color:var(--fg);font-size:14.5px">“Build me a small feature: add a footer line to the app's main page
+    that says <em>Built by my AI team</em> with the current year. Run your full process and
+    <strong>hold at the merge gate</strong> for my go.”</p>
+  </div>
+
+  <p style="margin-top:16px">Then watch: the Coder implements on a branch, a build gate verifies it, and the
+  Reviewer and QA check it <strong>in parallel</strong> — static review and runtime proof at once. You do nothing
+  until the Orchestrator reports it's <strong>HOLDING at the merge gate</strong> with both verdicts.</p>
+
+  <div class="card" style="margin-top:16px">
+    <p class="label">Your one decision</p>
+    <p style="font-size:14px">Reviewer says <span class="ok mono">APPROVED</span> and QA says <span class="ok mono">PASS</span>?
+    Type <strong style="color:var(--amber)">“Merge it.”</strong> — the only thing that ever merges code.
+    An approval alone never does; the gate is yours.</p>
+  </div>
+
+  <div class="card">
+    <p class="label">The rails your team runs on</p>
+    <table>
+      <tr><td>Verified before you</td><td>no code reaches your gate without review + QA passing it</td></tr>
+      <tr><td>Sandboxed seats</td><td>every seat works behind an OS-level wall — writes stay inside your project</td></tr>
+      <tr><td>Honest reporting</td><td>seats refuse loudly and never fake evidence — a blocker is named, not papered over</td></tr>
+      <tr><td>An audit trail</td><td>every state change lands in <span class="mono">.agents/state/events.log</span></td></tr>
+    </table>
+  </div>
+  <div class="foot"><span>03 · Directing your team</span><span>Page 4</span></div>
+</div>
+
+<!-- ── 4. DAY 2 ──────────────────────────────────────────────────────────── -->
+<div class="page">
+  <p class="eyebrow"><b>04</b> · Day 2 and every day after</p>
+  <h1>Stopping is nothing; coming back is one line</h1>
+  <p class="lead">Everything lives on disk — the project, your staffing, the team's state. When you're done,
+  just close the cmux window. Optionally tell the Orchestrator <kbd>.checkpoint</kbd> first to bank a tidy save.</p>
+
+  <div class="flow">
+    <div class="stage"><p class="label">Evening</p><h3>Stop</h3><p>close the cmux window — nothing else to save</p><p class="tag">terminal ×0</p></div>
+    <p class="arrow">→</p>
+    <div class="stage"><p class="label">Morning</p><h3>Reopen</h3><p><span class="mono" style="color:var(--amber-hi)">cd &lt;project&gt; &amp;&amp; crate open</span><br>lands on the Boot screen for that project</p><p class="tag">terminal ×1</p></div>
+    <p class="arrow">→</p>
+    <div class="stage"><p class="label">+1 click</p><h3>Boot</h3><p>click <strong>Boot the team</strong> — five panes return, oriented</p><p class="tag">clicks ×1</p></div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <p class="label">Several projects on one Mac</p>
+    <p style="font-size:13.5px"><span class="mono">crate open</span> is <strong>project-anchored</strong>: run inside a project
+    folder, it opens that project — never a guess. Run it from another project's folder and the app switches to it.
+    A bare <span class="mono">crate open</span> anywhere else reopens your most recent project.</p>
+  </div>
+
+  <div class="card">
+    <p class="label">The welcome screen remembers too</p>
+    <p style="font-size:13.5px">With a project attached, Welcome shows <strong>“Continue where you left off”</strong> with the
+    project path and a <span class="btn">Continue → Boot the team</span> button. You never re-walk the wizard for a project
+    you already have.</p>
+  </div>
+  <div class="foot"><span>04 · Day 2</span><span>Page 5</span></div>
+</div>
+
+<!-- ── 5. HEALTH ─────────────────────────────────────────────────────────── -->
+<div class="page">
+  <p class="eyebrow"><b>05</b> · Keeping it healthy</p>
+  <h1>The Boot screen is your live dashboard</h1>
+  <p class="lead">After boot, the same screen watches every seat. Each row shows who's staffed,
+  whether the pane is live, and how fresh its state file is.</p>
+
+  <div class="card" style="margin-top:16px">
+    <p class="label">The three states you'll see</p>
+    <table>
+      <tr><th>Dot</th><th>Meaning</th><th>What to do</th></tr>
+      <tr><td><span class="ok">●</span> live</td><td>the seat's pane is up and running</td><td>nothing</td></tr>
+      <tr><td><span class="amber">●</span> signed-out</td><td>the harness runs but its sign-in went stale (common after a machine sits overnight)</td><td>click <span class="btn quiet">Relaunch</span> — a fresh launch picks up the renewed sign-in</td></tr>
+      <tr><td><span class="bad">●</span> dead</td><td>the pane is gone (closed or crashed)</td><td>click <span class="btn quiet">Relaunch</span> — a fresh pane comes back walled and oriented</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <p class="label">Bigger hammers, still one click</p>
+    <table>
+      <tr><td><span class="btn quiet">Refresh team (relaunch all)</span></td><td>relaunches every seat, Orchestrator last — the full morning-after reset</td></tr>
+      <tr><td><span class="btn">Update now (your customizations survive)</span></td><td>on Welcome when an engine update is available; fast-forwards the engine, checks your customizations, asks for one app restart</td></tr>
+    </table>
+  </div>
+
+  <p style="margin-top:16px;font-size:13.5px"><strong>If the whole app window is gone</strong> (workspace closed, cmux quit):
+  nothing is lost — <span class="mono">cd &lt;project&gt; &amp;&amp; crate open</span> brings it back.</p>
+  <div class="foot"><span>05 · Keeping it healthy</span><span>Page 6</span></div>
+</div>
+
+<!-- ── 6. REFERENCE ──────────────────────────────────────────────────────── -->
+<div class="page">
+  <p class="eyebrow"><b>06</b> · Reference</p>
+  <h1>The whole command surface</h1>
+  <p class="lead">Two commands are all a normal day needs. Everything else is a click — or a sentence
+  to your Orchestrator.</p>
+
+  <div class="card" style="margin-top:14px">
+    <p class="label">Required · the only two</p>
+    <div class="cmd">curl -fsSL &lt;your install link&gt; | bash <span class="dim"># once, ever</span></div>
+    <div class="cmd" style="margin-top:8px">cd &lt;project&gt; &amp;&amp; crate open <span class="dim"># every session</span></div>
+  </div>
+
+  <div class="card">
+    <p class="label">Say it to the Orchestrator (typed into its pane)</p>
+    <table>
+      <tr><td>plain English</td><td>the product itself — build, fix, redesign, “Merge it.”</td></tr>
+      <tr><td class="mono">.status</td><td>read-only rig health snapshot</td></tr>
+      <tr><td class="mono">.checkpoint</td><td>bank the work state before you stop</td></tr>
+      <tr><td class="mono">.resume&nbsp;/&nbsp;.recover</td><td>re-orient / rebuild the team after a mess</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <p class="label">Optional terminal twins (every one has a button)</p>
+    <table>
+      <tr><th>Command</th><th>Same as</th></tr>
+      <tr><td class="mono">crate update</td><td>Welcome → Update now</td></tr>
+      <tr><td class="mono">crate doctor</td><td>the Final check screen</td></tr>
+      <tr><td class="mono">crate relaunch &lt;seat&gt; --workspace &lt;ref&gt;</td><td>dashboard → Relaunch</td></tr>
+    </table>
+  </div>
+  <div class="foot"><span>06 · Reference</span><span>Page 7</span></div>
+</div>
+
+<!-- ── 7. TROUBLESHOOTING ────────────────────────────────────────────────── -->
+<div class="page">
+  <p class="eyebrow"><b>07</b> · When something's off</p>
+  <h1>Plain answers to the five things that happen</h1>
+
+  <div class="card" style="margin-top:14px">
+    <table>
+      <tr><th>You see</th><th>What it means · what to do</th></tr>
+      <tr><td>“REFUSING to boot: agent not ready”</td>
+          <td>An agent's sign-in isn't usable. The message names the agent and the exact fix — usually: run it once in
+          a plain terminal, <span class="mono">/login</span>, and click <strong>Always Allow</strong> on any keychain dialog. Then Boot again.</td></tr>
+      <tr><td>A seat answers “API Error: 401 / run /login”</td>
+          <td>Its sign-in went stale mid-session (overnight is typical). <span class="mono">/login</span> in that pane, then use the
+          dashboard's <strong>Relaunch</strong> on that seat — a running session can't pick up new credentials by itself.</td></tr>
+      <tr><td>The app window vanished</td>
+          <td>The workspace (or cmux) was closed. State is safe: <span class="mono">cd &lt;project&gt; &amp;&amp; crate open</span>.</td></tr>
+      <tr><td>“has no .agents/bin — is the engine attached?”</td>
+          <td>The path isn't an attached project (typo, or a folder that never finished attach). Open the
+          <strong>Attach</strong> screen and attach the real folder — attaching an already-attached project is safe and heals links.</td></tr>
+      <tr><td>“update available” on Welcome</td>
+          <td>Click <span class="btn">Update now (your customizations survive)</span>, then restart the app when asked
+          (close the Crate Engine workspace, <span class="mono">crate open</span>).</td></tr>
+    </table>
+  </div>
+
+  <p style="margin-top:16px;font-size:13.5px">A rule that runs through all of it: <strong>Crate Engine refuses loudly and tells
+  you the one line that fixes it.</strong> If a screen ever lies, stalls, or leaves you stuck with no next step — that's a bug
+  we want reported, not something to work around.</p>
+
+  <div style="margin-top:auto;padding-bottom:52px">
+    <hr class="rule">
+    <p class="mono" style="font-size:11px;color:var(--faint);white-space:nowrap">CRATE <span class="amber">▪</span> ENGINE · an AI dev team, in a box · your agents, your accounts, your call at every gate.</p>
+  </div>
+  <div class="foot"><span>07 · Troubleshooting</span><span>Page 8</span></div>
+</div>
+
+</body>
+</html>

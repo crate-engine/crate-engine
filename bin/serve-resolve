@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# serve-resolve <gate|dev> <project_root> — ONE source of truth for "how does
+# this project serve" (smoke-rung PDR Q1/C: dev-server and the gate share the
+# RESOLUTION; only the gate runs it ephemerally).
+#
+# Prints exactly two lines:
+#   MODE=prod|dev|static|none
+#   CMD=<shell command>            (empty when MODE=none)
+#
+# gate mode (prod-first — smoke the artifact that would deploy):
+#   1. rig.conf/dev.conf GATE_START_CMD  (explicit override; may use $GATE_PORT)
+#   2. shape detection: next start · npm run preview (vite) · npm run start
+#   3. root index.html -> the in-box GET-only static server (MODE=static;
+#      the tree IS the deployable artifact for a plain-HTML project)
+#   4. dev fallback (below) reported as MODE=dev — the gate marks it
+#      smoke=dev-mode (dev serve can mask prod-only breaks; honesty over silence)
+#   5. nothing -> MODE=none (the rung advisory-skips)
+#
+# dev mode (what dev-server supervises):
+#   DEV_CMD -> next dev -> npm run dev -> none
+# CMDs may reference $GATE_PORT (gate) / $DEV_PORT $DEV_BIND (dev) — callers
+# export them before eval; conf values must be SINGLE-quoted to defer expansion.
+set -uo pipefail
+
+KIND="${1:?usage: serve-resolve <gate|dev> <project_root> [conf_root]}"
+PROJ="${2:?usage: serve-resolve <gate|dev> <project_root> [conf_root]}"
+# conf_root: where .agents/rig.conf lives when PROJ is a bare worktree (the
+# gate serves the WORKTREE but the staffing sheet stays in the live repo).
+CONF="${3:-$PROJ}"
+[ -d "$PROJ" ] || { echo "serve-resolve: no such dir: $PROJ" >&2; exit 2; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+
+conf_val() { # conf_val KEY — rig.conf then dev.conf, first hit, quotes stripped
+  local key="$1" line=""
+  for f in "$CONF/.agents/rig.conf" "$CONF/.agents/dev.conf"; do
+    [ -f "$f" ] || continue
+    line="$(grep -E "^[[:space:]]*${key}=" "$f" 2>/dev/null | head -1)"
+    [ -n "$line" ] && break
+  done
+  [ -z "$line" ] && return 0
+  line="${line#*=}"
+  line="${line%\"}"; line="${line#\"}"; line="${line%\'}"; line="${line#\'}"
+  printf '%s' "$line"
+}
+
+emit() { printf 'MODE=%s\nCMD=%s\n' "$1" "$2"; }
+
+dev_resolve() {
+  local dc
+  dc="$(conf_val DEV_CMD)"
+  if [ -n "$dc" ]; then emit dev "$dc"; return 0; fi
+  if [ -x "$PROJ/node_modules/.bin/next" ]; then
+    emit dev "$PROJ/node_modules/.bin/next dev -p \$DEV_PORT -H \$DEV_BIND"; return 0
+  fi
+  if [ -f "$PROJ/package.json" ] && grep -q '"dev"[[:space:]]*:' "$PROJ/package.json" 2>/dev/null; then
+    emit dev "npm run dev"; return 0
+  fi
+  emit none ""
+}
+
+case "$KIND" in
+  dev) dev_resolve ;;
+  gate)
+    GSC="$(conf_val GATE_START_CMD)"
+    if [ -n "$GSC" ]; then emit prod "$GSC"; exit 0; fi
+    if [ -x "$PROJ/node_modules/.bin/next" ]; then
+      emit prod 'npm run start -- -p $GATE_PORT'; exit 0
+    fi
+    if [ -f "$PROJ/package.json" ] && grep -q '"preview"[[:space:]]*:' "$PROJ/package.json" 2>/dev/null; then
+      emit prod 'npm run preview -- --port $GATE_PORT --strictPort'; exit 0
+    fi
+    if [ -f "$PROJ/package.json" ] && grep -q '"start"[[:space:]]*:' "$PROJ/package.json" 2>/dev/null; then
+      emit prod 'PORT=$GATE_PORT npm run start'; exit 0
+    fi
+    if [ -f "$PROJ/index.html" ]; then
+      emit static "node \"$SCRIPT_DIR/static-serve.js\" \$GATE_PORT ."; exit 0
+    fi
+    # dev fallback — degraded but honest (caller marks smoke=dev-mode)
+    DEVOUT="$(dev_resolve)"
+    case "$DEVOUT" in
+      MODE=none*) emit none "" ;;
+      *) printf '%s\n' "$DEVOUT" ;;
+    esac
+    ;;
+  *) echo "serve-resolve: unknown kind '$KIND' (gate|dev)" >&2; exit 2 ;;
+esac

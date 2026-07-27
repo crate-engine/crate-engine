@@ -1,0 +1,101 @@
+export type SandboxPolicy = "readonly" | "standard" | "none";
+/** The slice of a loadout the generator needs (decoupled for tests/tools). */
+export interface SandboxSpec {
+    seat: string;
+    sandbox: SandboxPolicy;
+    /** Extra write doors: `~/`-prefixed = home, absolute = as-is, else project-relative. */
+    doors: string[];
+}
+export interface SandboxPaths {
+    brainRoot: string;
+    /** MUST be the real (symlink-resolved) path — Seatbelt matches resolved paths. */
+    projectRoot: string;
+    home: string;
+}
+export declare class SandboxError extends Error {
+}
+/** Expand one door entry to an absolute path. */
+export declare function expandDoor(door: string, paths: SandboxPaths): string;
+/** Escape a literal path for embedding inside a Seatbelt regex filter. */
+export declare function regexEscapePath(p: string): string;
+/**
+ * Render one door entry as a Seatbelt filter line. Two forms:
+ * - a path (`~/…`, absolute, or project-relative) → `(subpath "…")`
+ * - `regex:<pattern>` → `(regex #"<pattern>")`, with `{{PROJECT}}`/`{{HOME}}`/
+ *   `{{PARENT}}` tokens substituted as regex-ESCAPED literal paths — the
+ *   narrow-door form for tools with genuinely variable-suffix paths. Prefer
+ *   subpath doors; reach for regex only when the path truly varies AND the
+ *   rig is macOS-only, because the bwrap backend cannot express a regex as a
+ *   bind mount (it SKIPS + reports them). No shipped manifest uses one — the
+ *   nm-gate worktrees moved to a fixed `../.nmgate-wt` subpath door (T7-0).
+ */
+export declare function renderDoor(door: string, paths: SandboxPaths): string;
+/**
+ * Harness-state write doors per agent (P3-8): the templates carry pi's
+ * `~/.pi` door inline; other harnesses declare theirs here and the launcher
+ * merges them into the seat's doors. Claude Code writes its session/config
+ * state under `~/.claude` plus the root-level json (+ its backup).
+ */
+export declare function stateDoorsFor(agent: string): string[];
+/**
+ * Render a seat's profile text from the brain's template. Returns undefined
+ * for `sandbox: none` (no wrap). Doors from the manifest expand at the
+ * template's `{{DOORS}}` marker line; a doorless render strips the marker.
+ */
+export declare function renderProfile(spec: SandboxSpec, paths: SandboxPaths): string | undefined;
+export interface BwrapRender {
+    /** bwrap arguments (no leading binary — the caller prepends the bwrap path). */
+    args: string[];
+    /** Doors the backend could not express (regex doors) — callers must log these loudly. */
+    skippedDoors: string[];
+    /** Absent file-doors bound try-only: the path does not exist so writes to it
+     * are denied until it does (the Seatbelt "write to a not-yet-existing path"
+     * semantic has no bwrap bind analog). Reported, never silently dropped. */
+    absentDoors: string[];
+}
+/**
+ * Render a seat's wall as bwrap arguments. Returns undefined for sandbox:
+ * none. The base UNSHARES the pid/ipc/uts/cgroup namespaces (net stays shared
+ * for `network: true` seats) so a walled seat cannot see or signal the
+ * supervisor / sibling seats, and the fresh `--proc` reflects only the
+ * sandbox — matching Seatbelt's per-process isolation. Missing dir-doors are
+ * materialized (a bind mount needs a real source — Seatbelt allowed
+ * not-yet-existing paths, bwrap cannot); missing file-doors ride --bind-try
+ * (absent → reported in absentDoors, never a hard launch failure).
+ */
+export declare function renderBwrapArgs(spec: SandboxSpec, paths: SandboxPaths): BwrapRender | undefined;
+/** First `bwrap` on PATH, or undefined (D7: availability is a fail-loud cli_dep). */
+export declare function findBwrap(env?: NodeJS.ProcessEnv): string | undefined;
+export interface WallPlan {
+    backend: "seatbelt" | "bwrap";
+    /** Prepend to the harness argv: the wall wrap. */
+    argvPrefix: string[];
+    /** Doors this backend could not express (bwrap regex doors) — log loudly. */
+    skippedDoors: string[];
+    /** Absent file-doors (bwrap only) — writes there are denied until the path
+     * exists; log so the create-inside-the-wall gap is visible, never silent. */
+    absentDoors: string[];
+}
+/**
+ * The one platform dispatcher (D7): the same SandboxSpec becomes a Seatbelt
+ * profile wrap on macOS and a bwrap wrap on Linux. Returns undefined for
+ * sandbox: none; throws SandboxError when the platform has no wall backend
+ * (a wall the policy declares but the host cannot render must fail LOUD).
+ */
+export declare function renderWallPlan(spec: SandboxSpec, paths: SandboxPaths, outDir: string, opts?: {
+    platform?: NodeJS.Platform;
+    bwrapBin?: string;
+}): WallPlan | undefined;
+/** Narrow a full loadout to the generator's input. */
+export declare function specFromLoadout(loadout: {
+    seat: string;
+    policy: {
+        sandbox: SandboxPolicy;
+        sandbox_doors: string[];
+    };
+}): SandboxSpec;
+/**
+ * Render + write `<outDir>/<seat>.sb`; returns the profile path, or undefined
+ * for `sandbox: none`.
+ */
+export declare function writeProfile(spec: SandboxSpec, paths: SandboxPaths, outDir: string): string | undefined;

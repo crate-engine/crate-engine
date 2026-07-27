@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# preview-tunnel — expose a rig's dev server to the operator's OWN devices over a
+# private, secure (HTTPS) link, so phone + desktop previews work from anywhere
+# WITHOUT public exposure. Pluggable provider; `tailscale` is the reference impl.
+# See docs/design/preview-tunnel.md.
+#
+# Usage: preview-tunnel <up|down|status|url> [PROJECT_PATH]
+#   Config (rig.conf, then env, then defaults):
+#     PREVIEW_PROVIDER    none|tailscale|custom   (default none = LAN DEV_URL, no tunnel)
+#     PREVIEW_DEV_PORT    dev port to expose       (else parsed from DEV_URL, else 3000)
+#     PREVIEW_HTTPS_PORT  tailnet HTTPS port        (default 443; MUST differ from any dev
+#                         port — dev binds 0.0.0.0 so a same-port serve collides. Tailscale
+#                         allows 443, 8443, 10000 — enough for three concurrent rigs.)
+#     PREVIEW_URL         resolved base; `up` writes it back to rig.conf (custom: set it yourself)
+set -uo pipefail
+
+CMD="${1:?usage: preview-tunnel <up|down|status|url> [PROJECT_PATH]}"
+PROJ="${2:-${PROJECT_PATH:-$(pwd)}}"
+[ -d "$PROJ" ] || { echo "preview-tunnel: no such dir: $PROJ" >&2; exit 1; }
+PROJ="$(cd "$PROJ" && pwd)"
+CONF="$PROJ/.agents/rig.conf"
+[ -f "$CONF" ] && . "$CONF"
+[ -f "$PROJ/.agents/dev.conf" ] && . "$PROJ/.agents/dev.conf"   # dev.conf-based targets (e.g. docket) carry DEV_PORT here
+
+PROVIDER="${PREVIEW_PROVIDER:-none}"
+PORT="${PREVIEW_DEV_PORT:-${DEV_PORT:-}}"
+if [ -z "$PORT" ] && [ -n "${DEV_URL:-}" ]; then PORT="$(printf '%s' "$DEV_URL" | grep -oE ':[0-9]+' | tail -1 | tr -d :)"; fi
+PORT="${PORT:-3000}"
+HPORT="${PREVIEW_HTTPS_PORT:-443}"
+TAG="$(basename "$PROJ")"
+
+# write KEY="value" into rig.conf — replace an existing line, else append.
+# P4-8: the write is the crate-core TS conf writer (BSD-safe by construction);
+# the old GNU `sed -i` silently failed on macOS, leaving PREVIEW_URL unwritten.
+_engine_bin() {
+  local self="${BASH_SOURCE[0]:-$0}" t
+  while [ -L "$self" ]; do t="$(readlink "$self")"; case "$t" in /*) self="$t";; *) self="$(dirname "$self")/$t";; esac; done
+  cd "$(dirname "$self")" && pwd -P
+}
+set_conf() {
+  local k="$1" v="$2"
+  [ -f "$CONF" ] || return 0
+  "$(_engine_bin)/../core/tools/conf-set" "$CONF" "$k" "$v"
+}
+
+ts_dnsname() {
+  tailscale status --json 2>/dev/null \
+    | python3 -c "import sys,json; print(json.load(sys.stdin).get('Self',{}).get('DNSName','').rstrip('.'))" 2>/dev/null
+}
+ts_url() {
+  local h; h="$(ts_dnsname)"; [ -n "$h" ] || return 1
+  if [ "$HPORT" = "443" ]; then echo "https://$h"; else echo "https://$h:$HPORT"; fi
+}
+require_tailscale() {
+  command -v tailscale >/dev/null 2>&1 || { echo "preview-tunnel: tailscale not installed" >&2; exit 1; }
+  tailscale status >/dev/null 2>&1 || { echo "preview-tunnel: tailscale not up / not logged in (sudo tailscale up)" >&2; exit 1; }
+}
+
+case "$PROVIDER" in
+  none)
+    case "$CMD" in
+      url)    echo "${PREVIEW_URL:-${DEV_URL:-}}";;
+      status) echo "$TAG: provider=none — previews use LAN DEV_URL (${DEV_URL:-unset}); no tunnel.";;
+      up|down) echo "$TAG: PREVIEW_PROVIDER=none — nothing to do (LAN baseline). Set =tailscale to enable.";;
+      *) echo "usage: preview-tunnel <up|down|status|url> [PROJECT_PATH]" >&2; exit 1;;
+    esac;;
+  custom)
+    case "$CMD" in
+      url)    echo "${PREVIEW_URL:-}";;
+      status) echo "$TAG: provider=custom — PREVIEW_URL=${PREVIEW_URL:-unset} (you manage the transport).";;
+      up|down) echo "$TAG: provider=custom — you manage the tunnel; PREVIEW_URL=${PREVIEW_URL:-unset}.";;
+      *) echo "usage: preview-tunnel <up|down|status|url> [PROJECT_PATH]" >&2; exit 1;;
+    esac;;
+  tailscale)
+    require_tailscale
+    case "$CMD" in
+      up)
+        # Target "localhost", not 127.0.0.1: dev servers (e.g. vite) often bind
+        # IPv6-only ::1, and a hardcoded v4 target 502s through the tunnel (P4-8 live find).
+        curl -fsS -o /dev/null --max-time 10 "http://localhost:$PORT/" 2>/dev/null \
+          || echo "preview-tunnel: warning — dev server not answering on localhost:$PORT (start it; serving anyway)" >&2
+        tailscale serve --bg --https="$HPORT" "http://localhost:$PORT" >/dev/null 2>&1 \
+          || { echo "preview-tunnel: tailscale serve failed (is Serve enabled on the tailnet?)" >&2; exit 1; }
+        URL="$(ts_url)" || { echo "preview-tunnel: could not resolve tailnet DNS name" >&2; exit 1; }
+        set_conf PREVIEW_URL "$URL"
+        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 40 "$URL/" 2>/dev/null)"
+        echo "UP   $TAG: $URL  ->  localhost:$PORT   [HTTPS $code]"
+        echo "     wrote PREVIEW_URL to $CONF"
+        ;;
+      down)
+        tailscale serve --https="$HPORT" off >/dev/null 2>&1 || true
+        echo "DOWN $TAG: tailnet HTTPS :$HPORT off (PREVIEW_URL left in rig.conf; clear it to force LAN)"
+        ;;
+      status)
+        echo "$TAG: provider=tailscale  dev=localhost:$PORT  https=:$HPORT"
+        echo "  resolved URL: $(ts_url 2>/dev/null || echo '(dns unresolved)')"
+        tailscale serve status 2>&1 | sed 's/^/  /' | head -14
+        ;;
+      url) ts_url;;
+      *) echo "usage: preview-tunnel <up|down|status|url> [PROJECT_PATH]" >&2; exit 1;;
+    esac;;
+  *) echo "preview-tunnel: unknown PREVIEW_PROVIDER='$PROVIDER' (none|tailscale|custom)" >&2; exit 1;;
+esac

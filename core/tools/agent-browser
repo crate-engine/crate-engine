@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# agent-browser — the QA/Designer interactive browser CLI (vercel-labs), shipped
+# IN-BOX as a crate-core dependency so seats never depend on a global npm install
+# (root-owned prefixes refuse `npm i -g`; the seat PATH already carries
+# core/tools per P3-1). Version pinned by core/package.json.
+set -euo pipefail
+self="${BASH_SOURCE[0]:-$0}"
+while [ -L "$self" ]; do t="$(readlink "$self")"; case "$t" in /*) self="$t";; *) self="$(dirname "$self")/$t";; esac; done
+CORE="$(cd "$(dirname "$self")/.." && pwd)"
+BIN="$CORE/node_modules/.bin/agent-browser"
+[ -x "$BIN" ] || { echo "agent-browser: not installed in-box — run: (cd $CORE && npm install)" >&2; exit 127; }
+exec "$BIN" "$@"

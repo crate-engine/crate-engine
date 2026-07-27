@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# rg — ripgrep, shipped IN-BOX via @vscode/ripgrep (platform binary in an
+# optional dep) so seats never depend on Homebrew/global installs (this Mac has
+# no brew — the P3-11b boot refused on it, correctly). Same pattern as the
+# agent-browser shim; version pinned by core/package.json.
+set -euo pipefail
+self="${BASH_SOURCE[0]:-$0}"
+while [ -L "$self" ]; do t="$(readlink "$self")"; case "$t" in /*) self="$t";; *) self="$(dirname "$self")/$t";; esac; done
+CORE="$(cd "$(dirname "$self")/.." && pwd)"
+for BIN in "$CORE"/node_modules/@vscode/ripgrep-*/bin/rg; do
+  [ -x "$BIN" ] && exec "$BIN" "$@"
+done
+echo "rg: not installed in-box — run: (cd $CORE && npm install)" >&2
+exit 127

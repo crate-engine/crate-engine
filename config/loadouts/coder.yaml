@@ -1,0 +1,40 @@
+# Coder seat loadout (P3-8) — the FIRST non-Pi manifest seat: first-party
+# Claude Code (flat, the operator's sub), wrapped in the standard wall. Claude
+# Code ships its own toolkit (vision §6.1), so no pi flags apply: the launch
+# line comes from the v1 claude adapter, the binder rides the orchestrator's
+# onboarding brief (v1 flow), and this manifest contributes what the WALL
+# needs — sandbox policy, doors, deps. LSP: the tsc floor rides cli_deps
+# (cap-lsp.md); pi-lsp/pi-shazam are Pi extensions — they belong to a future
+# Pi-staffed coder variant, never to this seat (P3-10 honesty correction).
+seat: coder
+agent: claude-code
+binder: config/coder.md
+append_system: []
+skills: []
+prompt_templates: []
+extensions: []
+cli_deps:
+  - name: git
+    check: command -v git
+  - name: node
+    check: command -v node
+  - name: npm
+    check: command -v npm
+policy:
+  tools: native          # informational — Claude Code brings its own tool layer
+  thinking: high         # unused by claude-code (schema floor)
+  default_model: opus
+  sandbox: standard
+  network: true
+  # P4-12: declared posture (was a launcher special-case). Legal ONLY because
+  # sandbox != none — the schema refuses a bypass seat without a wall.
+  permission_mode: bypassPermissions
+  sandbox_doors:
+    - "~/.npm"           # inheritance #3: nm-gate runs npm installs in worktrees
+    # nm-gate's throwaway build worktrees are SIBLINGS of the repo (deliberate
+    # v1 design — dev-server watchers rooted at the repo never see them), under
+    # one FIXED `.nmgate-wt/` parent. A plain path door opens exactly that dir
+    # and nothing else — expressible on BOTH backends (Seatbelt subpath / bwrap
+    # bind); a regex door has no bind-mount equivalent (T7-0, supersedes the
+    # P3-9 `<ref>-<pid>` regex door).
+    - "../.nmgate-wt"

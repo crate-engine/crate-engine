@@ -1,0 +1,94 @@
+# rig.conf — per-project Crate Engine settings.
+# Lives at <project>/.agents/rig.conf on the rig host, AND copied to your Mac rig
+# home (~/Documents/Codex/Claude-Control-Room/rig.conf) so the Mac-side scripts read it.
+# install.sh writes a starter copy with PROJECT/PROJECT_PATH filled in.
+# Authoritative for every project-specific value the config docs reference as {{TOKENS}}.
+#
+# MANDATORY: fill in every placeholder below before the rig works.
+
+# --- Mac-side (cmux layout) ------------------------------------------------
+WORKSPACE_NAME="CHANGE_ME"                    # the cmux workspace title for this rig
+WORKSPACE_END=""                              # title of the NEXT workspace (to bound the section); empty if only/last
+ORCH_TITLE="Orchestrator"
+CODER_TITLE="Coder"                           # Coder-station pane title in cmux (the agent staffing it is set below)
+REVIEWER_TITLE="Reviewer"
+DESIGNER_TITLE="CHANGE_ME"                    # Designer pane title as it appears in cmux
+TESTER_TITLE="QA"                             # QA/Tester pane title as it appears in cmux
+CTXMAX="1000000"
+
+# --- Staffing (which agent + model fills each station) ----------------------
+# Station -> agent (+ model). Each agent has an onboarding card at adapters/<agent>/.
+# Swap a station's agent/model here; the binder (config/<station>.md) never changes.
+# MODEL applies to model-selectable agents (e.g. claude: opus|sonnet). The coder's
+# "model" is its binary when CODER_AGENT=hermes (HERMES_BIN below), so CODER_MODEL
+# is only used when the coder is a model-selectable agent (e.g. claude).
+ORCH_AGENT="claude";     ORCH_MODEL="opus"
+CODER_AGENT="claude";    CODER_MODEL="opus"     # claude | codex | hermes(deepseek,host) | pi | aider | opencode | gemini | openclaw
+REVIEWER_AGENT="claude"; REVIEWER_MODEL="opus"
+DESIGNER_AGENT="claude"; DESIGNER_MODEL="sonnet"
+TESTER_AGENT="claude";   TESTER_MODEL="opus"
+
+# --- Host-side (Superman) --------------------------------------------------
+SUPERMAN_HOST="user@192.168.x.x"              # SSH target for the rig host
+SUPERMAN_IP="192.168.x.x"                     # reachable LAN IP of the rig host
+PROJECTS_ROOT="/mnt/data/projects"
+PROJECT="CHANGE_ME"                           # project folder name (install.sh auto-fills this)
+PROJECT_PATH="/mnt/data/projects/CHANGE_ME"   # absolute path (install.sh auto-fills this)
+DEV_URL="http://192.168.x.x:3000"             # dev server URL reachable from Mac
+HERMES_BIN="/home/user/.local/bin/hermes"     # path to the Hermes CLI on the rig host (Coder=hermes only)
+
+# --- Branding (build-preview card; neutral defaults — override per project) -
+# Drives the build-preview skill's card. Defaults are deliberately neutral so a
+# stranger's rig looks generic-professional; set these to brand the card as YOUR product.
+BRAND_NAME="Dev Preview"                      # name shown on the build-preview card
+BRAND_ACCENT="#3b82f6"                        # accent color (buttons, highlights, URL)
+BRAND_BG="#0d1117"                            # card background (dark)
+BRAND_FG="#ffffff"                            # foreground / text
+
+# --- Dev server supervision (bin/dev-server: systemd --user, auto-restart, mem-bounded) -
+DEV_BIND="0.0.0.0"                            # bind interface (0.0.0.0 = localhost + LAN, IP-change-safe)
+DEV_HEAP_MB="4096"                            # node --max-old-space-size for the dev worker
+DEV_MEMMAX="6G"                               # systemd MemoryMax cap (cross-team RAM protection)
+
+# --- Build/verify gate (bin/nm-gate + precheck.sh) --------------------------
+# The deterministic pre-handoff WALL: delta + typecheck + build (+ test) in an
+# isolated throwaway worktree; on a full green it records a SHA-tied gate_pass.
+NMGATE_ENFORCE="0"        # 1 = agentctl refuses code_ready for a HEAD with no matching gate_pass
+NMGATE_BUILD_FATAL="1"    # 0 = build ADVISORY (app needs prod-like env the gate lacks); delta+typecheck stay hard
+NMGATE_LINT_DELTA="0"     # 1 = per-file no-net-new lint gate: fail ONLY on errors a CHANGED file adds vs
+                          #     origin/main (legacy baseline debt ignored). 0 = lint advisory (whole-repo, never gates).
+
+# --- Runtime smoke rung (in the gate; PDR dev/pdr/runtime-smoke-rung.md) -----
+# DEMOTE-TO-CODE DOCTRINE: a check lives in gate code only when fast, truly
+# deterministic in isolation, and low-flake — a flaky gate false-FAILs every
+# code_ready, which is WORSE than an agent check. Advisory -> opt-in -> default-on.
+# The rung boots the BUILT worktree ephemerally (prod-first; GATE_START_CMD
+# overrides) and drives the AGENTS.md "## Critical Paths" routes GET-only:
+# 404/5xx/redirect-loop/console-errors fail; 401/403 = auth-gated skip (QA owns);
+# mobile load fatal-only (overflow stays advisory). Full gate runs only (--quick skips).
+SMOKE_ENFORCE="0"         # 1 = a smoke FAIL fails the gate. Rung CRASHES stay advisory
+                          #     even when enforced — rung-flake never false-FAILs a coder.
+SMOKE_READY_SECS="60"     # server ready-deadline before an honest advisory skip
+                          #     (AGENTS.md "## Smoke Rung" 'Ready deadline:' overrides)
+# SMOKE_ALLOWLIST=""      # extra console-noise substrings (favicon.ico always allowed)
+# GATE_START_CMD='npm run preview -- --port $GATE_PORT --strictPort'
+                          # prod-serve override (SINGLE-quoted; default: detected by shape —
+                          # next start / preview / start / in-box static server / dev fallback)
+
+# --- Review/QA JOIN physics (2026-07-24) ------------------------------------
+# In a parallel review+QA loop each verifier RECORDS its verdict
+# (`agentctl emit verdict --actor reviewer|tester result=approve|reject`).
+# The orchestrator-only ownership of approved/changes_needed is ALWAYS enforced;
+# this flag additionally refuses those transitions until BOTH verdicts are on
+# record since the last code_ready (advisory warning when 0).
+JOIN_ENFORCE="0"
+
+# --- Preview transport (how the human reaches dev previews on phone/desktop) -
+# See docs/design/preview-tunnel.md. Default = LAN DEV_URL (works same-WiFi only).
+# Set PREVIEW_PROVIDER=tailscale (recommended) for a private HTTPS link that works
+# anywhere, or =custom and set PREVIEW_URL yourself (bring-your-own).
+PREVIEW_PROVIDER="none"   # none | tailscale | custom
+PREVIEW_URL=""            # resolved (tailscale) or explicit (custom) HTTPS base; empty -> LAN DEV_URL
+PREVIEW_DEV_PORT=""       # which dev port to expose (default: parsed from DEV_URL)
+PREVIEW_HTTPS_PORT=""     # tailnet HTTPS port for the tunnel (default 443; use 8443/10000 for extra concurrent rigs)
+PREVIEW_DB_URL=""         # optional Neon READ-ONLY branch for dev/gate (defense-in-depth)

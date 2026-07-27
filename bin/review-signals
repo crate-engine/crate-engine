@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# review-signals <branch|ref> — deterministic deep-review signals from the diff.
+#
+# The mechanical leg of the deep-quality review mode (PHASE-7 T2b): computes,
+# from the branch's diff vs main, the signals that auto-escalate a review to
+# [DEEP_REVIEW] — ON BY DEFAULT, tunable per project in AGENTS.md's
+# "## Review Standards" section:
+#   - Deep review: off                    (posture opt-out)
+#   - Deep-review file boundary: 1500     (default 1000 lines)
+#   - Deep-review diff boundary: 800      (default 500 changed lines)
+#
+# Signals (each printed as its own line):
+#   CROSSED <file> <base>-><branch> lines   a file the PR pushed from under to
+#                                           over the boundary (pre-existing
+#                                           oversized files never trigger)
+#   DIFF <n> changed lines across <m> files
+# Verdict (always the last line; this is a SIGNAL, not a gate — exit 0 always):
+#   DEEP-REVIEW: RECOMMENDED (<reasons>) | no | disabled (AGENTS.md)
+set -u
+
+REF="${1:-}"
+[ -z "$REF" ] && { echo "usage: review-signals <branch|ref>" >&2; exit 2; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$REPO_ROOT" || { echo "review-signals: cannot cd to repo root" >&2; exit 2; }
+
+git fetch -q origin 2>/dev/null || true
+if git show-ref -q --verify "refs/remotes/origin/$REF"; then RESOLVED="origin/$REF"; else RESOLVED="$REF"; fi
+git rev-parse -q --verify "$RESOLVED" >/dev/null 2>&1 || { echo "review-signals: cannot resolve ref: $REF" >&2; exit 2; }
+if git rev-parse -q --verify origin/main >/dev/null 2>&1; then BASE="origin/main"; else BASE="main"; fi
+
+# ── AGENTS.md tuning (the project law; the branch's own copy wins if present) ──
+FILE_BOUNDARY=1000
+DIFF_BOUNDARY=500
+POSTURE="on"
+AGENTS_SRC="$(git show "$RESOLVED:AGENTS.md" 2>/dev/null || cat AGENTS.md 2>/dev/null || true)"
+if [ -n "$AGENTS_SRC" ]; then
+  RS="$(printf '%s\n' "$AGENTS_SRC" | awk '/^## Review Standards/{f=1;next} /^## /{f=0} f')"
+  case "$(printf '%s\n' "$RS" | grep -iE '^[-*] +Deep review:' | head -1 | tr '[:upper:]' '[:lower:]')" in
+    *off*|*disabled*|*no) POSTURE="off" ;;
+  esac
+  FB="$(printf '%s\n' "$RS" | grep -iE '^[-*] +Deep-review file boundary:' | head -1 | tr -dc '0-9')"
+  [ -n "$FB" ] && FILE_BOUNDARY="$FB"
+  DB="$(printf '%s\n' "$RS" | grep -iE '^[-*] +Deep-review diff boundary:' | head -1 | tr -dc '0-9')"
+  [ -n "$DB" ] && DIFF_BOUNDARY="$DB"
+fi
+
+if [ "$POSTURE" = "off" ]; then
+  echo "DEEP-REVIEW: disabled (AGENTS.md)"
+  exit 0
+fi
+
+REASONS=""
+
+# ── signal 1: a file the PR pushed from under to over the boundary ──────────
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  NEWL="$(git show "$RESOLVED:$f" 2>/dev/null | wc -l | tr -d ' ')"
+  BASEL="$(git show "$BASE:$f" 2>/dev/null | wc -l | tr -d ' ')"
+  [ -n "$NEWL" ] || continue
+  if [ "${NEWL:-0}" -gt "$FILE_BOUNDARY" ] && [ "${BASEL:-0}" -le "$FILE_BOUNDARY" ]; then
+    echo "CROSSED $f ${BASEL:-0}->${NEWL} lines (boundary $FILE_BOUNDARY)"
+    REASONS="$REASONS file-crossed-boundary"
+  fi
+done < <(git diff --name-only --diff-filter=d "$BASE...$RESOLVED" 2>/dev/null)
+
+# ── signal 2: oversized diff ─────────────────────────────────────────────────
+CHANGED="$(git diff --shortstat "$BASE...$RESOLVED" 2>/dev/null)"
+ADDS="$(printf '%s' "$CHANGED" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)"
+DELS="$(printf '%s' "$CHANGED" | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' || echo 0)"
+NFILES="$(printf '%s' "$CHANGED" | grep -oE '[0-9]+ file' | grep -oE '[0-9]+' || echo 0)"
+TOTAL=$(( ${ADDS:-0} + ${DELS:-0} ))
+echo "DIFF $TOTAL changed lines across ${NFILES:-0} files"
+if [ "$TOTAL" -gt "$DIFF_BOUNDARY" ]; then
+  REASONS="$REASONS oversized-diff(>$DIFF_BOUNDARY)"
+fi
+
+if [ -n "$REASONS" ]; then
+  echo "DEEP-REVIEW: RECOMMENDED ($(echo "$REASONS" | xargs))"
+else
+  echo "DEEP-REVIEW: no"
+fi
+exit 0

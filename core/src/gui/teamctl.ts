@@ -1,0 +1,300 @@
+// PHASE-8 T3 — the viewer's CONTROL surface (the first non-glass GUI layer):
+// the orchestrator chat + the merge-gate cards. Both are thin front-ends
+// over machinery that already exists — deliver (mailbox) and agentctl emit
+// gate_release (the "merge go" physics). The state machine stays the truth;
+// this module only reads it and asks the operator's authorizations of it.
+import { execFileSync } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { parseRigConf } from "../staffing.js";
+
+function agentctl(projectRoot: string): string {
+  return join(projectRoot, ".agents", "bin", "agentctl.py");
+}
+
+/** Local naive ISO seconds — the SAME shape agentctl's now() stamps on
+ * mirror lines, so merged chat threads sort correctly. */
+function localIso(): string {
+  const d = new Date();
+  const p = (n: number): string => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/** 2d durable echo/ack (grilled 2026-07-25): append one line to a role's
+ * inbox audit mirror WITHOUT waking any runner — the mirror is what the
+ * chat thread renders, so a write here is durably in the thread. Newlines
+ * are escaped so the line-oriented parser can never truncate a message.
+ * agentctl's `[iso] (sender) text` format, verbatim. */
+export function mirrorNote(projectRoot: string, role: string, sender: string, text: string): void {
+  const inboxDir = join(projectRoot, ".agents", "state", "inbox");
+  mkdirSync(inboxDir, { recursive: true });
+  appendFileSync(join(inboxDir, `${role}.md`), `[${localIso()}] (${sender}) ${text.replaceAll("\n", "\\n")}\n`);
+}
+
+/** TS port of agentctl's operator_released(): True iff THIS task's gate is
+ * armed (approved) and an operator GATE_RELEASE arrived after the arming,
+ * unconsumed by a later deployed/reopen. Used by releaseGate to ABSORB a
+ * repeat "merge go" instead of queueing a duplicate [MERGE] order. */
+export function gateAlreadyReleased(projectRoot: string, task: string): boolean {
+  const log = join(projectRoot, ".agents", "state", "events.log");
+  if (!existsSync(log)) return false;
+  const wanted = task && task !== "(single loop)" ? task : "";
+  let armed = false;
+  let released = false;
+  for (const raw of readFileSync(log, "utf8").split("\n")) {
+    if (!raw.trim() || raw.trimStart().startsWith("#")) continue;
+    const toks = raw.split(/\s+/);
+    const evt = toks[1] ?? "";
+    let rowTask: string | undefined;
+    let actor = "";
+    for (const t of toks) {
+      if (t.startsWith("task=")) rowTask = t.slice(5);
+      else if (t.startsWith("branch=") && rowTask === undefined) rowTask = t.slice(7);
+      else if (t.startsWith("actor=")) actor = t.slice(6);
+    }
+    if (wanted && rowTask !== undefined && rowTask !== wanted) continue;
+    if (evt === "GATE_RELEASE" && actor === "operator") {
+      if (armed) released = true;
+    } else if (evt === "APPROVED" || toks.includes("state=approved")) {
+      armed = true;
+      released = false; // a fresh approval needs a fresh release
+    } else if (toks.includes("state=deployed") || toks.includes("state=implementing")) {
+      armed = false;
+      released = false; // merged or reopened
+    }
+  }
+  return armed && released;
+}
+
+/** Current state per task (approved tasks are the pending merge gates).
+ * Mirrors agentctl's fold: task= lines drive per-task, else the scalar. */
+function taskStates(projectRoot: string): { scalar: string; tasks: Record<string, string> } {
+  const log = join(projectRoot, ".agents", "state", "events.log");
+  let scalar = "down";
+  const tasks: Record<string, string> = {};
+  if (!existsSync(log)) return { scalar, tasks };
+  for (const raw of readFileSync(log, "utf8").split("\n")) {
+    if (!raw.trim() || raw.trimStart().startsWith("#")) continue;
+    const toks = raw.split(/\s+/);
+    let task: string | undefined;
+    let st: string | undefined;
+    for (const t of toks) {
+      if (t.startsWith("task=")) task = t.slice(5);
+      else if (t.startsWith("state=") && t.slice(6)) st = t.slice(6);
+    }
+    if (!st) continue;
+    if (task) tasks[task] = st;
+    else scalar = st;
+  }
+  return { scalar, tasks };
+}
+
+export interface GateCard {
+  task: string; // branch (or "(single loop)")
+  branch: string;
+  deploysTo: string;
+  reviewOk: boolean;
+  qaOk: boolean;
+}
+
+/** Best-effort deploy target for the card (honest, never invented): rig.conf
+ * DEPLOY_TARGET/PROD_URL, else the git remote host, else "main". */
+function deployTarget(projectRoot: string, conf: Record<string, string>): string {
+  if (conf.DEPLOY_TARGET) return conf.DEPLOY_TARGET;
+  if (conf.PROD_URL) return conf.PROD_URL;
+  try {
+    const url = execFileSync("git", ["remote", "get-url", "origin"], { cwd: projectRoot, encoding: "utf8" }).trim();
+    const m = url.match(/[/:]([^/]+\/[^/]+?)(?:\.git)?$/);
+    if (m) return `${m[1]} (main)`;
+  } catch { /* no remote */ }
+  return "main";
+}
+
+/** Did the given task record a green Review / QA verdict since code_ready?
+ * Reads the reviewer/tester state files (the verdict homes). Best-effort. */
+function verdicts(projectRoot: string): { reviewOk: boolean; qaOk: boolean } {
+  const read = (seat: string): string => {
+    const f = join(projectRoot, ".agents", "state", `${seat}.md`);
+    return existsSync(f) ? readFileSync(f, "utf8") : "";
+  };
+  const rv = read("reviewer");
+  const qa = read("tester");
+  return {
+    reviewOk: /APPROVED|approved/.test(rv) && !/CHANGES_NEEDED|changes_needed/.test(rv.split("## ")[0] ?? rv),
+    qaOk: qaGreen(qa),
+  };
+}
+
+/** W4 finding #3 (2026-07-13, live): the tester wrote `status:
+ * partial-verification` + "Verified the main page…" — the old prose regex
+ * read "verified" as qa-green, the operator released, and the orchestrator
+ * (reading the nuance) REOPENED. The panel and the orchestrator must read one
+ * truth: green requires a CLEAN pass signal in the CURRENT status (never the
+ * history log), and any partial/fail/bug marker vetoes. */
+export function qaGreen(qa: string): boolean {
+  const head = qa.split(/\r?\nLog:/)[0] ?? qa; // current status only — the log is history
+  if (/partial|\bFAIL(ED)?\b|BUGS_FOUND|BLOCKER|CHANGES_NEEDED/i.test(head)) return false;
+  const status = head.match(/^status:\s*(.+)$/im)?.[1]?.trim().toLowerCase();
+  if (status) return /^(pass|passed|verified|green|ok)\b/.test(status);
+  return /\[PASS\]|verdict:\s*PASS|\bPASS\b/.test(head);
+}
+
+/** Tasks currently at `approved` = pending merge gates awaiting "merge go". */
+export function pendingGates(projectRoot: string): GateCard[] {
+  const conf = parseRigConf(readFileSync(join(projectRoot, ".agents", "rig.conf"), "utf8"));
+  const { scalar, tasks } = taskStates(projectRoot);
+  const dep = deployTarget(projectRoot, conf);
+  const v = verdicts(projectRoot);
+  const cards: GateCard[] = [];
+  const approved = Object.entries(tasks).filter(([, s]) => s === "approved");
+  if (approved.length > 0) {
+    for (const [task] of approved) cards.push({ task, branch: task, deploysTo: dep, ...v });
+  } else if (scalar === "approved") {
+    let branch = "HEAD";
+    try { branch = execFileSync("git", ["branch", "--show-current"], { cwd: projectRoot, encoding: "utf8" }).trim() || "HEAD"; } catch { /* */ }
+    cards.push({ task: "(single loop)", branch, deploysTo: dep, ...v });
+  }
+  return cards;
+}
+
+/** The operator releases a gate by typing the phrase. Validates here AND lets
+ * agentctl enforce it (defense in depth); returns the emit's output. */
+export function releaseGate(projectRoot: string, task: string, phrase: string): { ok: boolean; out: string; absorbed?: boolean } {
+  if (phrase.trim().toLowerCase() !== "merge go") {
+    return { ok: false, out: 'the release phrase must be exactly "merge go".' };
+  }
+  const branchNote = task && task !== "(single loop)" ? ` ${task}` : " the approved branch";
+  // 2d durable echo (grilled 2026-07-25): the operator's words land in the
+  // thread's source of truth BEFORE anything else happens — a "merge go"
+  // must never vanish, whatever the release path does next.
+  mirrorNote(projectRoot, "orchestrator", "operator", phrase.trim());
+  // 2d dedupe (absorb, don't duplicate): a gate that is already released
+  // and unconsumed means a repeat "merge go" — emit nothing, mail nobody,
+  // acknowledge honestly. First release wins.
+  if (gateAlreadyReleased(projectRoot, task)) {
+    mirrorNote(projectRoot, "operator", "engine", `Already released — the coder is merging${branchNote}; DEPLOYED will confirm.`);
+    return { ok: true, out: "already released — repeat absorbed (no duplicate merge order)", absorbed: true };
+  }
+  const args = [agentctl(projectRoot), "emit", "gate_release", "--actor", "operator", "phrase=merge go"];
+  if (task && task !== "(single loop)") args.push(`branch=${task}`);
+  try {
+    const out = execFileSync("python3", args, { cwd: projectRoot, encoding: "utf8" });
+    // SPEED LAW (2026-07-14): the go routes STRAIGHT to the coder — the
+    // orchestrator's [MERGE] relay added no judgment (the gate is physics:
+    // agentctl refuses `deployed` without this armed+released gate) and cost
+    // two full turns at the most human-visible moment. The orchestrator
+    // learns via the mechanical [DEPLOYED] handoff and closes the loop.
+    execFileSync("python3", [
+      agentctl(projectRoot), "deliver", "coder", "--from", "operator",
+      `[MERGE]${branchNote} — the operator typed "merge go"; the gate is released. Merge into main now and emit deployed.`,
+    ], { cwd: projectRoot, encoding: "utf8" });
+    // 2d mechanical ack (zero model turns — the speed-law mail doctrine):
+    // an irreversible action gets an instant, honest, ENGINE-voiced receipt.
+    mirrorNote(projectRoot, "operator", "engine", `Merge released — the coder is merging${branchNote}; DEPLOYED will confirm.`);
+    return { ok: true, out };
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string };
+    return { ok: false, out: (err.stdout ?? "") + (err.stderr ?? "") };
+  }
+}
+
+export interface ChatMessage {
+  /** engine = the mechanical third voice (2d): acks written by code, never
+   * attributed to the orchestrator — physics is not conversation. */
+  from: "operator" | "orchestrator" | "engine";
+  at: string;
+  text: string;
+}
+
+/** The one-to-one thread: operator→orchestrator (the inbox audit mirror) +
+ * orchestrator/engine→operator (the operator mailbox), merged in time
+ * order. The chat IS the conversation, rendered from real artifacts. */
+export function chatHistory(projectRoot: string, limit = 40): ChatMessage[] {
+  const msgs: ChatMessage[] = [];
+  // Audit lines are `[iso] (sender) message`. The chat is ONLY the
+  // operator↔orchestrator thread — inter-agent deliveries to the
+  // orchestrator (coder/reviewer/QA verdicts) are filtered OUT by sender.
+  // Escaped newlines are restored for display (2d multi-line fix); the
+  // maildir-flavored `iso | from | body` mirror lines (mailbox.ts) parse too.
+  const parse = (line: string): { at: string; sender: string; text: string } | undefined => {
+    const m = line.match(/^\[([^\]]+)\]\s+\(([^)]+)\)\s+(.*)$/);
+    if (m) return { at: m[1]!, sender: m[2]!, text: m[3]!.replaceAll("\\n", "\n") };
+    const pipe = line.match(/^(\d{4}-\d{2}-\d{2}T\S+)\s+\|\s+([^|]+?)\s+\|\s(.*)$/);
+    if (pipe) return { at: pipe[1]!, sender: pipe[2]!, text: pipe[3]!.replaceAll("\\n", "\n") };
+    const legacy = line.match(/^\[([^\]]+)\]\s+(.*)$/); // pre-sender format
+    if (legacy) return { at: legacy[1]!, sender: "operator", text: legacy[2]! };
+    return undefined;
+  };
+  // operator → orchestrator: only messages whose sender is the operator, and
+  // never an agent verdict (belt: a seat that forgets --from defaults to
+  // "operator" — those start with a [VERDICT] tag and are not human chat).
+  const isVerdict = (t: string): boolean => /^\[(PASS|FAIL|APPROVED|CHANGES_NEEDED|BLOCKER|DEPLOYED|MERGE)/i.test(t.trim());
+  const inbound = join(projectRoot, ".agents", "state", "inbox", "orchestrator.md");
+  if (existsSync(inbound)) {
+    for (const line of readFileSync(inbound, "utf8").split("\n")) {
+      const p = parse(line);
+      if (p && p.sender === "operator" && !isVerdict(p.text)) msgs.push({ from: "operator", at: p.at, text: p.text });
+    }
+  }
+  // orchestrator/engine → operator: the operator's mailbox. The sender tag
+  // decides the voice — mechanical lines render as the engine, never as the
+  // orchestrator speaking words it didn't say.
+  const outbound = join(projectRoot, ".agents", "state", "inbox", "operator.md");
+  if (existsSync(outbound)) {
+    for (const line of readFileSync(outbound, "utf8").split("\n")) {
+      const p = parse(line);
+      if (p) msgs.push({ from: p.sender === "engine" ? "engine" : "orchestrator", at: p.at, text: p.text });
+    }
+  }
+  msgs.sort((a, b) => a.at.localeCompare(b.at));
+  return msgs.slice(-limit);
+}
+
+export interface Preview {
+  url: string;
+  route: string;
+  label: string;
+  from: string;
+  at: string;
+}
+
+/** PHASE-8 T5: pending previews (pages flagged for the human's eyes). */
+export function pendingPreviews(projectRoot: string): Preview[] {
+  const f = join(projectRoot, ".agents", "state", "preview.json");
+  if (!existsSync(f)) return [];
+  try {
+    const items = JSON.parse(readFileSync(f, "utf8")) as Preview[];
+    return Array.isArray(items) ? items : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The human's verdict on a preview: clear it, and (if changes) tell the
+ * orchestrator. approve=true is the design-lock confirm. */
+export function resolvePreview(projectRoot: string, approve: boolean, note?: string): { ok: boolean } {
+  const agentctlPath = join(projectRoot, ".agents", "bin", "agentctl.py");
+  try {
+    execFileSync("python3", [agentctlPath, "preview", "clear"], { cwd: projectRoot });
+    const msg = approve
+      ? "The operator reviewed the preview and it looks good — proceed."
+      : `The operator wants changes to the preview: ${note ?? "(see notes)"}`;
+    execFileSync("python3", [agentctlPath, "deliver", "orchestrator", "--from", "operator", msg], { cwd: projectRoot });
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/** Operator sends a message to the orchestrator (deliver → its mailbox). */
+export function sendToOrchestrator(projectRoot: string, text: string): { ok: boolean; out: string } {
+  try {
+    const out = execFileSync("python3", [agentctl(projectRoot), "deliver", "orchestrator", "--from", "operator", text], {
+      cwd: projectRoot, encoding: "utf8",
+    });
+    return { ok: true, out };
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string };
+    return { ok: false, out: (err.stdout ?? "") + (err.stderr ?? "") };
+  }
+}

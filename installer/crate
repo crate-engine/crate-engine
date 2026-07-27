@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# crate — the shipped Crate Engine CLI (P6-0). Runs DIST-ONLY from the user
+# tier's engine clone (~/.crate/engine); no tsx, no dev repo. Installed to
+# ~/.local/bin/crate by installer/get-crate.sh.
+set -euo pipefail
+
+ENGINE="${CRATE_ENGINE_DIR:-$HOME/.crate/engine}"
+CLI="$ENGINE/core/dist/cli.js"
+
+if [ ! -f "$CLI" ]; then
+  echo "crate: no engine at $ENGINE (or its core/dist is missing)." >&2
+  echo "  fix: run the installer —  curl -fsSL <get-crate.sh URL> | bash" >&2
+  echo "  (dev override: CRATE_ENGINE_DIR=<clone> crate ...)" >&2
+  exit 1
+fi
+if [ ! -d "$ENGINE/core/node_modules" ]; then
+  echo "crate: engine core deps missing — one-time: cd $ENGINE/core && npm install" >&2
+  exit 1
+fi
+
+exec node "$CLI" "$@"

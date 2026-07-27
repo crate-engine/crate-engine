@@ -1,0 +1,26 @@
+# Structured handoff definitions. agentctl.py reads these.
+# Format under handoffs:
+#   <name>: <transition> | <from_role> | <to_role> | <signal> | <data fields csv>
+handoffs:
+  design_locked: design_locked | designer | coder | [DESIGN_LOCKED] | page,branch,changes
+  # SPEED LAW (2026-07-14): code_ready fans out to BOTH verifiers mechanically —
+  # Reviewer + QA start in parallel the instant the coder emits; no orchestrator
+  # relay turn routes them. The orchestrator owns only the JOIN (both verdicts).
+  code_ready: code_ready | coder | reviewer,tester | [CODE_READY] | branch,commit,summary
+  # THE JOIN IS PHYSICS (2026-07-24): each verifier RECORDS its verdict — an
+  # always-event that also mails the orchestrator mechanically (one command =
+  # record + report). agentctl refuses approved/changes_needed in a parallel
+  # loop from anyone but the orchestrator, and (rig.conf JOIN_ENFORCE=1) until
+  # BOTH verdicts are on record since the last code_ready.
+  verdict: verdict | reviewer,tester | orchestrator | [VERDICT] | branch,result,report
+  # changes_needed is the orchestrator's CONSOLIDATED rework signal (one round,
+  # both verifiers' findings merged) — mailed to the coder mechanically.
+  changes_needed: changes_needed | orchestrator | coder | [CHANGES_NEEDED] | branch
+  # approved is the JOIN: the orchestrator emits it only after BOTH verdicts are on record and green, then holds for the human's go before [MERGE]. Non-signaling.
+  approved: approved | orchestrator |  | [APPROVED] | branch
+  deployed: deployed | coder | orchestrator | [DEPLOYED] | branch
+  bugs_found: bugs_found | tester | orchestrator | [BUGS_FOUND] | page
+  fix_ready: code_ready | coder | reviewer,tester | [FIX_READY] | branch
+  retest: retest | coder | tester | [RETEST] | branch
+  verified: verified | tester | orchestrator | [VERIFIED] | page
+  rollback: rollback | orchestrator | coder | [ROLLBACK] | branch,reason
