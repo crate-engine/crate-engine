@@ -39,6 +39,31 @@ const MODELS = [
         billing: "flat-rate (Claude subscription, first-party harness)",
         verifiedFor: ["coder"],
     },
+    // ── 2026-08-10 (Adam, fresh-install battle test): the FULL first-party
+    // Claude family, not just Opus. Same alias mechanism the proven opus entry
+    // uses (`claude --model <alias>`); verified nowhere yet, so the page labels
+    // them "not yet battle-tested" until each passes a seat ladder.
+    {
+        agent: "claude",
+        model: "fable",
+        display: "Claude Fable 5 (Claude Code)",
+        billing: "flat-rate (Claude subscription that includes Fable — Anthropic's top model tier)",
+        verifiedFor: [],
+    },
+    {
+        agent: "claude",
+        model: "sonnet",
+        display: "Claude Sonnet (Claude Code)",
+        billing: "flat-rate (Claude subscription, first-party harness)",
+        verifiedFor: [],
+    },
+    {
+        agent: "claude",
+        model: "haiku",
+        display: "Claude Haiku (Claude Code) — fastest, lightest",
+        billing: "flat-rate (Claude subscription, first-party harness)",
+        verifiedFor: [],
+    },
     {
         agent: "codex",
         // Empty on purpose: codex uses the ACCOUNT'S default model. Passing a
