@@ -19,8 +19,13 @@ if [ ! -d "$ENGINE/core/node_modules" ]; then
 fi
 
 # Prefer the installer's bundled node (linux hosts whose system node is <22 —
-# the engine's `engines` floor); else the PATH node.
+# the engine's `engines` floor); else the PATH node. PREPEND it to PATH too:
+# everything the engine spawns (agent CLIs like pi run via `env node`) must
+# see the same modern node, or a seat dies under the stale system node.
 NODE_BIN="node"
-[ -x "$HOME/.crate/tools/node/bin/node" ] && NODE_BIN="$HOME/.crate/tools/node/bin/node"
+if [ -x "$HOME/.crate/tools/node/bin/node" ]; then
+  NODE_BIN="$HOME/.crate/tools/node/bin/node"
+  export PATH="$HOME/.crate/tools/node/bin:$PATH"
+fi
 
 exec "$NODE_BIN" "$CLI" "$@"
