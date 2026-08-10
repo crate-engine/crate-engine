@@ -27,5 +27,12 @@ if [ -x "$HOME/.crate/tools/node/bin/node" ]; then
   NODE_BIN="$HOME/.crate/tools/node/bin/node"
   export PATH="$HOME/.crate/tools/node/bin:$PATH"
 fi
+# ~/.local/bin is where agent CLIs (pi/claude/codex) conventionally live; a
+# non-interactive launch (ssh, systemd) has a bare PATH that misses it — the
+# engine must still FIND the user's crew.
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) : ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
 
 exec "$NODE_BIN" "$CLI" "$@"
