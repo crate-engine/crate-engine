@@ -56,7 +56,8 @@ banner() {
 #   run_long <label> <fail-message> <cmd> [args…]
 run_long() {
   local rl_label="$1" rl_fail="$2"; shift 2
-  local rl_log; rl_log="$(mktemp -t crate-install)"
+  # portable across BSD/GNU mktemp (GNU refuses a template with no X's)
+  local rl_log; rl_log="$(mktemp "${TMPDIR:-/tmp}/crate-install.XXXXXX")"
   printf '  %s ' "$rl_label"
   "$@" >"$rl_log" 2>&1 &
   local rl_pid=$!
