@@ -116,7 +116,9 @@ elif [ "$OS" = "Darwin" ]; then
     "node failed to install (full output above)" \
     brew install node
 else
-  NODE_VER="v22.14.0"
+  # Latest v22 line (agent CLIs track it — pi needs ≥22.19; a stale pin here
+  # silently downgrades what npm resolves for the user's agents).
+  NODE_VER="v22.23.2"
   case "$(uname -m)" in
     x86_64) NODE_ARCH="x64" ;;
     aarch64|arm64) NODE_ARCH="arm64" ;;
