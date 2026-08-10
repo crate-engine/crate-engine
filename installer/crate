@@ -18,4 +18,9 @@ if [ ! -d "$ENGINE/core/node_modules" ]; then
   exit 1
 fi
 
-exec node "$CLI" "$@"
+# Prefer the installer's bundled node (linux hosts whose system node is <22 —
+# the engine's `engines` floor); else the PATH node.
+NODE_BIN="node"
+[ -x "$HOME/.crate/tools/node/bin/node" ] && NODE_BIN="$HOME/.crate/tools/node/bin/node"
+
+exec "$NODE_BIN" "$CLI" "$@"

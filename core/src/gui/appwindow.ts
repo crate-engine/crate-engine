@@ -76,3 +76,29 @@ export function openAppWindow(
   child.unref(); // the window outlives `crate open`
   return { mode: plan.mode };
 }
+
+/** Can this host show a window at all? linux with no DISPLAY/WAYLAND_DISPLAY
+ * (an ssh session, a server) cannot — `crate open` then becomes a headless
+ * server boot + a printed operator handoff instead of a dead xdg-open. */
+export function hasDisplay(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (platform !== "linux") return true;
+  return Boolean(env.DISPLAY || env.WAYLAND_DISPLAY);
+}
+
+/** The operator handoff printed on a display-less host: the server is UP —
+ * here is exactly how to put its window on your laptop. Pure (testable). */
+export function headlessHandoff(teamUrl: string): string[] {
+  const u = new URL(teamUrl);
+  const port = u.port || "80";
+  return [
+    "Crate Engine is UP — headless server (this machine has no display).",
+    "Put the ⚡ app window on your laptop:",
+    "  crate open --remote <this-host>          (a Mac with Crate installed — does everything)",
+    "or by hand, from the laptop:",
+    `  ssh -N -L ${port}:127.0.0.1:${port} <you>@<this-host>     (leave it running)`,
+    `  then open   ${teamUrl}`,
+  ];
+}

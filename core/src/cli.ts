@@ -205,6 +205,62 @@ switch (command) {
     break;
   }
   case "open": {
+    // crate open --remote <ssh-host> — the Mac side of the Linux headless
+    // server (PDR dev/pdr/linux-headless-server.md): ensure the app is up on
+    // the host (its own `crate open` headless-boots and writes ~/.crate/app-url),
+    // tunnel its loopback port here, open the local ⚡ window on the tunnel.
+    const rIdx = rest.indexOf("--remote");
+    if (rIdx !== -1) {
+      const host = rest[rIdx + 1];
+      if (!host || host.startsWith("--")) fail("crate open --remote <ssh-host> — the ssh host is missing.");
+      const { execFile } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      const sh = promisify(execFile);
+      const { parseAppUrl, tunnelPlan } = await import("./gui/remote.js");
+      const { openAppWindow: openWin } = await import("./gui/appwindow.js");
+      try {
+        console.log(`crate open --remote: ensuring the app server is up on ${host} (headless)...`);
+        await sh("ssh", ["-o", "BatchMode=yes", host!, '"$HOME/.local/bin/crate" open'], { timeout: 120000 });
+        const { stdout } = await sh("ssh", ["-o", "BatchMode=yes", host!, "cat ~/.crate/app-url"], { timeout: 20000 });
+        const app = parseAppUrl(stdout);
+        if (!app) {
+          throw new Error(
+            `no app url on ${host} (~/.crate/app-url) — is Crate installed there?\n` +
+              `  install: ssh ${host}, then  curl -fsSL https://crate-engine.ai/get | bash`,
+          );
+        }
+        const plan = tunnelPlan(app, host!);
+        const { spawn: sp } = await import("node:child_process");
+        const tun = sp("ssh", plan.tunnelArgv, { detached: true, stdio: "ignore" });
+        tun.unref(); // the tunnel outlives this command — it IS the transport
+        let up = false;
+        const t0 = Date.now();
+        while (Date.now() - t0 < 15000 && !up) {
+          await new Promise((r) => setTimeout(r, 500));
+          try {
+            await fetch(plan.probeUrl, { signal: AbortSignal.timeout(1500) });
+            up = true; // any HTTP answer through the tunnel = alive
+          } catch {
+            /* keep polling */
+          }
+        }
+        if (!up) {
+          throw new Error(
+            `the tunnel to ${host}:${app.port} did not come up — is local port ${app.port} taken? ` +
+              `(stop whatever holds it — a local crate app? — and retry)`,
+          );
+        }
+        const win = openWin(plan.teamUrl, { home: process.env.HOME ?? "" });
+        console.log(
+          `Crate Engine (on ${host}) is open — ${win.mode === "app" ? "the ⚡ app window" : "your browser"} is loading through the ssh tunnel.`,
+        );
+        console.log(plan.teamUrl);
+        console.log(`(the tunnel runs in the background — close it later with:  pkill -f "127.0.0.1:${app.port}")`);
+      } catch (e) {
+        fail(e instanceof Error ? e.message : String(e));
+      }
+      break;
+    }
     // crate open [--project <path>] — HEADLESS + app-mode window (2.1). Start
     // the GUI server headless, open the chromeless ⚡ app window, boot the team.
     // cmux was retired in 2.1 (T8) — this is the only boot path.
@@ -235,7 +291,7 @@ switch (command) {
     }
     {
       try {
-        const { openAppWindow } = await import("./gui/appwindow.js");
+        const { openAppWindow, hasDisplay, headlessHandoff } = await import("./gui/appwindow.js");
         const { writeLastProject } = await import("./usertier.js");
         let url = await appAlive();
         if (url && project) {
@@ -278,7 +334,10 @@ switch (command) {
         // the legacy /health welcome — carry the token + the active project.
         const u = new URL(url);
         const teamUrl = `${u.origin}/team?token=${u.searchParams.get("token") ?? ""}${project ? `&project=${encodeURIComponent(project)}` : ""}`;
-        const win = openAppWindow(teamUrl, { home });
+        // A display-less host (linux server over ssh) boots the server exactly
+        // the same but hands the WINDOW to the operator's laptop instead of
+        // dead-ending in xdg-open (PDR linux-headless-server).
+        const win = hasDisplay() ? openAppWindow(teamUrl, { home }) : undefined;
         // boot the team (GUI-owned lifecycle) so the operator lands on a live rig
         if (project) {
           try {
@@ -289,8 +348,12 @@ switch (command) {
             });
           } catch { /* the Team menu can boot it if this misses */ }
         }
-        console.log(`Crate Engine is open — ${win.mode === "app" ? "the ⚡ app window" : "your browser"} is loading${project ? ` (${project})` : ""}.`);
-        console.log(teamUrl);
+        if (win) {
+          console.log(`Crate Engine is open — ${win.mode === "app" ? "the ⚡ app window" : "your browser"} is loading${project ? ` (${project})` : ""}.`);
+          console.log(teamUrl);
+        } else {
+          console.log(headlessHandoff(teamUrl).join("\n"));
+        }
         break;
       } catch (e) {
         fail(e instanceof Error ? e.message : String(e));

@@ -23,3 +23,10 @@ export declare function openAppWindow(url: string, opts?: {
 }): {
     mode: "app" | "browser";
 };
+/** Can this host show a window at all? linux with no DISPLAY/WAYLAND_DISPLAY
+ * (an ssh session, a server) cannot — `crate open` then becomes a headless
+ * server boot + a printed operator handoff instead of a dead xdg-open. */
+export declare function hasDisplay(platform?: NodeJS.Platform, env?: NodeJS.ProcessEnv): boolean;
+/** The operator handoff printed on a display-less host: the server is UP —
+ * here is exactly how to put its window on your laptop. Pure (testable). */
+export declare function headlessHandoff(teamUrl: string): string[];
