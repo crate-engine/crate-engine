@@ -99,6 +99,20 @@ switch (command) {
             else {
                 console.log(`overlay: all entries compatible (no base changes under your customizations)`);
             }
+            // Shim drift (Superman gate, 2026-08-10): update pulled the engine but
+            // the ~/.local/bin/crate LAUNCHER stayed whatever the installer laid
+            // down — shim fixes never reached installed machines. Refresh it from
+            // the updated engine (safe mid-run: the shim already exec'd into node).
+            try {
+                const { copyFileSync: cpf, chmodSync, existsSync: exs } = await import("node:fs");
+                const shimSrc = join(HOME, ".crate", "engine", "installer", "crate");
+                const shimDst = join(HOME, ".local", "bin", "crate");
+                if (exs(shimSrc) && exs(shimDst)) {
+                    cpf(shimSrc, shimDst);
+                    chmodSync(shimDst, 0o755);
+                }
+            }
+            catch { /* a read-only ~/.local/bin never blocks the engine update */ }
             // Run #14 (Adam): he updated mid-session, pressed a button in the STILL-
             // RUNNING app, and got pre-update behavior — a running process keeps the
             // code it loaded at launch (the /login lesson, app edition). Say so.
