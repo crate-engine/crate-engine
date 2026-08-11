@@ -14,7 +14,7 @@ import { autoReviveEnabled, makeAutoReviver, type Liveness, type ReviveNote } fr
 import { deriveBrainRoot } from "../launcher.js";
 import { loadLoadout, loadoutPath, SEATS, type Seat } from "../manifest.js";
 import { discoverPiModels } from "../pidiscovery.js";
-import { loadUserDefaults, parseRigConf, resolveSeatDetailed } from "../staffing.js";
+import { loadUserDefaults, parseRigConf, resolveSeatDetailed, RIG_PREFIX, updateRigStaffing } from "../staffing.js";
 import { readLastProject, seedDefaultsIfAbsent, tierPaths, updateEngine, writeLastProject } from "../usertier.js";
 import { join } from "node:path";
 import { attachPage, staffingPage, startPage, welcomePage } from "./pages.js";
@@ -560,7 +560,7 @@ export async function startGuiServer(
           const confFile = join(proj, ".agents", "rig.conf");
           if (!existsSync(confFile)) return json(res, 400, { error: "no rig.conf — attach the project first" });
           const conf = parseRigConf(readFileSync(confFile, "utf8"));
-          const agentKey = `${seat === "tester" ? "TESTER" : seat.toUpperCase()}_AGENT`;
+          const agentKey = `${RIG_PREFIX[seat]}_AGENT`; // rig.conf keys use ORCH, not ORCHESTRATOR
           const { startSeatTty } = await import("../ptyseat.js");
           const r = await startSeatTty({
             projectRoot: proj,
@@ -573,6 +573,33 @@ export async function startGuiServer(
           });
           if (!r.ok) return json(res, "busy" in r && r.busy ? 409 : 400, r);
           return json(res, 200, { ok: true, reattached: r.reattached, agent: r.tty.agent });
+        }
+        case "POST /api/staffing/seat": {
+          // Restaff a seat ON THE FLY (Adam, 2026-08-10): write the RIG's own
+          // staffing line (project-scoped — user defaults untouched), close
+          // any open wheel on the seat, and relaunch its runner if the team
+          // is booted. A restaffed agent gets a fresh session by the runner's
+          // own agent-mismatch rule — no stale memory crosses agents.
+          const proj = url.searchParams.get("project") ?? state.project;
+          if (!proj) return json(res, 400, { error: "no project attached" });
+          const body = await readBody(req);
+          const seat = String(body.seat ?? "") as Seat;
+          if (!(SEATS as readonly string[]).includes(seat)) return json(res, 400, { error: "unknown seat" });
+          const agent = String(body.agent ?? "").trim();
+          if (!agent) return json(res, 400, { error: "agent required" });
+          const confFile = join(proj, ".agents", "rig.conf");
+          if (!existsSync(confFile)) return json(res, 400, { error: "no rig.conf — attach the project first" });
+          writeFileSync(confFile, updateRigStaffing(readFileSync(confFile, "utf8"), seat, agent, String(body.model ?? "").trim()));
+          const { stopSeatTty } = await import("../ptyseat.js");
+          stopSeatTty(proj, seat);
+          const { teamProcessFor, defaultSeatSpawner } = await import("./teamproc.js");
+          const tp = teamProcessFor(proj, defaultSeatSpawner(state.cliPath));
+          let relaunched = false;
+          if (tp.booted) {
+            tp.relaunch(seat);
+            relaunched = true;
+          }
+          return json(res, 200, { ok: true, relaunched });
         }
         case "GET /api/tty/stream": {
           const proj = url.searchParams.get("project") ?? state.project;

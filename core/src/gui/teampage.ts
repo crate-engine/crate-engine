@@ -182,6 +182,10 @@ grid-template-rows:var(--r1,1fr) 1px var(--r2,1fr)}
 .thead-r{display:inline-flex;align-items:center;gap:11px}
 .tname{font:400 11px/1 var(--disp);letter-spacing:.1em;text-transform:uppercase}
 .tagent{font:500 10px/1 var(--mono);color:var(--faint)}
+/* restaff-on-the-fly: the agent name is the control */
+.tagent[data-restaff]{cursor:pointer}
+.tagent[data-restaff]:hover{color:var(--amber);text-decoration:underline}
+.pktag.untested{color:var(--faint);border-color:var(--line2)}
 /* D12 context gauge (fuel gauge per seat) */
 .gauge{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
 .gauge:hover .gbar{outline:1px solid var(--line2)}
@@ -403,6 +407,41 @@ function swapUp(e){
 }
 document.addEventListener("pointermove",e=>{gutMove(e);swapMove(e);});
 document.addEventListener("pointerup",e=>{gutUp();swapUp(e);});
+// ── hang-off panels anchor to the header's REAL bottom edge (its height
+// varies with window width; the old fixed 53px overlapped or floated) ──
+function anchorPanels(){
+  const h=document.querySelector("header");if(!h)return;
+  const top=Math.round(h.getBoundingClientRect().bottom)+"px";
+  document.querySelectorAll(".console,.pvwrap").forEach(p=>{p.style.top=top;});
+}
+window.addEventListener("resize",anchorPanels);
+document.addEventListener("click",e=>{if(e.target.closest&&e.target.closest(".navbtn"))anchorPanels();});
+// ── restaff a seat on the fly: the pane's agent name opens the picker ──
+async function restaffDialog(seat){
+  let cat=null;
+  try{cat=await fetch(api("/api/staffing"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());}catch(e){}
+  if(!cat||!cat.models){await uiNotice("Could not load the staffing catalog.");return;}
+  const ready=cat.models.filter(m=>m.ready);
+  const rows=ready.map((m,i)=>{
+    const v=(m.verifiedFor||[]).indexOf(seat)>=0;
+    return '<button class="pkrow" data-i="'+i+'"><span style="flex:1;text-align:left">'+esc(m.display)+'</span>'
+      +(v?'<span class="pktag">verified</span>':'<span class="pktag untested">untested</span>')+'</button>';
+  }).join('')||'<div style="padding:14px 20px;color:var(--faint);font-size:12.5px">no ready agents detected on this machine</div>';
+  const d=uiDialog('<h3>Restaff '+esc(seat)+'</h3>'
+    +'<div class="m" style="font-size:11.5px;color:var(--faint)">Applies to THIS project. A running seat relaunches with the new agent and a fresh session; an open wheel on it closes. "verified" = battle-tested for this seat.</div>'
+    +'<div class="pklist">'+rows+'</div><div class="btns"><button id="rsc">Cancel</button></div>');
+  const done=()=>d.remove();
+  d.querySelector("#rsc").onclick=done;
+  d.addEventListener("click",e=>{if(e.target===d)done();});
+  d.querySelectorAll(".pkrow").forEach(b=>{b.onclick=async()=>{
+    const m=ready[+b.getAttribute("data-i")];
+    done();
+    if(TTYS[seat])await closeTty(seat);
+    const r=await fetch(api("/api/staffing/seat"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat,agent:m.agent,model:m.model})}).then(r=>r.json()).catch(()=>null);
+    if(!r||!r.ok){await uiNotice("Restaff failed: "+((r&&r.error)||"engine unreachable"));return;}
+    refresh();
+  };});
+}
 // ── Native seat access: TTYS = the open doors, one per seat (any number of
 // panes can hold a wheel at once — every attended seat's deliveries hold, so
 // all five wheels = the whole team paused, deliberately: that IS cmux mode).
@@ -619,7 +658,7 @@ function idleChip(s){
 function tileHead(s){
   const run=s.turns&&s.turns.find(t=>t.ok===null);
   const right=run?workingSpan(run)
-    :idleChip(s)+'<span class="tagent">'+esc(s.agent)+(s.model?"/"+esc(s.model.split("/").pop()):"")+'</span>';
+    :idleChip(s)+'<span class="tagent" data-restaff="'+s.seat+'" title="Change this seat\\'s agent (applies to this project)">'+esc(s.agent)+(s.model?"/"+esc(s.model.split("/").pop()):"")+'</span>';
   // Native seat access: ⌨ takes the keys — the seat's REAL agent TUI, live
   // in this pane, inside the wall. Lit amber while the human holds them.
   // Racing language (Adam's pick, 2026-08-10) — matches the cockpit's
@@ -886,6 +925,7 @@ function wire(){
     g.ondblclick=()=>{if(g.dataset.gut==="h")LAYOUT.r=[1,1];else LAYOUT.c=LAYOUT_DEF.c.slice();saveLayout();applyLayout();};
   });
   document.querySelectorAll(".thead").forEach(h=>{h.onpointerdown=swapDown;});
+  document.querySelectorAll(".tagent[data-restaff]").forEach(a=>{a.onclick=()=>restaffDialog(a.getAttribute("data-restaff"));});
 }
 function setLens(l){lens=l;localStorage.setItem("crate.lens",l);
   document.getElementById("bn").classList.toggle("on",l==="narrated");
@@ -1070,6 +1110,7 @@ window.addEventListener("keydown",e=>{if(e.key==="Escape")closeRail();});
 loadWorkspaces();
 setLens(lens);setInterval(refresh,2000);setInterval(tickWorking,1000);
 startStream(); // 2c: the SSE push channel — the poll above stays as the floor
+anchorPanels();
 `;
 
 export function teamPage(view: TeamView): string {

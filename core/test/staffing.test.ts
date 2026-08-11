@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseRigConf, resolveSeat, resolveSeatDetailed } from "../src/staffing.js";
+import { parseRigConf, resolveSeat, resolveSeatDetailed, updateRigStaffing } from "../src/staffing.js";
 import type { Loadout } from "../src/manifest.js";
 
 const loadout = {
@@ -97,4 +97,26 @@ test("user defaults: prefs block validates (preview_provider + brand)", async ()
   const ud = loadUserDefaults(home);
   assert.equal(ud?.prefs?.preview_provider, "tailscale");
   assert.equal(ud?.prefs?.brand?.name, "My Shop");
+});
+
+// ── restaff-on-the-fly (cockpit, 2026-08-10) ──
+test("updateRigStaffing replaces a seat's lines in place, comments survive", () => {
+  const text = [
+    `# staffing`,
+    `ORCH_AGENT="claude";     ORCH_MODEL="opus"`,
+    `CODER_AGENT="claude";    CODER_MODEL="opus"    # note kept? no — line replaced`,
+    `PROJECT_NAME="x"`,
+  ].join("\n");
+  const out = updateRigStaffing(text, "coder", "pi", "openai-codex/gpt-5.5");
+  assert.match(out, /CODER_AGENT="pi"; CODER_MODEL="openai-codex\/gpt-5.5"/);
+  assert.doesNotMatch(out, /CODER_AGENT="claude"/);
+  assert.match(out, /ORCH_AGENT="claude"/, "other seats untouched");
+  assert.match(out, /PROJECT_NAME="x"/, "non-staffing lines untouched");
+  assert.equal(parseRigConf(out)["CODER_AGENT"], "pi", "round-trips through the parser");
+});
+
+test("updateRigStaffing: orchestrator uses the ORCH prefix; values sanitized; empty model ok", () => {
+  const out = updateRigStaffing("", "orchestrator", 'claude"; rm -rf /', "");
+  assert.match(out, /^ORCH_AGENT="clauderm-rf\/"; ORCH_MODEL=""\n$/m, "quotes/spaces/semicolons stripped");
+  assert.equal(parseRigConf(out)["ORCH_AGENT"], "clauderm-rf/");
 });

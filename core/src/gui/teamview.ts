@@ -5,7 +5,7 @@
 // (Engineer) and a narrated digest derived from it (Narrated).
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { parseRigConf } from "../staffing.js";
+import { parseRigConf, RIG_PREFIX } from "../staffing.js";
 import { SEATS } from "../manifest.js";
 import { gaugeFrom, type ContextGauge } from "./context.js";
 
@@ -350,7 +350,7 @@ export function readTeamView(projectRoot: string, maxTurnsPerSeat = 5): TeamView
       : [];
     const turns = turnFiles.map((f) => readTurn(join(dir, f)));
     const st = stateStatus(projectRoot, seat);
-    const agentKey = `${seat === "tester" ? "TESTER" : seat.toUpperCase()}_AGENT`;
+    const agentKey = `${RIG_PREFIX[seat]}_AGENT`; // rig.conf keys use ORCH, not ORCHESTRATOR
     const model = conf[agentKey.replace("_AGENT", "_MODEL")];
     // context fullness from the newest turn that reported input tokens (the
     // session's current context size), or the live running total as fallback.

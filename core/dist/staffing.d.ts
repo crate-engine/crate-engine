@@ -117,4 +117,11 @@ export declare function resolveSeat(seat: Seat, loadout: Pick<Loadout, "policy">
     rigConf?: Record<string, string>;
     userDefaults?: UserDefaults;
 }): Staffed;
+/**
+ * Rewrite ONE seat's staffing in rig.conf text (the cockpit's restaff-on-
+ * the-fly). Every uncommented <PREFIX>_AGENT/_MODEL line for the seat is
+ * dropped and one canonical line appended; values are sanitized for the
+ * shell-style file (rig.conf is parsed, never executed — but stay strict).
+ */
+export declare function updateRigStaffing(text: string, seat: Seat, agent: string, model: string): string;
 export {};

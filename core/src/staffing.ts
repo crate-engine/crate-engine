@@ -131,3 +131,19 @@ export function resolveSeat(
   const d = resolveSeatDetailed(seat, loadout, sources);
   return { agent: d.agent.value, model: d.model.value };
 }
+
+/**
+ * Rewrite ONE seat's staffing in rig.conf text (the cockpit's restaff-on-
+ * the-fly). Every uncommented <PREFIX>_AGENT/_MODEL line for the seat is
+ * dropped and one canonical line appended; values are sanitized for the
+ * shell-style file (rig.conf is parsed, never executed — but stay strict).
+ */
+export function updateRigStaffing(text: string, seat: Seat, agent: string, model: string): string {
+  const prefix = RIG_PREFIX[seat];
+  const clean = (s: string) => s.replace(/[^A-Za-z0-9._/:-]/g, "");
+  const re = new RegExp(`^\\s*${prefix}_(AGENT|MODEL)=`);
+  const lines = text.split("\n").filter((l) => !re.test(l));
+  while (lines.length > 0 && lines[lines.length - 1]!.trim() === "") lines.pop();
+  lines.push(`${prefix}_AGENT="${clean(agent)}"; ${prefix}_MODEL="${clean(model)}"`);
+  return lines.join("\n") + "\n";
+}

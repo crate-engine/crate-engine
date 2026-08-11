@@ -7,7 +7,7 @@ import { loadLoadout, loadoutPath, SEATS } from "./manifest.js";
 import { buildInvocation, toShellCommand } from "./invocation.js";
 import { deriveBrainRoot, isUnwalledSeat, planSeats } from "./launcher.js";
 import { listOverlayEntries, overlayDirFor } from "./overlay.js";
-import { loadUserDefaults, parseRigConf, resolveSeatDetailed } from "./staffing.js";
+import { loadUserDefaults, parseRigConf, resolveSeatDetailed, RIG_PREFIX } from "./staffing.js";
 import { setupTier, tierPaths, updateEngine } from "./usertier.js";
 function fail(msg) {
     console.error(`crate2: ${msg}`);
@@ -472,7 +472,7 @@ switch (command) {
         if (!existsSync(confFile))
             fail(`no rig.conf at ${confFile} — run crate install first`);
         const conf = parseRigConf(readFileSync(confFile, "utf8"));
-        const agentKey = `${seat === "tester" ? "TESTER" : seat.toUpperCase()}_AGENT`;
+        const agentKey = `${RIG_PREFIX[seat]}_AGENT`; // rig.conf keys use ORCH, not ORCHESTRATOR
         const modelKey = agentKey.replace("_AGENT", "_MODEL");
         const agent = conf[agentKey] || "pi";
         const model = conf[modelKey] || undefined;
@@ -521,7 +521,7 @@ switch (command) {
         // walled-required seat refuses the whole boot, in plain words, before any
         // turn runs; each first turn reuses its boot render.
         const staffing = SEATS.map((seat) => {
-            const agentKey = `${seat === "tester" ? "TESTER" : seat.toUpperCase()}_AGENT`;
+            const agentKey = `${RIG_PREFIX[seat]}_AGENT`;
             const agent = conf[agentKey] || "pi";
             const model = conf[agentKey.replace("_AGENT", "_MODEL")] || undefined;
             let wallNote = "unwalled";
