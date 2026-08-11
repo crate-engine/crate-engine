@@ -152,9 +152,27 @@ header{padding:12px 22px;border-bottom:1px solid var(--line);display:flex;align-
 .railft{padding:12px;border-top:1px solid var(--line)}
 .wsadd{width:100%;background:var(--panel2);border:1px dashed var(--line2);border-radius:0;color:var(--dim);padding:11px;font:600 10px/1 var(--body);letter-spacing:.1em;text-transform:uppercase;cursor:pointer}
 .wsadd:hover{color:var(--amber);border-color:var(--amber)}
-main{flex:1 1 auto;display:grid;grid-template-columns:1.4fr 1fr 1fr;grid-auto-rows:1fr;gap:1px;background:var(--line);min-height:0;padding:1px}
+/* Custom layout (Adam, 2026-08-10 — "like cmux"): the grid is 5 slots with
+   DRAGGABLE seams (resize columns/rows) + drag-a-header-onto-another-pane to
+   swap seats. Slot 0 = the tall left pane; 1-4 = the right 2×2. Sizes and
+   seat placement persist per browser (localStorage crate.layout). */
+main{flex:1 1 auto;display:grid;gap:0;background:var(--line);min-height:0;padding:1px;
+grid-template-columns:var(--c1,1.4fr) 5px var(--c2,1fr) 5px var(--c3,1fr);
+grid-template-rows:var(--r1,1fr) 5px var(--r2,1fr)}
 .tile{background:var(--panel);display:flex;flex-direction:column;min-height:0;overflow:hidden}
-.tile.orch{grid-row:span 2}
+.tile.slot0{grid-column:1;grid-row:1 / span 3}
+.tile.slot1{grid-column:3;grid-row:1}
+.tile.slot2{grid-column:5;grid-row:1}
+.tile.slot3{grid-column:3;grid-row:3}
+.tile.slot4{grid-column:5;grid-row:3}
+.gut{background:var(--line);z-index:5;touch-action:none}
+.gut:hover,.gut.active{background:var(--amber)}
+.gut.v{grid-row:1 / span 3;cursor:col-resize}
+.gut.v1{grid-column:2}.gut.v2{grid-column:4}
+.gut.h{grid-column:3 / span 3;grid-row:2;cursor:row-resize}
+.thead{cursor:grab}
+.tile.dragsrc{opacity:.55}
+.tile.dragtgt{outline:2px solid var(--amber);outline-offset:-2px}
 .thead{padding:10px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:8px;flex:0 0 auto}
 .thead-r{display:inline-flex;align-items:center;gap:11px}
 .tname{font:400 11px/1 var(--disp);letter-spacing:.1em;text-transform:uppercase}
@@ -249,7 +267,7 @@ main{flex:1 1 auto;display:grid;grid-template-columns:1.4fr 1fr 1fr;grid-auto-ro
 .dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:6px}
 .dot.ok{background:var(--ok)}.dot.run{background:var(--amber);animation:pulse 1.2s infinite}.dot.bad{background:var(--bad)}.dot.idle{background:var(--faint)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-@media (max-width:820px){main{grid-template-columns:1fr 1fr;overflow-y:auto}.tile.orch{grid-row:span 1;grid-column:span 2}}
+@media (max-width:820px){main{display:flex;flex-direction:column;overflow-y:auto}.gut{display:none}.tile{min-height:320px;flex:0 0 auto}}
 `;
 
 const VIEW_JS = `
@@ -296,6 +314,92 @@ function dotClass(t){const last=t.turns&&t.turns[0];if(!last)return"idle";if(las
 let CHAT=[];
 let GATES=[];
 let PREVIEWS=[];
+// ── Custom layout (Adam: "like cmux"): sizes + seat placement, persisted.
+// Slot 0 = the tall left pane; 1-4 = the right 2×2. Defaults = launch look. ──
+const LAYOUT_DEF={c:[1.4,1,1],r:[1,1],slots:["orchestrator","coder","reviewer","designer","tester"]};
+function loadLayout(){
+  try{
+    const l=JSON.parse(localStorage.getItem("crate.layout"));
+    if(l&&Array.isArray(l.c)&&l.c.length===3&&Array.isArray(l.r)&&l.r.length===2
+      &&Array.isArray(l.slots)&&l.slots.length===5
+      &&LAYOUT_DEF.slots.every(s=>l.slots.indexOf(s)>=0))return l;
+  }catch(e){}
+  return JSON.parse(JSON.stringify(LAYOUT_DEF));
+}
+let LAYOUT=loadLayout();
+function saveLayout(){localStorage.setItem("crate.layout",JSON.stringify(LAYOUT));}
+function applyLayout(){
+  const g=document.getElementById("grid");if(!g)return;
+  g.style.setProperty("--c1",LAYOUT.c[0]+"fr");g.style.setProperty("--c2",LAYOUT.c[1]+"fr");g.style.setProperty("--c3",LAYOUT.c[2]+"fr");
+  g.style.setProperty("--r1",LAYOUT.r[0]+"fr");g.style.setProperty("--r2",LAYOUT.r[1]+"fr");
+}
+// seam drag (resize) — document-level move/up handlers, attached once
+let GUTDRAG=null;
+function gutDown(e,which){
+  e.preventDefault();
+  GUTDRAG={which,x:e.clientX,y:e.clientY,c:LAYOUT.c.slice(),r:LAYOUT.r.slice()};
+  document.querySelectorAll(".gut").forEach(g=>{if(g.dataset.gut===which)g.classList.add("active");});
+}
+function gutMove(e){
+  if(!GUTDRAG)return;
+  const g=document.getElementById("grid");if(!g)return;
+  const W=g.clientWidth-12,H=g.clientHeight-7;
+  if(GUTDRAG.which==="v1"||GUTDRAG.which==="v2"){
+    const frpp=(GUTDRAG.c[0]+GUTDRAG.c[1]+GUTDRAG.c[2])/Math.max(1,W);
+    const d=(e.clientX-GUTDRAG.x)*frpp;
+    const i=GUTDRAG.which==="v1"?0:1;
+    LAYOUT.c[i]=Math.max(.25,GUTDRAG.c[i]+d);
+    LAYOUT.c[i+1]=Math.max(.25,GUTDRAG.c[i+1]-d);
+  }else{
+    const frpp=(GUTDRAG.r[0]+GUTDRAG.r[1])/Math.max(1,H);
+    const d=(e.clientY-GUTDRAG.y)*frpp;
+    LAYOUT.r[0]=Math.max(.25,GUTDRAG.r[0]+d);
+    LAYOUT.r[1]=Math.max(.25,GUTDRAG.r[1]-d);
+  }
+  applyLayout();
+}
+function gutUp(){
+  if(!GUTDRAG)return;
+  GUTDRAG=null;saveLayout();
+  document.querySelectorAll(".gut.active").forEach(g=>g.classList.remove("active"));
+  if(TTY&&TTY.fit)TTY.fit();
+}
+// header drag (swap seats) — pointer-based (8px threshold keeps clicks clicks)
+let SWAP=null;
+function swapDown(e){
+  if(e.target.closest("button,.gauge,input"))return;
+  const tile=e.target.closest(".tile");if(!tile)return;
+  SWAP={seat:tile.getAttribute("data-seat"),x:e.clientX,y:e.clientY,live:false};
+}
+function swapMove(e){
+  if(!SWAP)return;
+  if(!SWAP.live){
+    if(Math.abs(e.clientX-SWAP.x)+Math.abs(e.clientY-SWAP.y)<8)return;
+    SWAP.live=true;
+    const src=document.querySelector('.tile[data-seat="'+SWAP.seat+'"]');if(src)src.classList.add("dragsrc");
+  }
+  document.querySelectorAll(".tile.dragtgt").forEach(t=>t.classList.remove("dragtgt"));
+  const el=document.elementFromPoint(e.clientX,e.clientY);
+  const tgt=el&&el.closest?el.closest(".tile"):null;
+  if(tgt&&tgt.getAttribute("data-seat")!==SWAP.seat)tgt.classList.add("dragtgt");
+}
+function swapUp(e){
+  if(!SWAP)return;
+  const was=SWAP;SWAP=null;
+  document.querySelectorAll(".tile.dragsrc,.tile.dragtgt").forEach(t=>t.classList.remove("dragsrc","dragtgt"));
+  if(!was.live)return; // it was a click, not a drag
+  const el=document.elementFromPoint(e.clientX,e.clientY);
+  const tgt=el&&el.closest?el.closest(".tile"):null;
+  if(!tgt)return;
+  const other=tgt.getAttribute("data-seat");
+  if(!other||other===was.seat)return;
+  const a=LAYOUT.slots.indexOf(was.seat),b=LAYOUT.slots.indexOf(other);
+  if(a<0||b<0)return;
+  LAYOUT.slots[a]=other;LAYOUT.slots[b]=was.seat;
+  saveLayout();refresh();
+}
+document.addEventListener("pointermove",e=>{gutMove(e);swapMove(e);});
+document.addEventListener("pointerup",e=>{gutUp();swapUp(e);});
 // ── Native seat access: TTY = the one open door (seat, xterm, SSE). The
 // terminal DOM node lives OUTSIDE the 2s repaint: renderTile leaves a host
 // div, mountTty re-appends the living terminal into it after every paint. ──
@@ -555,12 +659,13 @@ function gatePanelHtml(){
     +'<div class="gp-hint">Type <b>merge go</b> below to release.</div>'
     +'<div class="gp-err" id="gperr" style="display:none"></div></div>';
 }
-function renderTile(s){
+function renderTile(s,slot){
+  const cls=" slot"+(slot||0);
   // Native seat access: while the human holds this seat's keys, the pane IS
   // the agent's terminal (the head stays; the living xterm node re-mounts
   // after each repaint via mountTty).
   if(TTY&&TTY.seat===s.seat){
-    return '<div class="tile'+(s.seat==="orchestrator"?" orch":"")+'" data-seat="'+s.seat+'">'+tileHead(s)
+    return '<div class="tile'+cls+'" data-seat="'+s.seat+'">'+tileHead(s)
       +'<div class="ttyhost" data-ttyhost="'+s.seat+'"></div></div>';
   }
   if(s.seat==="orchestrator"){
@@ -578,7 +683,7 @@ function renderTile(s){
         +(lastAction?'<span class="wl">'+esc(lastAction)+'</span>':'')
         +workingSpan(running)+'</div>':'');
     }
-    return '<div class="tile orch" data-seat="orchestrator" style="--tscale:'+(SCALES.orchestrator||1)+'">'+tileHead(s)
+    return '<div class="tile'+cls+'" data-seat="orchestrator" style="--tscale:'+(SCALES.orchestrator||1)+'">'+tileHead(s)
       +'<div class="chat"><div class="chatlog" id="chatlog">'+body+'</div>'
       +gatePanelHtml()
       +'<div class="chatin"><input id="chatbox" placeholder="'+ph+'" autocomplete="off"><button id="chatsend">Send</button></div></div></div>';
@@ -616,7 +721,7 @@ function renderTile(s){
     }
     return sep+evs;
   }).join("")}
-  return '<div class="tile" data-seat="'+s.seat+'" style="--tscale:'+(SCALES[s.seat]||1)+'">'+tileHead(s)+status+'<div class="feed '+(lens==="engineer"?"eng":"")+'">'+feed+'</div></div>';
+  return '<div class="tile'+cls+'" data-seat="'+s.seat+'" style="--tscale:'+(SCALES[s.seat]||1)+'">'+tileHead(s)+status+'<div class="feed '+(lens==="engineer"?"eng":"")+'">'+feed+'</div></div>';
 }
 let POLLFAILS=0;
 async function refresh(){
@@ -635,7 +740,15 @@ async function refresh(){
     if(document.getElementById("ctxoverlay").classList.contains("open"))renderConsole();
     // preserve in-progress chat typing across the re-render
     const cb=document.getElementById("chatbox");const chatVal=cb?cb.value:"";const chatFocused=document.activeElement===cb;
-    document.getElementById("grid").innerHTML=tr.seats.map(renderTile).join("");
+    // custom layout: tiles render in SLOT order (the user's arrangement),
+    // seams ride along as drag handles
+    const bySeat={};(tr.seats||[]).forEach(s=>bySeat[s.seat]=s);
+    document.getElementById("grid").innerHTML=
+      LAYOUT.slots.map((seat,i)=>{const s=bySeat[seat];return s?renderTile(s,i):'<div class="tile slot'+i+'" data-seat="'+esc(seat)+'"></div>';}).join("")
+      +'<div class="gut v v1" data-gut="v1" title="drag to resize · double-click resets"></div>'
+      +'<div class="gut v v2" data-gut="v2" title="drag to resize · double-click resets"></div>'
+      +'<div class="gut h" data-gut="h" title="drag to resize · double-click resets"></div>';
+    applyLayout();
     wire();
     const cb2=document.getElementById("chatbox");if(cb2){cb2.value=chatVal;if(chatFocused)cb2.focus();}
     mountTty(); // native seat access: re-seat the living terminal after the repaint
@@ -757,6 +870,12 @@ function wire(){
     const s=b.getAttribute("data-keys");
     if(TTY&&TTY.seat===s)closeTty();else openTty(s);
   };});
+  // custom layout: seams resize (double-click resets an axis), headers drag to swap
+  document.querySelectorAll(".gut").forEach(g=>{
+    g.onpointerdown=e=>gutDown(e,g.dataset.gut);
+    g.ondblclick=()=>{if(g.dataset.gut==="h")LAYOUT.r=[1,1];else LAYOUT.c=LAYOUT_DEF.c.slice();saveLayout();applyLayout();};
+  });
+  document.querySelectorAll(".thead").forEach(h=>{h.onpointerdown=swapDown;});
 }
 function setLens(l){lens=l;localStorage.setItem("crate.lens",l);
   document.getElementById("bn").classList.toggle("on",l==="narrated");
