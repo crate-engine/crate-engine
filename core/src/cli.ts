@@ -134,6 +134,29 @@ switch (command) {
           console.log("deps: npm install FAILED — new features may need it: cd ~/.crate/engine/core && npm install");
         }
       }
+      // Native shell drift (native-mac-shell PDR, 2026-08-11): the Swift app
+      // is a compiled frame around the web cockpit — engine updates reach it
+      // free, but a change to the SHELL's own source needs a rebuild nobody
+      // will remember. When an update touched apps/mac-shell and the app is
+      // installed (and swiftc exists), rebuild it right here — updates stay
+      // ONE command.
+      if (r.before !== r.after && process.platform === "darwin") {
+        try {
+          const { execFileSync: exf2 } = await import("node:child_process");
+          const engineDir = join(HOME, ".crate", "engine");
+          const touched = exf2("git", ["diff", "--name-only", `${r.before}..${r.after}`], {
+            cwd: engineDir, encoding: "utf8", timeout: 15000,
+          }).includes("apps/mac-shell/");
+          const appInstalled = existsSync("/Applications/Crate Engine.app");
+          const buildSh = join(engineDir, "apps", "mac-shell", "build.sh");
+          if (touched && appInstalled && existsSync(buildSh)) {
+            exf2("bash", [buildSh], { stdio: "pipe", timeout: 180_000 });
+            console.log("native shell: Crate Engine.app rebuilt (this update changed the shell) — relaunch it to get the new frame");
+          }
+        } catch {
+          console.log("native shell: rebuild FAILED — run it by hand: bash ~/.crate/engine/apps/mac-shell/build.sh");
+        }
+      }
       // Run #14 (Adam): he updated mid-session, pressed a button in the STILL-
       // RUNNING app, and got pre-update behavior — a running process keeps the
       // code it loaded at launch (the /login lesson, app edition). Say so.
