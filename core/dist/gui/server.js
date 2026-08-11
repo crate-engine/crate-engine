@@ -205,8 +205,13 @@ function staffingCatalog(state, detectPath) {
     // run TODAY (credentialed providers only) joins the catalog AFTER the
     // curated entries — never battle-tested, metered-honest, curated wins
     // collisions; half-configured providers show blocked with the fix.
+    // Collision rule refined (Adam's V4-Pro report, 2026-08-11): curated wins
+    // a collision only while it is READY — a curated entry blocked on its key
+    // path must never eclipse a working discovered copy of the same model
+    // (live case: curated DeepSeek V4-Pro checks auth.json, but the key lives
+    // in models.json as a custom provider — the model vanished entirely).
     const discovered = discoverPiModels(state.home, {
-        curated: MODELS,
+        curated: curated.filter((m) => m.ready),
         piInstalled: whichBin("pi", pathOpt) !== undefined,
     });
     // Company grouping (Adam, 2026-08-11): lab blocks, frontier-first — the
