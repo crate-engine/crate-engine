@@ -498,12 +498,13 @@ function tileHead(s){
     :idleChip(s)+'<span class="tagent">'+esc(s.agent)+(s.model?"/"+esc(s.model.split("/").pop()):"")+'</span>';
   // Native seat access: ⌨ takes the keys — the seat's REAL agent TUI, live
   // in this pane, inside the wall. Lit amber while the human holds them.
-  // Plain words, no glyph: U+2328 renders as a broken "=" in the pane font
-  // (Adam caught it minutes after ship — the first ⌨-era UI flaw).
+  // Racing language (Adam's pick, 2026-08-10) — matches the cockpit's
+  // revving/drafting spinner words. Plain text, never a glyph (U+2328
+  // rendered as a broken "=" in the pane font).
   const keysOn=TTY&&TTY.seat===s.seat;
   const keys='<button class="keysbtn'+(keysOn?" on":"")+'" data-keys="'+s.seat+'" title="'
-    +(keysOn?'Give back the keys — the engine resumes deliveries':'Take the keys — open the real '+esc(s.agent)+' session in this pane')+'">'
-    +(keysOn?'YOURS · release':'KEYS')+'</button>';
+    +(keysOn?'Hand back the wheel — the engine resumes deliveries to this seat':'Take the wheel — open the real '+esc(s.agent)+' session in this pane; the team holds its deliveries while you drive')+'">'
+    +(keysOn?'YOUR WHEEL · hand back':'TAKE THE WHEEL')+'</button>';
   return '<div class="thead"><span class="tname"><span class="dot '+dotClass(s)+'"></span>'+esc(s.title)+'</span>'
     +'<span class="thead-r">'+gaugeHtml(s.gauge,s.seat)+right+keys+'</span></div>';
 }
