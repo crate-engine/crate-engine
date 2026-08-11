@@ -93,3 +93,30 @@ test("crew import refuses non-bundles and path escapes", () => {
     rmSync(dst, { recursive: true, force: true });
   }
 });
+
+// ── flaw 4: the deep claude check, pinned with a stub binary (the live
+// false-green case: real-looking ~/.claude.json markers, dead credential) ──
+import { agentProblem } from "../src/detect.js";
+
+test("deep check: stale markers + loggedIn:false = honest problem; loggedIn:true = ready", () => {
+  const bin = mkdtempSync(join(tmpdir(), "fakebin-"));
+  const home = mkdtempSync(join(tmpdir(), "fakehome-"));
+  try {
+    // the trap: markers that read signed-in (survived an uninstall)
+    writeFileSync(
+      join(home, ".claude.json"),
+      JSON.stringify({ oauthAccount: { emailAddress: "old@install.gone" }, hasCompletedOnboarding: true }),
+    );
+    const fake = join(bin, "claude");
+    writeFileSync(fake, `#!/bin/sh\necho '{"loggedIn": false}'\n`);
+    chmodSync(fake, 0o755);
+    assert.equal(agentProblem("claude", home, [], { path: bin }), undefined, "shallow check is fooled — that IS the flaw");
+    const deep = agentProblem("claude", home, [], { path: bin, deep: true });
+    assert.ok(deep && /sign-in isn't usable/.test(deep.fix), "deep check catches the dead credential");
+    writeFileSync(fake, `#!/bin/sh\necho '{"loggedIn": true}'\n`);
+    assert.equal(agentProblem("claude", home, [], { path: bin, deep: true }), undefined, "a real login passes deep");
+  } finally {
+    rmSync(bin, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});
