@@ -148,19 +148,24 @@ header{padding:12px 22px;border-bottom:1px solid var(--line);display:flex;align-
    swap seats. Slot 0 = the tall left pane; 1-4 = the right 2×2. Sizes and
    seat placement persist per browser (localStorage crate.layout). */
 main{flex:1 1 auto;display:grid;gap:0;background:var(--line);min-height:0;padding:1px;
-grid-template-columns:var(--c1,1.4fr) 5px var(--c2,1fr) 5px var(--c3,1fr);
-grid-template-rows:var(--r1,1fr) 5px var(--r2,1fr)}
+grid-template-columns:var(--c1,1.4fr) 1px var(--c2,1fr) 1px var(--c3,1fr);
+grid-template-rows:var(--r1,1fr) 1px var(--r2,1fr)}
 .tile{background:var(--panel);display:flex;flex-direction:column;min-height:0;overflow:hidden}
 .tile.slot0{grid-column:1;grid-row:1 / span 3}
 .tile.slot1{grid-column:3;grid-row:1}
 .tile.slot2{grid-column:5;grid-row:1}
 .tile.slot3{grid-column:3;grid-row:3}
 .tile.slot4{grid-column:5;grid-row:3}
-.gut{background:var(--line);z-index:5;touch-action:none}
-.gut:hover,.gut.active{background:var(--amber)}
+/* hairline seams: the visible line is 1px, the GRAB zone is ±4px via the
+   ::after overlay — thin to look at, easy to catch. No hover color (Adam):
+   the resize cursor is the whole affordance. */
+.gut{background:var(--line);z-index:5;touch-action:none;position:relative}
+.gut::after{content:"";position:absolute;z-index:6}
 .gut.v{grid-row:1 / span 3;cursor:col-resize}
+.gut.v::after{top:0;bottom:0;left:-4px;right:-4px}
 .gut.v1{grid-column:2}.gut.v2{grid-column:4}
 .gut.h{grid-column:3 / span 3;grid-row:2;cursor:row-resize}
+.gut.h::after{left:0;right:0;top:-4px;bottom:-4px}
 .thead{cursor:grab}
 .tile.dragsrc{opacity:.55}
 .tile.dragtgt{outline:2px solid var(--amber);outline-offset:-2px}
@@ -328,12 +333,11 @@ let GUTDRAG=null;
 function gutDown(e,which){
   e.preventDefault();
   GUTDRAG={which,x:e.clientX,y:e.clientY,c:LAYOUT.c.slice(),r:LAYOUT.r.slice()};
-  document.querySelectorAll(".gut").forEach(g=>{if(g.dataset.gut===which)g.classList.add("active");});
 }
 function gutMove(e){
   if(!GUTDRAG)return;
   const g=document.getElementById("grid");if(!g)return;
-  const W=g.clientWidth-12,H=g.clientHeight-7;
+  const W=g.clientWidth-4,H=g.clientHeight-3;
   if(GUTDRAG.which==="v1"||GUTDRAG.which==="v2"){
     const frpp=(GUTDRAG.c[0]+GUTDRAG.c[1]+GUTDRAG.c[2])/Math.max(1,W);
     const d=(e.clientX-GUTDRAG.x)*frpp;
@@ -351,7 +355,6 @@ function gutMove(e){
 function gutUp(){
   if(!GUTDRAG)return;
   GUTDRAG=null;saveLayout();
-  document.querySelectorAll(".gut.active").forEach(g=>g.classList.remove("active"));
   if(TTY&&TTY.fit)TTY.fit();
 }
 // header drag (swap seats) — pointer-based (8px threshold keeps clicks clicks)
