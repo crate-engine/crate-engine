@@ -420,7 +420,7 @@ async function restaffDialog(seat){
     const v=(m.verifiedFor||[]).indexOf(seat)>=0;
     const head=(m.company&&m.company!==lastCo)?(lastCo=m.company,'<div class="pkco">'+esc(m.company)+'</div>'):'';
     return head+'<button class="pkrow" data-i="'+i+'"><span style="flex:1;text-align:left">'+esc(m.display)+'</span>'
-      +(v?'<span class="pktag">verified</span>':'<span class="pktag untested">not battle-tested</span>')+'</button>';
+      +(v?'<span class="pktag">verified</span>':'')+'</button>'; // no tag = no claim — quality is the operator's judgment (Adam)
   }).join('')||'<div style="padding:14px 20px;color:var(--faint);font-size:12.5px">no ready agents detected on this machine</div>';
   const d=uiDialog('<h3>Restaff '+esc(seat)+'</h3>'
     +'<div class="m" style="font-size:11.5px;color:var(--faint)">Applies to THIS project. A running seat relaunches with the new agent and a fresh session; an open wheel on it closes. "verified" = battle-tested for this seat.</div>'
