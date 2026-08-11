@@ -1087,8 +1087,13 @@ async function renderTeamMenu(){
   h+='<div class="cactions">'+(ps.booted
     ?'<button id="tstop">Stop team</button><button id="tabandon">Abandon loop</button>'
     :'<button id="tboot">Boot / Resume team</button><button id="tabandon">Abandon loop</button>')+'</div>';
+  // Flaw 3 (2026-08-10): the cockpit must never be a dead end — the setup
+  // screens stay reachable (staffing also lives on each pane's agent name).
+  h+='<div class="cactions"><button id="tstaffing">Staffing screen</button><button id="tattach">Attach a repo</button></div>';
   h+='<div class="cpolicy">Boot / Resume spawns one supervised runner per seat (headless, no cmux). Resume is automatic — runners re-orient from state files. Relaunch restarts exactly one seat.</div>';
   panel.innerHTML=h;
+  const stf=document.getElementById("tstaffing");if(stf)stf.onclick=()=>{location.href="/staffing?token="+TOKEN;};
+  const att=document.getElementById("tattach");if(att)att.onclick=()=>{location.href="/attach?token="+TOKEN;};
   const bootB=document.getElementById("tboot");if(bootB)bootB.onclick=async()=>{bootB.textContent="Booting…";const r=await fetch(api("/api/team/boot"),{method:"POST",headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());if(r.error)await uiNotice(r.error);renderTeamMenu();refresh();};
   const stopB=document.getElementById("tstop");if(stopB)stopB.onclick=async()=>{if(!(await uiConfirm("Stop the whole team? Runners exit; the loop resumes from state files on the next boot.","Stop team",true)))return;await fetch(api("/api/team/stop"),{method:"POST",headers:{"X-Crate-Token":TOKEN}});renderTeamMenu();refresh();};
   panel.querySelectorAll("[data-relaunch]").forEach(b=>{b.onclick=async()=>{const seat=b.getAttribute("data-relaunch");b.textContent="…";await fetch(api("/api/team/relaunch"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat})});renderTeamMenu();refresh();};});

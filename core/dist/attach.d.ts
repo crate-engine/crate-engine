@@ -92,3 +92,18 @@ export declare function writeManagedGitignore(file: string): void;
 export declare function executeAttach(plan: AttachPlan, opts?: {
     gitInit?: boolean;
 }): AttachReport;
+/**
+ * Flaw 1 (Adam's battle test, 2026-08-10): an attached repo can carry a
+ * rig.conf from another life — its DEV_URL aimed at a server some OTHER rig
+ * runs (live case: jdm-rush-crate inherited the LIVE site's dev server; the
+ * doctor green-lit it and runtime QA would have tested the wrong code).
+ * Attach heals: a non-loopback host, or a loopback port something else
+ * already owns, is rewritten to a FREE loopback port — and says so.
+ * Probe/picker injectable for tests.
+ */
+export declare function healDevUrl(projectRoot: string, opts?: {
+    /** true = something is listening on 127.0.0.1:<port>. */
+    probeBusy?: (port: number) => Promise<boolean>;
+    /** first candidate for the replacement port scan. */
+    scanFrom?: number;
+}): Promise<string | undefined>;

@@ -157,6 +157,37 @@ switch (command) {
     }
     break;
   }
+  case "crew": {
+    // Flaw 2 (2026-08-10): crew portability — one 0600 bundle instead of
+    // hand-copied files. Claude credentials are NEVER bundled (interactive
+    // login only, by doctrine).
+    const sub = rest[0];
+    const { buildCrewBundle, writeCrewBundle, applyCrewBundle } = await import("./crew.js");
+    if (sub === "export") {
+      const out = rest[1] ?? "crate-crew.json";
+      const { bundle, carried, skipped } = buildCrewBundle(HOME);
+      writeCrewBundle(out, bundle);
+      console.log(`crate crew export — wrote ${out} (owner-only, holds API keys — treat like a password)`);
+      for (const c of carried) console.log(`  carried: ~/${c}`);
+      for (const s of skipped) console.log(`  skipped (absent here): ~/${s}`);
+      console.log(`claude: never bundled — you sign in interactively on the target (run \`claude\`).`);
+      console.log(`next:  scp ${out} <host>:~/  then on the target:  crate crew import ~/${out.split("/").pop()}`);
+    } else if (sub === "import") {
+      const file = rest[1];
+      if (!file) fail("usage: crate crew import <bundle-file>");
+      try {
+        const { written } = applyCrewBundle(HOME, readFileSync(file!, "utf8"));
+        console.log(`crate crew import — ${written.length} file(s) written (owner-only 0600):`);
+        for (const w of written) console.log(`  ~/${w}`);
+        console.log(`claude: sign in interactively on THIS machine (run \`claude\`) — its login is never carried, by design.`);
+      } catch (e) {
+        fail(e instanceof Error ? e.message : String(e));
+      }
+    } else {
+      fail("usage: crate crew export [file] | crate crew import <file>");
+    }
+    break;
+  }
   case "attach": {
     // crate2 attach [<target>] [--create] [--yes] [--git-init] — the guided
     // disclosing flow (P4-3): plan → disclose → confirm → execute. Nothing silent.
@@ -207,6 +238,10 @@ switch (command) {
 
       const report = executeAttach(plan, { gitInit });
       console.log(`\ndone — ${report.changed.length} paths written${report.gitInitialized ? ", git initialized" : ""}${report.firstCommit ? `, first commit ${report.firstCommit}` : ""}.`);
+      // Flaw 1: heal an inherited DEV_URL aimed at a foreign server, out loud.
+      const { healDevUrl } = await import("./attach.js");
+      const devHeal = await healDevUrl(plan.projectRoot);
+      if (devHeal) console.log(devHeal);
 
       // P4-9: doctor runs at attach — reports, never blocks.
       const { runDoctor, formatDoctor, heavyDeps, installHeavyDeps } = await import("./doctor.js");
@@ -584,5 +619,5 @@ switch (command) {
     break;
   }
   default:
-    fail(`usage: crate <open|setup|attach|gui|doctor|update|up|print|relaunch|version> ...`);
+    fail(`usage: crate <open|setup|attach|crew|gui|doctor|update|up|print|relaunch|version> ...`);
 }

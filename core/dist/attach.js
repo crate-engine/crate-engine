@@ -490,4 +490,52 @@ export function executeAttach(plan, opts = {}) {
     }
     return { changed, gitInitialized, firstCommit, originMirror };
 }
+/**
+ * Flaw 1 (Adam's battle test, 2026-08-10): an attached repo can carry a
+ * rig.conf from another life — its DEV_URL aimed at a server some OTHER rig
+ * runs (live case: jdm-rush-crate inherited the LIVE site's dev server; the
+ * doctor green-lit it and runtime QA would have tested the wrong code).
+ * Attach heals: a non-loopback host, or a loopback port something else
+ * already owns, is rewritten to a FREE loopback port — and says so.
+ * Probe/picker injectable for tests.
+ */
+export async function healDevUrl(projectRoot, opts = {}) {
+    const confFile = join(projectRoot, ".agents", "rig.conf");
+    if (!existsSync(confFile))
+        return undefined;
+    const text = readFileSync(confFile, "utf8");
+    const m = text.match(/^DEV_URL="([^"]+)"/m);
+    if (!m)
+        return undefined;
+    let url;
+    try {
+        url = new URL(m[1]);
+    }
+    catch {
+        return undefined; // unparseable = hand-crafted; never guess over the operator
+    }
+    const loopback = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(url.hostname);
+    const port = Number(url.port || "80");
+    const net = await import("node:net");
+    const probeBusy = opts.probeBusy ??
+        ((p) => new Promise((res) => {
+            const s = net.connect({ host: "127.0.0.1", port: p, timeout: 1500 });
+            s.on("connect", () => { s.destroy(); res(true); });
+            s.on("error", () => res(false));
+            s.on("timeout", () => { s.destroy(); res(false); });
+        }));
+    const reason = !loopback
+        ? `points off this machine (${url.hostname})`
+        : (await probeBusy(port))
+            ? `port ${port} is already owned by a running server that is not this rig's`
+            : undefined;
+    if (!reason)
+        return undefined;
+    let free = opts.scanFrom ?? 3100;
+    while (await probeBusy(free))
+        free += 1; // busy-scan: first quiet port wins
+    const healed = `http://127.0.0.1:${free}`;
+    writeFileSync(confFile, text.replace(/^DEV_URL="[^"]+"/m, `DEV_URL="${healed}"`));
+    return `DEV_URL healed: ${m[1]} → ${healed} (${reason} — the team gets its own lane)`;
+}
 //# sourceMappingURL=attach.js.map

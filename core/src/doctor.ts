@@ -172,13 +172,30 @@ export async function runDoctor(projectRoot: string): Promise<CheckResult[]> {
     );
   }
 
-  // 3 — dev port sanity
+  // 3 — dev port sanity. Flaw 1 (2026-08-10): probe the rig's ACTUAL DEV_URL
+  // and say WHOSE it looks like — the old localhost-only probe green-lit a
+  // FOREIGN server when an inherited rig.conf pointed off-rig.
   const port =
     conf.DEV_PORT || (conf.DEV_URL ? (conf.DEV_URL.match(/:(\d+)/g)?.pop() ?? ":3000").slice(1) : "3000");
-  const devCode = await httpStatus(`http://localhost:${port}/`, 6000);
+  const devUrl = conf.DEV_URL || `http://localhost:${port}/`;
+  let devHost = "localhost";
+  try {
+    devHost = new URL(devUrl).hostname;
+  } catch {
+    /* unparseable → probed verbatim below, reported verbatim */
+  }
+  const devLoopback = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(devHost);
+  const devCode = await httpStatus(devUrl, 6000);
   results.push(
     devCode !== "000"
-      ? { name: "dev server", status: "ok", detail: `localhost:${port} answers (HTTP ${devCode})` }
+      ? devLoopback
+        ? { name: "dev server", status: "ok", detail: `${devUrl} answers (HTTP ${devCode}) — this rig's configured URL` }
+        : {
+            name: "dev server",
+            status: "warn",
+            detail: `${devUrl} answers (HTTP ${devCode}) — but that host is NOT this machine's loopback; is that server this rig's, or someone else's?`,
+            fix: `if it isn't yours, point rig.conf DEV_URL at a local port (a foreign dev server makes runtime QA test the WRONG code)`,
+          }
       : {
           name: "dev server",
           status: "info",

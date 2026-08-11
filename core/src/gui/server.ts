@@ -179,6 +179,28 @@ export function engineVersion(home: string): { version: string; updateAvailable:
   }
 }
 
+// Flaw 4 (Adam's battle test, 2026-08-10): a leftover ~/.claude.json from an
+// OLD install carries real-looking markers, so the shallow check false-READYs
+// a machine whose credential is gone. The staffing page now consults the DEEP
+// check (`claude auth status`) too — ONCE per server boot, cached: the deep
+// ask is a real CLI invocation, per-poll would be abusive, and a fresh boot
+// (the moment sign-ins actually change) re-asks naturally.
+// READY caches for the whole boot; a PROBLEM re-asks after 30s so the wizard's
+// live "notices your sign-in by itself" behavior survives the cache.
+let deepClaudeVerdict: { problem: ReturnType<typeof agentProblem>; at: number } | undefined;
+function cachedDeepClaudeProblem(
+  agent: string,
+  home: string,
+  pathOpt: { path?: string },
+): ReturnType<typeof agentProblem> {
+  if (agent !== "claude") return undefined;
+  const now = Date.now();
+  if (!deepClaudeVerdict || (deepClaudeVerdict.problem !== undefined && now - deepClaudeVerdict.at > 30_000)) {
+    deepClaudeVerdict = { problem: agentProblem("claude", home, [], { ...pathOpt, deep: true }), at: now };
+  }
+  return deepClaudeVerdict.problem;
+}
+
 /** GET /api/staffing — seats with current resolution+provenance, + the catalog
  * with per-entry detection (ready = its agent is installed + signed in for that
  * entry's provider), + a per-agent summary for the page's honest note. */
@@ -212,7 +234,7 @@ function staffingCatalog(state: GuiState, detectPath?: string) {
   });
   const pathOpt = detectPath !== undefined ? { path: detectPath } : {};
   const curated = MODELS.map((m) => {
-    const problem = agentProblem(m.agent, state.home, [m.model], pathOpt);
+    const problem = agentProblem(m.agent, state.home, [m.model], pathOpt) ?? cachedDeepClaudeProblem(m.agent, state.home, pathOpt);
     return { ...m, ready: problem === undefined, ...(problem ? { fix: problem.fix } : {}) };
   });
   // Pi model discovery (PDR pi-model-discovery, 2026-07-26): whatever Pi can
@@ -764,13 +786,17 @@ export async function startGuiServer(
           const target = resolveTarget(body.target as string, { home: state.home });
           const plan = planAttach(target, tierPaths(state.home).engineDir, { create: Boolean(body.create) });
           const report = executeAttach(plan, { gitInit: Boolean(body.gitInit) });
+          // Flaw 1: an inherited rig.conf may aim DEV_URL at a FOREIGN server
+          // — heal BEFORE the doctor runs so its dev-server row probes truth.
+          const { healDevUrl } = await import("../attach.js");
+          const devHeal = await healDevUrl(plan.projectRoot);
           state.project = plan.projectRoot; // health/boot now operate on it
           writeLastProject(state.home, plan.projectRoot); // P6-5: survives restarts
           (await import("./workspaces.js")).registerWorkspace(state.home, plan.projectRoot); // T7-1: rail entry
           const doctor = await runDoctor(plan.projectRoot);
           // P6-1 (G2): heavy seat-deps disclosed with the result; install is its own call
           const heavy = await heavyDeps(plan.projectRoot);
-          return json(res, 200, { report, doctor, heavy, project: plan.projectRoot });
+          return json(res, 200, { report, doctor, heavy, project: plan.projectRoot, ...(devHeal ? { devHeal } : {}) });
         }
         case "GET /api/deps": {
           // run #7: the Arm screen lists the project's outstanding heavy deps
