@@ -237,12 +237,17 @@ export async function runTurn(opts) {
  * and correct across engine updates). A rig without .agents/bin (test
  * fixtures) falls back to the plain env — the tools shim needs a brain. */
 export function seatEnv(projectRoot) {
+    // DISABLE_AUTOUPDATER (Adam, 2026-08-11): claude's self-update writes its
+    // own binaries in $HOME — the wall correctly DENIES that, so every wheeled
+    // session nagged "Auto-update failed · run claude doctor". Updating the
+    // harness is a deliberate outside-the-wall act; inside a seat the updater
+    // stays off and the nag disappears.
     try {
         const tools = join(deriveBrainRoot(projectRoot), "core", "tools");
-        return { ...process.env, PATH: `${tools}:${process.env.PATH ?? ""}` };
+        return { ...process.env, PATH: `${tools}:${process.env.PATH ?? ""}`, DISABLE_AUTOUPDATER: "1" };
     }
     catch {
-        return process.env;
+        return { ...process.env, DISABLE_AUTOUPDATER: "1" };
     }
 }
 function execTurn(inv, cwd, logPath, agent, timeoutMs, env) {
