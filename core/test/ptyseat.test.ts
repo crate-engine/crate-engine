@@ -21,10 +21,11 @@ function tmpProject(): string {
 
 // ── interactive argv (the second door opens the SAME session) ──
 
-test("claude: resume + model ride the interactive argv; no bypass flags ever", () => {
-  const argv = buildInteractiveInvocation("claude", { sessionId: "sid-1", model: "fable" });
-  assert.deepEqual(argv, ["claude", "--model", "fable", "--resume", "sid-1"]);
-  assert.ok(!argv.includes("--permission-mode"), "the human is present — native prompting, wall backstops");
+test("claude: resume + model ride the interactive argv; bypass ONLY inside a wall (Adam, 2026-08-11)", () => {
+  const walled = buildInteractiveInvocation("claude", { sessionId: "sid-1", model: "fable", walled: true });
+  assert.deepEqual(walled, ["claude", "--permission-mode", "bypassPermissions", "--model", "fable", "--resume", "sid-1"]);
+  const bare = buildInteractiveInvocation("claude", { sessionId: "sid-1", model: "fable" });
+  assert.ok(!bare.includes("--permission-mode"), "no wall → no bypass, the walling law holds at the wheel");
 });
 
 test("claude-code normalizes to the claude door", () => {

@@ -1,10 +1,13 @@
 /** The interactive (TUI) argv for one agent — the same session the headless
- * door resumes, opened the way the CLI was built to be used. NO permission
- * bypass flags here: the human is present, the agent's own prompting is the
- * authentic experience, and the wall backstops everything regardless. */
+ * door resumes, opened the way the CLI was built to be used. Permission
+ * posture (REVISED by Adam, 2026-08-11, after real driving): a WALLED wheel
+ * bypasses claude's own approvals, same as the headless seats — approving
+ * every edit was pure friction when the wall already cages all writes to
+ * the project + doors. No wall → no bypass, same law as everywhere. */
 export declare function buildInteractiveInvocation(agentArg: string, opts?: {
     sessionId?: string;
     model?: string;
+    walled?: boolean;
 }): string[];
 /** The seat's session id as the TTY door should open it. Mirrors the
  * runner's semantics (pi pre-mints so both doors share one session). */

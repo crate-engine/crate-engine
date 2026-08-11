@@ -15,15 +15,19 @@ import { randomUUID } from "node:crypto";
 import { attendedFile, isTurnActive, seatEnv, sessionFile, turnsDir, } from "./runner.js";
 import { normalizeAgent, resolveHeadlessWall } from "./wall.js";
 /** The interactive (TUI) argv for one agent — the same session the headless
- * door resumes, opened the way the CLI was built to be used. NO permission
- * bypass flags here: the human is present, the agent's own prompting is the
- * authentic experience, and the wall backstops everything regardless. */
+ * door resumes, opened the way the CLI was built to be used. Permission
+ * posture (REVISED by Adam, 2026-08-11, after real driving): a WALLED wheel
+ * bypasses claude's own approvals, same as the headless seats — approving
+ * every edit was pure friction when the wall already cages all writes to
+ * the project + doors. No wall → no bypass, same law as everywhere. */
 export function buildInteractiveInvocation(agentArg, opts = {}) {
     const agent = normalizeAgent(agentArg);
     const { sessionId, model } = opts;
     switch (agent) {
         case "claude": {
             const argv = ["claude"];
+            if (opts.walled)
+                argv.push("--permission-mode", "bypassPermissions");
             if (model)
                 argv.push("--model", model);
             if (sessionId)
@@ -191,7 +195,7 @@ export async function startSeatTty(opts) {
         // same refusal physics. Interactivity and containment are independent.
         const wall = resolveHeadlessWall(projectRoot, seat, agent);
         const sessionId = ttySessionId(projectRoot, seat, agent);
-        const inner = buildInteractiveInvocation(agent, { sessionId, model: opts.model });
+        const inner = buildInteractiveInvocation(agent, { sessionId, model: opts.model, walled: wall !== undefined });
         argv = wall ? [...wall.argvPrefix, ...inner] : inner;
     }
     catch (e) {
