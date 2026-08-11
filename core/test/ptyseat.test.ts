@@ -21,11 +21,16 @@ function tmpProject(): string {
 
 // ── interactive argv (the second door opens the SAME session) ──
 
-test("claude: resume + model ride the interactive argv; bypass ONLY inside a wall (Adam, 2026-08-11)", () => {
-  const walled = buildInteractiveInvocation("claude", { sessionId: "sid-1", model: "fable", walled: true });
-  assert.deepEqual(walled, ["claude", "--permission-mode", "bypassPermissions", "--model", "fable", "--resume", "sid-1"]);
-  const bare = buildInteractiveInvocation("claude", { sessionId: "sid-1", model: "fable" });
+test("claude: seat identity + resume + model; bypass ONLY inside a wall (Adam, 2026-08-11)", () => {
+  const walled = buildInteractiveInvocation("claude", { sessionId: "sid-1", model: "fable", walled: true, seat: "orchestrator" });
+  assert.equal(walled[0], "claude");
+  assert.equal(walled[1], "--append-system-prompt");
+  assert.match(walled[2]!, /orchestrator seat/, "the wheel is born knowing WHO it is (flaw #9)");
+  assert.match(walled[2]!, /NEVER produce the work/, "the orchestrator law survives the wheel");
+  assert.deepEqual(walled.slice(3), ["--permission-mode", "bypassPermissions", "--model", "fable", "--resume", "sid-1"]);
+  const bare = buildInteractiveInvocation("claude", { sessionId: "sid-1", model: "fable", seat: "coder" });
   assert.ok(!bare.includes("--permission-mode"), "no wall → no bypass, the walling law holds at the wheel");
+  assert.match(bare[2]!, /coder seat/, "worker seats carry identity too, without the orchestrator law");
 });
 
 test("claude-code normalizes to the claude door", () => {

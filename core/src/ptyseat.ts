@@ -27,15 +27,40 @@ import { normalizeAgent, resolveHeadlessWall } from "./wall.js";
  * bypasses claude's own approvals, same as the headless seats — approving
  * every edit was pure friction when the wall already cages all writes to
  * the project + doors. No wall → no bypass, same law as everywhere. */
+/** The identity a wheel session is born with — who it is, where its laws
+ * live, and the one law that must survive even a human conversation. */
+export function seatIdentityPrompt(seat: string): string {
+  const base =
+    `You are the ${seat || "(unstaffed)"} seat of this project's Crate Engine rig — a five-seat AI dev team ` +
+    `(orchestrator, coder, reviewer, designer, tester/QA) coordinated through .agents/. Your role binder is ` +
+    `.agents/config/${seat}.md — read it before acting on team matters; its laws bind this session too. ` +
+    `Team coordination happens via python3 .agents/bin/agentctl.py (emit transitions, deliver mail) — never by you ` +
+    `doing another seat's job.`;
+  if (seat === "orchestrator") {
+    return (
+      base +
+      ` THE ORCHESTRATOR LAW HOLDS AT THE WHEEL: you coordinate, you NEVER produce the work yourself. When the ` +
+      `operator asks for a feature or fix, dispatch it — emit start_impl and deliver a complete brief to the coder ` +
+      `via agentctl — do not write the code, tests, or designs in this session.`
+    );
+  }
+  return base;
+}
+
 export function buildInteractiveInvocation(
   agentArg: string,
-  opts: { sessionId?: string; model?: string; walled?: boolean } = {},
+  opts: { sessionId?: string; model?: string; walled?: boolean; seat?: string } = {},
 ): string[] {
   const agent = normalizeAgent(agentArg);
   const { sessionId, model } = opts;
   switch (agent) {
     case "claude": {
+      // Seat identity (flaw #9, Adam's first loop kickoff, 2026-08-11): a
+      // wheel session opened as RAW claude — no binder, no role — so the
+      // "orchestrator" cheerfully built the feature itself instead of
+      // dispatching the team. Every wheel now carries its seat's identity.
       const argv = ["claude"];
+      if (opts.seat) argv.push("--append-system-prompt", seatIdentityPrompt(opts.seat));
       if (opts.walled) argv.push("--permission-mode", "bypassPermissions");
       if (model) argv.push("--model", model);
       if (sessionId) argv.push("--resume", sessionId);
@@ -242,7 +267,7 @@ export async function startSeatTty(opts: StartTtyOpts): Promise<StartTtyResult> 
     // same refusal physics. Interactivity and containment are independent.
     const wall = resolveHeadlessWall(projectRoot, seat, agent);
     const sessionId = ttySessionId(projectRoot, seat, agent);
-    const inner = buildInteractiveInvocation(agent, { sessionId, model: opts.model, walled: wall !== undefined });
+    const inner = buildInteractiveInvocation(agent, { sessionId, model: opts.model, walled: wall !== undefined, seat });
     argv = wall ? [...wall.argvPrefix, ...inner] : inner;
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };

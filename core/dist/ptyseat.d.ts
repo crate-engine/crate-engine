@@ -4,10 +4,14 @@
  * bypasses claude's own approvals, same as the headless seats — approving
  * every edit was pure friction when the wall already cages all writes to
  * the project + doors. No wall → no bypass, same law as everywhere. */
+/** The identity a wheel session is born with — who it is, where its laws
+ * live, and the one law that must survive even a human conversation. */
+export declare function seatIdentityPrompt(seat: string): string;
 export declare function buildInteractiveInvocation(agentArg: string, opts?: {
     sessionId?: string;
     model?: string;
     walled?: boolean;
+    seat?: string;
 }): string[];
 /** The seat's session id as the TTY door should open it. Mirrors the
  * runner's semantics (pi pre-mints so both doors share one session). */
