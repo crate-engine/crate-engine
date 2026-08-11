@@ -560,7 +560,7 @@ export async function startGuiServer(
           const confFile = join(proj, ".agents", "rig.conf");
           if (!existsSync(confFile)) return json(res, 400, { error: "no rig.conf — attach the project first" });
           const conf = parseRigConf(readFileSync(confFile, "utf8"));
-          const agentKey = `${RIG_PREFIX[seat]}_AGENT`; // rig.conf keys use ORCH, not ORCHESTRATOR
+          const agentKey = `${RIG_PREFIX[seat as Seat]}_AGENT`; // rig.conf keys use ORCH, not ORCHESTRATOR
           const { startSeatTty } = await import("../ptyseat.js");
           const r = await startSeatTty({
             projectRoot: proj,
