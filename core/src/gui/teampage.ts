@@ -481,6 +481,17 @@ function attachTty(seat){
     theme:{background:"#0b0e14",foreground:"#f1f3f6",cursor:"#e2a33c",selectionBackground:"#32405a"}});
   const fit=new FitAddon.FitAddon();term.loadAddon(fit);
   term.open(wrap);
+  // Cmd+C copies the TERMINAL's selection (Adam, 2026-08-11): xterm draws on
+  // canvas, so the system Copy sees no document text and copied nothing.
+  // Plain Ctrl+C still passes through as SIGINT — only the Mac Cmd combo is
+  // intercepted, and only while a selection exists.
+  term.attachCustomKeyEventHandler(e=>{
+    if(e.type==="keydown"&&e.metaKey&&!e.ctrlKey&&(e.key==="c"||e.key==="C")&&term.hasSelection()){
+      try{navigator.clipboard.writeText(term.getSelection());}catch(err){}
+      return false;
+    }
+    return true;
+  });
   t.wrap=wrap;t.term=term;
   t.fit=()=>{try{fit.fit();
     fetch(api("/api/tty/resize"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat,cols:term.cols,rows:term.rows})}).catch(()=>{});
