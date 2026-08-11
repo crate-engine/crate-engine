@@ -794,6 +794,12 @@ async function refresh(){
     if(document.getElementById("ctxoverlay").classList.contains("open"))renderConsole();
     // preserve in-progress chat typing across the re-render
     const cb=document.getElementById("chatbox");const chatVal=cb?cb.value:"";const chatFocused=document.activeElement===cb;
+    // Wheel focus (Adam's catch, 2026-08-11): the repaint re-seats the living
+    // terminal, which silently DROPS keyboard focus — 4-5 keystrokes then
+    // beeps. Remember which wheel held focus and hand it back after mount.
+    const ttyFocusSeat=(()=>{const ae=document.activeElement;if(!ae||!ae.closest)return null;
+      const w=ae.closest(".ttywrap");if(!w)return null;
+      for(const s in TTYS){if(TTYS[s].wrap===w)return s;}return null;})();
     // custom layout: tiles render in SLOT order (the user's arrangement),
     // seams ride along as drag handles
     const bySeat={};(tr.seats||[]).forEach(s=>bySeat[s.seat]=s);
@@ -806,6 +812,7 @@ async function refresh(){
     wire();
     const cb2=document.getElementById("chatbox");if(cb2){cb2.value=chatVal;if(chatFocused)cb2.focus();}
     mountTtys(); // native seat access: re-seat the living terminals after the repaint
+    if(ttyFocusSeat&&TTYS[ttyFocusSeat]&&TTYS[ttyFocusSeat].term)TTYS[ttyFocusSeat].term.focus();
     document.querySelectorAll(".feed").forEach(f=>{if(!f.hasAttribute("data-ttyhost"))f.scrollTop=f.scrollHeight;});
     const cl=document.getElementById("chatlog");if(cl)cl.scrollTop=cl.scrollHeight;
     POLLFAILS=0;document.body.classList.remove("dead");
