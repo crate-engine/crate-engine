@@ -49,6 +49,8 @@ export interface TtySeat {
     replay(): Buffer;
 }
 export declare function liveTty(projectRoot: string, seat: string): TtySeat | undefined;
+/** Every live TTY of one project — the multiplexed stream's roster. */
+export declare function liveTtyList(projectRoot: string): TtySeat[];
 export type StartTtyResult = {
     ok: true;
     tty: TtySeat;

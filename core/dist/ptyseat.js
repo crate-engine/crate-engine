@@ -163,6 +163,15 @@ export function liveTty(projectRoot, seat) {
     const t = registry.get(keyOf(projectRoot, seat));
     return t && !t.exited ? t : undefined;
 }
+/** Every live TTY of one project — the multiplexed stream's roster. */
+export function liveTtyList(projectRoot) {
+    const out = [];
+    for (const [k, t] of registry) {
+        if (k.startsWith(`${projectRoot}|`) && !t.exited)
+            out.push(t);
+    }
+    return out;
+}
 /**
  * Open (or reattach) the seat's interactive door. Refuses `busy` while a
  * headless turn is mid-flight — two doors, never two writers on one session.

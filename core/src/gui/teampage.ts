@@ -490,21 +490,32 @@ function attachTty(seat){
   term.onData(d=>{buf+=d;if(!tm)tm=setTimeout(()=>{const s=buf;buf="";tm=null;
     fetch(api("/api/tty/input"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat,data:b64enc(s)})}).catch(()=>{});
   },8);});
-  const es=new EventSource(api("/api/tty/stream")+"&seat="+encodeURIComponent(seat));
-  es.onmessage=e=>{let d;try{d=JSON.parse(e.data);}catch(err){return;}
-    if(d.replay!==undefined){term.reset();term.write(b64dec(d.replay));return;} // (re)connect replaces, never duplicates
-    if(d.d)term.write(b64dec(d.d));
-    if(d.exit!==undefined){es.close();teardownTty(seat);refresh();uiNotice("The "+seat+" agent session ended (exit "+d.exit+") — keys returned, deliveries resume.");}
-  };
-  t.es=es;
+  syncTtyStream(); // ONE multiplexed stream for every wheel (the 6-connection browser cap)
   refresh(); // repaint puts the host div in place; mountTtys attaches the terminal
+}
+// ── the shared wheel stream: browsers cap ~6 connections per host, and one
+// SSE per wheel + the main stream FROZE the whole cockpit at 5 wheels
+// (Adam, 2026-08-11). One EventSource carries all wheels ({seat,...});
+// reopened whenever the wheel set changes so replays stay complete. ──
+let TTYES=null;
+function syncTtyStream(){
+  try{TTYES&&TTYES.close();}catch(e){}
+  TTYES=null;
+  if(!Object.keys(TTYS).some(s=>!TTYS[s].waiting))return;
+  TTYES=new EventSource(api("/api/tty/stream-all"));
+  TTYES.onmessage=e=>{let d;try{d=JSON.parse(e.data);}catch(err){return;}
+    const t=TTYS[d.seat];if(!t||!t.term)return; // server-side wheel we don't hold — ignore
+    if(d.replay!==undefined){t.term.reset();t.term.write(b64dec(d.replay));return;} // (re)connect replaces, never duplicates
+    if(d.d)t.term.write(b64dec(d.d));
+    if(d.exit!==undefined){teardownTty(d.seat);refresh();uiNotice("The "+d.seat+" agent session ended (exit "+d.exit+") — keys returned, deliveries resume.");}
+  };
 }
 function teardownTty(seat){
   const t=TTYS[seat];if(!t)return;
-  try{t.es&&t.es.close();}catch(e){}
   try{t.ro&&t.ro.disconnect();}catch(e){}
   try{t.term&&t.term.dispose();}catch(e){}
   delete TTYS[seat];
+  syncTtyStream(); // drop to N-1 wheels (or close the stream at zero)
 }
 async function closeTty(seat){
   if(!TTYS[seat])return;

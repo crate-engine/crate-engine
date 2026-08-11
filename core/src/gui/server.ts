@@ -634,6 +634,45 @@ export async function startGuiServer(
           }
           return json(res, 200, { ok: true, relaunched });
         }
+        case "GET /api/tty/stream-all": {
+          // Five-wheels freeze (Adam, 2026-08-11): browsers allow ~6
+          // connections per host, and one SSE PER WHEEL + the main stream
+          // hit exactly that — every poll and keystroke POST starved behind
+          // them, cockpit frozen. ONE multiplexed stream carries every
+          // wheel's output ({seat, replay|d|exit}); the client reopens it
+          // when the wheel set changes, so connect-time enumeration is
+          // always complete. Budget: 1 main SSE + 1 tty SSE, ever.
+          const proj = url.searchParams.get("project") ?? state.project;
+          if (!proj) return json(res, 400, { error: "no project" });
+          const { liveTtyList } = await import("../ptyseat.js");
+          const ttys = liveTtyList(proj);
+          res.writeHead(200, {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+          });
+          res.write("retry: 1000\n\n");
+          const unsubs = ttys.map((tty) => {
+            res.write(`data: ${JSON.stringify({ seat: tty.seat, replay: tty.replay().toString("base64") })}\n\n`);
+            return tty.subscribe((ev) => {
+              try {
+                if (ev.data) res.write(`data: ${JSON.stringify({ seat: tty.seat, d: ev.data.toString("base64") })}\n\n`);
+                if (ev.exit) res.write(`data: ${JSON.stringify({ seat: tty.seat, exit: ev.exit.code })}\n\n`);
+              } catch {
+                /* viewer went away; close cleans up */
+              }
+            });
+          });
+          const hbAll = setInterval(() => {
+            try { res.write(": hb\n\n"); } catch { /* ignore */ }
+          }, 15_000);
+          hbAll.unref();
+          req.on("close", () => {
+            clearInterval(hbAll);
+            for (const u of unsubs) u();
+          });
+          return;
+        }
         case "GET /api/tty/stream": {
           const proj = url.searchParams.get("project") ?? state.project;
           const seat = url.searchParams.get("seat") ?? "";

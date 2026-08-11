@@ -197,6 +197,15 @@ export function liveTty(projectRoot: string, seat: string): TtySeat | undefined 
   return t && !t.exited ? t : undefined;
 }
 
+/** Every live TTY of one project — the multiplexed stream's roster. */
+export function liveTtyList(projectRoot: string): TtySeat[] {
+  const out: TtySeat[] = [];
+  for (const [k, t] of registry) {
+    if (k.startsWith(`${projectRoot}|`) && !t.exited) out.push(t);
+  }
+  return out;
+}
+
 export type StartTtyResult =
   | { ok: true; tty: TtySeat; reattached: boolean }
   | { ok: false; busy: true }
