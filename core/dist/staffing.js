@@ -117,4 +117,61 @@ export function updateRigStaffing(text, seat, agent, model) {
     lines.push(`${prefix}_AGENT="${clean(agent)}"; ${prefix}_MODEL="${clean(model)}"`);
     return lines.join("\n") + "\n";
 }
+// ── Company grouping for the staffing pickers (Adam, 2026-08-11): group by
+// lab, frontier-first within each group. Curated entries keep their hand
+// order (already frontier-first per lab); discovered entries sort by a
+// version rank extracted from the id ("4-8" reads as 4.8). ──
+export function companyOf(agent, model) {
+    const s = model.toLowerCase();
+    if (agent === "claude" || s.includes("claude") || s.startsWith("anthropic/"))
+        return "Anthropic";
+    if (agent === "gemini" || s.includes("gemini") || s.includes("google/"))
+        return "Google";
+    if (s.includes("deepseek"))
+        return "DeepSeek";
+    if (s.includes("kimi") || s.includes("moonshot"))
+        return "Moonshot AI";
+    if (s.includes("glm") || s.includes("z-ai/") || s.includes("zai/"))
+        return "Z.ai";
+    if (s.includes("minimax"))
+        return "MiniMax";
+    if (s.includes("qwen"))
+        return "Alibaba (Qwen)";
+    if (agent === "codex" || s.includes("gpt") || s.startsWith("openai"))
+        return "OpenAI";
+    return "Other";
+}
+const COMPANY_ORDER = ["Anthropic", "OpenAI", "Google", "DeepSeek", "Moonshot AI", "Z.ai", "MiniMax", "Alibaba (Qwen)", "Other"];
+/** Version-desc rank for discovered entries; small numbers only (context
+ * sizes and dates never count as versions). */
+export function versionRank(model, display) {
+    const s = `${model} ${display}`.toLowerCase().replace(/(\d)-(\d)/g, "$1.$2");
+    let v = 0;
+    for (const m of s.matchAll(/\b(\d{1,2}(?:\.\d{1,2})?)\b/g)) {
+        const n = parseFloat(m[1]);
+        if (n < 50 && n > v)
+            v = n;
+    }
+    return v;
+}
+/** Stable-order the merged catalog: company blocks (fixed lab order), within
+ * a block curated hand-order first, then discovered newest-version-first. */
+export function orderCatalog(models) {
+    const tagged = models.map((m, i) => ({ m, i, company: companyOf(m.agent, m.model) }));
+    tagged.sort((a, b) => {
+        const co = COMPANY_ORDER.indexOf(a.company) - COMPANY_ORDER.indexOf(b.company);
+        if (co !== 0)
+            return co;
+        const disc = (a.m.discovered ? 1 : 0) - (b.m.discovered ? 1 : 0);
+        if (disc !== 0)
+            return disc;
+        if (a.m.discovered) {
+            const r = versionRank(b.m.model, b.m.display) - versionRank(a.m.model, a.m.display);
+            if (r !== 0)
+                return r;
+        }
+        return a.i - b.i;
+    });
+    return tagged.map((t) => ({ ...t.m, company: t.company }));
+}
 //# sourceMappingURL=staffing.js.map

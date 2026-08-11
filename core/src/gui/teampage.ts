@@ -186,6 +186,7 @@ grid-template-rows:var(--r1,1fr) 1px var(--r2,1fr)}
 .tagent[data-restaff]{cursor:pointer}
 .tagent[data-restaff]:hover{color:var(--amber);text-decoration:underline}
 .pktag.untested{color:var(--faint);border-color:var(--line2)}
+.pkco{padding:12px 20px 5px;font:600 9.5px/1 var(--mono);letter-spacing:.2em;text-transform:uppercase;color:var(--amber);border-bottom:1px solid var(--line)}
 /* D12 context gauge (fuel gauge per seat) */
 .gauge{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
 .gauge:hover .gbar{outline:1px solid var(--line2)}
@@ -422,9 +423,13 @@ async function restaffDialog(seat){
   try{cat=await fetch(api("/api/staffing"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());}catch(e){}
   if(!cat||!cat.models){await uiNotice("Could not load the staffing catalog.");return;}
   const ready=cat.models.filter(m=>m.ready);
+  // lab groups, frontier-first — the server's catalog order IS the layout;
+  // a header row opens each company block
+  let lastCo="";
   const rows=ready.map((m,i)=>{
     const v=(m.verifiedFor||[]).indexOf(seat)>=0;
-    return '<button class="pkrow" data-i="'+i+'"><span style="flex:1;text-align:left">'+esc(m.display)+'</span>'
+    const head=(m.company&&m.company!==lastCo)?(lastCo=m.company,'<div class="pkco">'+esc(m.company)+'</div>'):'';
+    return head+'<button class="pkrow" data-i="'+i+'"><span style="flex:1;text-align:left">'+esc(m.display)+'</span>'
       +(v?'<span class="pktag">verified</span>':'<span class="pktag untested">untested</span>')+'</button>';
   }).join('')||'<div style="padding:14px 20px;color:var(--faint);font-size:12.5px">no ready agents detected on this machine</div>';
   const d=uiDialog('<h3>Restaff '+esc(seat)+'</h3>'

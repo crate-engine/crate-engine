@@ -124,4 +124,19 @@ export declare function resolveSeat(seat: Seat, loadout: Pick<Loadout, "policy">
  * shell-style file (rig.conf is parsed, never executed — but stay strict).
  */
 export declare function updateRigStaffing(text: string, seat: Seat, agent: string, model: string): string;
+export declare function companyOf(agent: string, model: string): string;
+/** Version-desc rank for discovered entries; small numbers only (context
+ * sizes and dates never count as versions). */
+export declare function versionRank(model: string, display: string): number;
+export interface CatalogEntryLike {
+    agent: string;
+    model: string;
+    display: string;
+    discovered?: boolean;
+}
+/** Stable-order the merged catalog: company blocks (fixed lab order), within
+ * a block curated hand-order first, then discovered newest-version-first. */
+export declare function orderCatalog<T extends CatalogEntryLike>(models: T[]): (T & {
+    company: string;
+})[];
 export {};

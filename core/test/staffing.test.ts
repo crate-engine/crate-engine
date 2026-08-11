@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseRigConf, resolveSeat, resolveSeatDetailed, updateRigStaffing } from "../src/staffing.js";
+import { companyOf, orderCatalog, parseRigConf, resolveSeat, resolveSeatDetailed, updateRigStaffing, versionRank } from "../src/staffing.js";
 import type { Loadout } from "../src/manifest.js";
 
 const loadout = {
@@ -119,4 +119,36 @@ test("updateRigStaffing: orchestrator uses the ORCH prefix; values sanitized; em
   const out = updateRigStaffing("", "orchestrator", 'claude"; rm -rf /', "");
   assert.match(out, /^ORCH_AGENT="clauderm-rf\/"; ORCH_MODEL=""\n$/m, "quotes/spaces/semicolons stripped");
   assert.equal(parseRigConf(out)["ORCH_AGENT"], "clauderm-rf/");
+});
+
+// ── company grouping (cockpit picker, 2026-08-11) ──
+test("companyOf: labs resolve from agent + model id; claude beats gpt-substring traps", () => {
+  assert.equal(companyOf("claude", "fable"), "Anthropic");
+  assert.equal(companyOf("codex", ""), "OpenAI");
+  assert.equal(companyOf("pi", "openai-codex/gpt-5.5"), "OpenAI");
+  assert.equal(companyOf("pi", "anthropic/claude-opus-4-8"), "Anthropic");
+  assert.equal(companyOf("pi", "zenmux/moonshotai/kimi-k3"), "Moonshot AI");
+  assert.equal(companyOf("pi", "zenmux/z-ai/glm-5.2"), "Z.ai");
+  assert.equal(companyOf("pi", "zenmux/minimax/minimax-m3"), "MiniMax");
+  assert.equal(companyOf("pi", "zenmux/qwen/qwen3.8-max"), "Alibaba (Qwen)");
+  assert.equal(companyOf("pi", "deepseek/deepseek-v4-pro"), "DeepSeek");
+});
+
+test("orderCatalog: company blocks in lab order; curated hand-order first; discovered newest-first", () => {
+  const out = orderCatalog([
+    { agent: "pi", model: "openai-codex/gpt-5.5", display: "GPT-5.5 (Pi)" },
+    { agent: "claude", model: "fable", display: "Fable" },
+    { agent: "claude", model: "opus", display: "Opus" },
+    { agent: "pi", model: "anthropic/claude-opus-4-5", display: "Opus 4.5", discovered: true as const },
+    { agent: "pi", model: "anthropic/claude-opus-4-8", display: "Opus 4.8", discovered: true as const },
+    { agent: "pi", model: "zenmux/z-ai/glm-5.2", display: "GLM-5.2", discovered: true as const },
+  ]);
+  assert.deepEqual(out.map((m) => m.display), ["Fable", "Opus", "Opus 4.8", "Opus 4.5", "GPT-5.5 (Pi)", "GLM-5.2"],
+    "Anthropic block first (curated order, then discovered 4.8 > 4.5), then OpenAI, then Z.ai");
+  assert.equal(out[0]!.company, "Anthropic");
+});
+
+test("versionRank: dashed versions normalize; context sizes never count", () => {
+  assert.ok(versionRank("anthropic/claude-opus-4-8", "") > versionRank("anthropic/claude-opus-4-5", ""));
+  assert.equal(versionRank("some/model-262144", "big context"), 0);
 });

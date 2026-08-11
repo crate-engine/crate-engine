@@ -14,7 +14,7 @@ import { autoReviveEnabled, makeAutoReviver } from "../health.js";
 import { deriveBrainRoot } from "../launcher.js";
 import { loadLoadout, loadoutPath, SEATS } from "../manifest.js";
 import { discoverPiModels } from "../pidiscovery.js";
-import { loadUserDefaults, parseRigConf, resolveSeatDetailed, RIG_PREFIX, updateRigStaffing } from "../staffing.js";
+import { loadUserDefaults, orderCatalog, parseRigConf, resolveSeatDetailed, RIG_PREFIX, updateRigStaffing } from "../staffing.js";
 import { readLastProject, seedDefaultsIfAbsent, tierPaths, updateEngine, writeLastProject } from "../usertier.js";
 import { join } from "node:path";
 import { attachPage, staffingPage, startPage, welcomePage } from "./pages.js";
@@ -32,23 +32,24 @@ const MODELS = [
         billing: "flat-rate (ChatGPT subscription via Pi)",
         verifiedFor: ["orchestrator", "reviewer", "designer", "tester"],
     },
-    {
-        agent: "claude",
-        model: "opus",
-        display: "Claude Opus (Claude Code)",
-        billing: "flat-rate (Claude subscription, first-party harness)",
-        verifiedFor: ["coder"],
-    },
     // ── 2026-08-10 (Adam, fresh-install battle test): the FULL first-party
-    // Claude family, not just Opus. Same alias mechanism the proven opus entry
-    // uses (`claude --model <alias>`); verified nowhere yet, so the page labels
-    // them "not yet battle-tested" until each passes a seat ladder.
+    // Claude family, not just Opus — frontier-first (2026-08-11 grouping pass).
+    // Same alias mechanism the proven opus entry uses (`claude --model <alias>`,
+    // which always resolves to the ACCOUNT'S NEWEST of that family — that's why
+    // these carry no version number and never go stale).
     {
         agent: "claude",
         model: "fable",
-        display: "Claude Fable 5 (Claude Code)",
+        display: "Claude Fable 5 (Claude Code) — Anthropic's top tier",
         billing: "flat-rate (Claude subscription that includes Fable — Anthropic's top model tier)",
         verifiedFor: [],
+    },
+    {
+        agent: "claude",
+        model: "opus",
+        display: "Claude Opus (Claude Code) — always the newest Opus (Opus 5 today)",
+        billing: "flat-rate (Claude subscription, first-party harness)",
+        verifiedFor: ["coder"],
     },
     {
         agent: "claude",
@@ -208,7 +209,9 @@ function staffingCatalog(state, detectPath) {
         curated: MODELS,
         piInstalled: whichBin("pi", pathOpt) !== undefined,
     });
-    const models = [...curated, ...discovered];
+    // Company grouping (Adam, 2026-08-11): lab blocks, frontier-first — the
+    // pickers render `company` as group headers in this exact order.
+    const models = orderCatalog([...curated, ...discovered]);
     // one honest row per distinct agent: ready = at least one of its entries is
     // offerable; the fix line comes from its first blocked entry (most specific).
     const agents = [...new Set(MODELS.map((m) => m.agent))].map((agent) => {
