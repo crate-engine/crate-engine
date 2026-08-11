@@ -113,6 +113,26 @@ switch (command) {
                 }
             }
             catch { /* a read-only ~/.local/bin never blocks the engine update */ }
+            // Dependency drift (native-seat-access, 2026-08-10): an update can bring
+            // NEW npm deps (e.g. the PTY backend) — the overlay copies code but never
+            // installed packages, so an updated engine would crash importing them.
+            // A real update runs npm install in the engine core (fast when nothing
+            // changed; honest note when it fails — the engine still runs, the new
+            // feature says what to do).
+            if (r.before !== r.after) {
+                try {
+                    const { execFileSync: exf } = await import("node:child_process");
+                    exf("npm", ["install", "--no-audit", "--no-fund"], {
+                        cwd: join(HOME, ".crate", "engine", "core"),
+                        stdio: "pipe",
+                        timeout: 300_000,
+                    });
+                    console.log("deps: engine packages synced (npm install)");
+                }
+                catch {
+                    console.log("deps: npm install FAILED — new features may need it: cd ~/.crate/engine/core && npm install");
+                }
+            }
             // Run #14 (Adam): he updated mid-session, pressed a button in the STILL-
             // RUNNING app, and got pre-update behavior — a running process keeps the
             // code it loaded at launch (the /login lesson, app edition). Say so.

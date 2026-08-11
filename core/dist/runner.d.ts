@@ -19,6 +19,18 @@ export interface TurnResult {
 }
 export declare function turnsDir(projectRoot: string, seat: string): string;
 export declare function sessionFile(projectRoot: string, seat: string): string;
+/** Native-seat-access (PDR): a live turn's marker — the TTY door refuses to
+ * open mid-turn (two doors, one room: never two writers on one session). */
+export declare function activeTurnFile(projectRoot: string, seat: string): string;
+/** True iff the marker names a LIVE pid — a stale lock (crashed runner) is
+ * cleaned up, never treated as busy. isAlive injectable for tests. */
+export declare function isTurnActive(projectRoot: string, seat: string, isAlive?: (pid: number) => boolean): boolean;
+export declare function pidAlive(pid: number): boolean;
+/** Native-seat-access: the attended marker — a human holds this seat's keys
+ * (real TUI open on the seat's session). While it names a live pid the
+ * runner does NOT start turns; mail queues and drains on release. */
+export declare function attendedFile(projectRoot: string, seat: string): string;
+export declare function isAttended(projectRoot: string, seat: string, isAlive?: (pid: number) => boolean): boolean;
 /**
  * Acknowledgment / "standing by" chatter that must NOT wake a turn — otherwise
  * two seats ping-pong acks forever after a loop closes (the drive-3 flaw:
@@ -37,6 +49,14 @@ export declare function isAck(body: string): boolean;
 export declare function bootWall(projectRoot: string, seat: string, agent: string): string;
 /** Process ONE batch of unread mail as one turn. Idle no-op when the box is empty. */
 export declare function runTurn(opts: RunTurnOpts): Promise<TurnResult>;
+/** P3-1 parity, headless (W4 finding #2, 2026-07-13): first-choice tools
+ * (qa-sweep, agent-browser, axe-check, rg, …) resolve by NAME inside every
+ * seat. The cmux launcher exported `<brain>/core/tools` on the pane's PATH;
+ * the headless runner inherited nothing — the QA seat reported its in-box
+ * tools "not installed" and self-graded partial. Composed per turn (cheap,
+ * and correct across engine updates). A rig without .agents/bin (test
+ * fixtures) falls back to the plain env — the tools shim needs a brain. */
+export declare function seatEnv(projectRoot: string): NodeJS.ProcessEnv;
 export interface RunnerLoopOpts extends RunTurnOpts {
     pollMs?: number;
     /** Retries before a batch is dead-lettered (honest, never silent). */

@@ -228,6 +228,15 @@ main{flex:1 1 auto;display:grid;grid-template-columns:1.4fr 1fr 1fr;grid-auto-ro
 .gatepanel .gp-hint{color:var(--faint);font-size:calc(11px * var(--tscale,1));margin-top:6px}
 .gatepanel .gp-hint b{color:var(--amber);font-family:var(--mono)}
 .gatepanel .gp-err{color:var(--bad);font-size:calc(11.5px * var(--tscale,1));margin-top:5px}
+/* Native seat access (PDR native-seat-access): the ⌨ door — a real PTY in
+   the pane. The tile keeps its head; the body becomes the agent's own TUI. */
+.keysbtn{background:transparent;border:1px solid var(--line2);border-radius:0;color:var(--dim);font:600 10px/1 var(--mono);letter-spacing:.04em;padding:5px 8px;cursor:pointer;flex:0 0 auto}
+.keysbtn:hover{color:var(--amber);border-color:var(--amber)}
+.keysbtn.on{background:var(--amber);color:#151109;border-color:var(--amber)}
+.ttyhost{flex:1 1 auto;min-height:0;background:#0b0e14;padding:4px 6px;overflow:hidden;display:flex}
+.ttywrap{flex:1;min-width:0;min-height:0}
+.ttywait{color:var(--faint);font:12px/1.6 var(--mono);padding:14px}
+.xterm .xterm-viewport{background:transparent!important}
 .dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:6px}
 .dot.ok{background:var(--ok)}.dot.run{background:var(--amber);animation:pulse 1.2s infinite}.dot.bad{background:var(--bad)}.dot.idle{background:var(--faint)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
@@ -277,6 +286,80 @@ function dotClass(t){const last=t.turns&&t.turns[0];if(!last)return"idle";if(las
 let CHAT=[];
 let GATES=[];
 let PREVIEWS=[];
+// ── Native seat access: TTY = the one open door (seat, xterm, SSE). The
+// terminal DOM node lives OUTSIDE the 2s repaint: renderTile leaves a host
+// div, mountTty re-appends the living terminal into it after every paint. ──
+let TTY=null;
+function b64enc(s){const b=new TextEncoder().encode(s);let x="";b.forEach(c=>x+=String.fromCharCode(c));return btoa(x);}
+function b64dec(s){const raw=atob(s);const u=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)u[i]=raw.charCodeAt(i);return u;}
+async function openTty(seat){
+  if(TTY)await closeTty();
+  TTY={seat:seat,waiting:true};
+  refresh();
+  tryStartTty();
+}
+async function tryStartTty(){
+  if(!TTY)return;
+  const seat=TTY.seat;
+  const r=await fetch(api("/api/tty/start"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat,cols:120,rows:32})}).then(r=>r.json()).catch(()=>null);
+  if(!TTY||TTY.seat!==seat)return; // door changed hands while we waited
+  if(!r){TTY=null;refresh();await uiNotice("Could not reach the engine — the keys stay with the team.");return;}
+  if(r.busy){TTY.waiting=true;mountTty();setTimeout(tryStartTty,2000);return;} // mid-turn: keys arrive when it finishes
+  if(r.error){TTY=null;refresh();await uiNotice(r.error);return;}
+  attachTty(seat);
+}
+function attachTty(seat){
+  TTY.waiting=false;
+  const wrap=document.createElement("div");wrap.className="ttywrap";
+  const term=new Terminal({fontFamily:"'JetBrains Mono',ui-monospace,Menlo,monospace",fontSize:12.5,cursorBlink:true,scrollback:5000,
+    theme:{background:"#0b0e14",foreground:"#f1f3f6",cursor:"#e2a33c",selectionBackground:"#32405a"}});
+  const fit=new FitAddon.FitAddon();term.loadAddon(fit);
+  term.open(wrap);
+  TTY.wrap=wrap;TTY.term=term;
+  TTY.fit=()=>{try{fit.fit();
+    fetch(api("/api/tty/resize"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat,cols:term.cols,rows:term.rows})}).catch(()=>{});
+  }catch(e){}};
+  // keystrokes → the PTY (8ms micro-batch so paste isn't a POST per char)
+  let buf="",t=null;
+  term.onData(d=>{buf+=d;if(!t)t=setTimeout(()=>{const s=buf;buf="";t=null;
+    fetch(api("/api/tty/input"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat,data:b64enc(s)})}).catch(()=>{});
+  },8);});
+  const es=new EventSource(api("/api/tty/stream")+"&seat="+encodeURIComponent(seat));
+  es.onmessage=e=>{let d;try{d=JSON.parse(e.data);}catch(err){return;}
+    if(d.replay!==undefined){term.reset();term.write(b64dec(d.replay));return;} // (re)connect replaces, never duplicates
+    if(d.d)term.write(b64dec(d.d));
+    if(d.exit!==undefined){es.close();teardownTty();refresh();uiNotice("The agent session ended (exit "+d.exit+") — keys returned, deliveries resume.");}
+  };
+  TTY.es=es;
+  refresh(); // repaint puts the host div in place; mountTty attaches the terminal
+}
+function teardownTty(){
+  if(!TTY)return;
+  try{TTY.es&&TTY.es.close();}catch(e){}
+  try{TTY.ro&&TTY.ro.disconnect();}catch(e){}
+  try{TTY.term&&TTY.term.dispose();}catch(e){}
+  TTY=null;
+}
+async function closeTty(){
+  if(!TTY)return;
+  const seat=TTY.seat;
+  teardownTty();
+  await fetch(api("/api/tty/stop"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat})}).catch(()=>{});
+  refresh();
+}
+function mountTty(){
+  if(!TTY)return;
+  const host=document.querySelector('[data-ttyhost="'+TTY.seat+'"]');
+  if(!host)return;
+  if(TTY.waiting){host.innerHTML='<div class="ttywait">seat is mid-turn — the keys are yours the moment it finishes…</div>';return;}
+  if(TTY.wrap&&TTY.wrap.parentElement!==host){
+    host.innerHTML="";host.appendChild(TTY.wrap);
+    if(TTY.ro)TTY.ro.disconnect();
+    TTY.ro=new ResizeObserver(()=>{if(TTY&&TTY.fit)TTY.fit();});
+    TTY.ro.observe(host);
+    TTY.fit&&TTY.fit();TTY.term&&TTY.term.focus();
+  }
+}
 // 2d durable echo: messages the operator just sent, rendered instantly and
 // kept until the durable copy arrives (pending) or the send provably failed
 // (failed — stays visible, flagged; vanishing is never an outcome).
@@ -413,8 +496,13 @@ function tileHead(s){
   const run=s.turns&&s.turns.find(t=>t.ok===null);
   const right=run?workingSpan(run)
     :idleChip(s)+'<span class="tagent">'+esc(s.agent)+(s.model?"/"+esc(s.model.split("/").pop()):"")+'</span>';
+  // Native seat access: ⌨ takes the keys — the seat's REAL agent TUI, live
+  // in this pane, inside the wall. Lit amber while the human holds them.
+  const keysOn=TTY&&TTY.seat===s.seat;
+  const keys='<button class="keysbtn'+(keysOn?" on":"")+'" data-keys="'+s.seat+'" title="'
+    +(keysOn?'Give back the keys — the engine resumes deliveries':'Take the keys — open the real '+esc(s.agent)+' session in this pane')+'">⌨'+(keysOn?' yours':'')+'</button>';
   return '<div class="thead"><span class="tname"><span class="dot '+dotClass(s)+'"></span>'+esc(s.title)+'</span>'
-    +'<span class="thead-r">'+gaugeHtml(s.gauge,s.seat)+right+'</span></div>';
+    +'<span class="thead-r">'+gaugeHtml(s.gauge,s.seat)+right+keys+'</span></div>';
 }
 function tickWorking(){
   if(document.body.classList.contains("dead"))return; // offline — no fake "working" ticks
@@ -454,6 +542,13 @@ function gatePanelHtml(){
     +'<div class="gp-err" id="gperr" style="display:none"></div></div>';
 }
 function renderTile(s){
+  // Native seat access: while the human holds this seat's keys, the pane IS
+  // the agent's terminal (the head stays; the living xterm node re-mounts
+  // after each repaint via mountTty).
+  if(TTY&&TTY.seat===s.seat){
+    return '<div class="tile'+(s.seat==="orchestrator"?" orch":"")+'" data-seat="'+s.seat+'">'+tileHead(s)
+      +'<div class="ttyhost" data-ttyhost="'+s.seat+'"></div></div>';
+  }
   if(s.seat==="orchestrator"){
     const ph=GATES.length?'Type merge go to release, or message the orchestrator…':'Message the orchestrator…';
     // 2c-b (Adam): stream live → the MERGED timeline (real readout + the
@@ -529,7 +624,8 @@ async function refresh(){
     document.getElementById("grid").innerHTML=tr.seats.map(renderTile).join("");
     wire();
     const cb2=document.getElementById("chatbox");if(cb2){cb2.value=chatVal;if(chatFocused)cb2.focus();}
-    document.querySelectorAll(".feed").forEach(f=>f.scrollTop=f.scrollHeight);
+    mountTty(); // native seat access: re-seat the living terminal after the repaint
+    document.querySelectorAll(".feed").forEach(f=>{if(!f.hasAttribute("data-ttyhost"))f.scrollTop=f.scrollHeight;});
     const cl=document.getElementById("chatlog");if(cl)cl.scrollTop=cl.scrollHeight;
     POLLFAILS=0;document.body.classList.remove("dead");
   }catch(e){
@@ -643,6 +739,10 @@ function wire(){
   const box=document.getElementById("chatbox");if(box)box.onkeydown=e=>{if(e.key==="Enter")sendChat();};
   document.querySelectorAll(".gauge[data-seat]").forEach(g=>{g.onclick=()=>refreshSeat(g.getAttribute("data-seat"));});
   document.querySelectorAll(".chip[data-fill]").forEach(c=>{c.onclick=()=>{const b=document.getElementById("chatbox");if(b){b.value=c.getAttribute("data-fill");b.focus();}};});
+  document.querySelectorAll(".keysbtn[data-keys]").forEach(b=>{b.onclick=()=>{
+    const s=b.getAttribute("data-keys");
+    if(TTY&&TTY.seat===s)closeTty();else openTty(s);
+  };});
 }
 function setLens(l){lens=l;localStorage.setItem("crate.lens",l);
   document.getElementById("bn").classList.toggle("on",l==="narrated");
@@ -830,6 +930,7 @@ export function teamPage(view) {
     const badge = ""; // headless is the only mode — no badge needed (Adam)
     return `<!doctype html><html><head><meta charset="utf-8"><title>Crate Engine — ${view.project} team</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/assets/xterm.css">
 <style>${VIEW_STYLE}</style></head>
 <body>
 <div class="deadbar" id="deadbar">engine offline — the app server is not responding. Reopen with <code>crate open</code>.</div>
@@ -861,6 +962,8 @@ export function teamPage(view) {
 <div class="overlay" id="teamoverlay"><div class="console" id="teampanel"></div></div>
 <div class="overlay" id="pvoverlay"><div class="pvwrap" id="pvwrap"></div></div>
 <main id="grid"></main>
+<script src="/assets/xterm.js"></script>
+<script src="/assets/addon-fit.js"></script>
 <script>${VIEW_JS}</script>
 </body></html>`;
 }

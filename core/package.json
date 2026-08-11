@@ -14,7 +14,10 @@
     "dist-check": "rm -rf .dist-check && tsc -p tsconfig.build.json --outDir .dist-check && diff -r dist .dist-check && rm -rf .dist-check && echo 'dist-sync OK (committed dist == fresh build)'"
   },
   "dependencies": {
+    "@lydell/node-pty": "^1.2.0-beta.15",
     "@vscode/ripgrep": "1.18.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "agent-browser": "0.31.1",
     "axe-core": "^4.12.1",
     "playwright-core": "^1.61.1",

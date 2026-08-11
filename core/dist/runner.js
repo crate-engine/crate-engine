@@ -25,6 +25,64 @@ export function turnsDir(projectRoot, seat) {
 export function sessionFile(projectRoot, seat) {
     return join(turnsDir(projectRoot, seat), "session.json");
 }
+/** Native-seat-access (PDR): a live turn's marker — the TTY door refuses to
+ * open mid-turn (two doors, one room: never two writers on one session). */
+export function activeTurnFile(projectRoot, seat) {
+    return join(turnsDir(projectRoot, seat), "active.lock");
+}
+/** True iff the marker names a LIVE pid — a stale lock (crashed runner) is
+ * cleaned up, never treated as busy. isAlive injectable for tests. */
+export function isTurnActive(projectRoot, seat, isAlive = pidAlive) {
+    const f = activeTurnFile(projectRoot, seat);
+    if (!existsSync(f))
+        return false;
+    try {
+        const { pid } = JSON.parse(readFileSync(f, "utf8"));
+        if (pid && isAlive(pid))
+            return true;
+    }
+    catch {
+        /* unreadable = stale */
+    }
+    try {
+        rmSync(f);
+    }
+    catch { /* gone already */ }
+    return false;
+}
+export function pidAlive(pid) {
+    try {
+        process.kill(pid, 0);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+/** Native-seat-access: the attended marker — a human holds this seat's keys
+ * (real TUI open on the seat's session). While it names a live pid the
+ * runner does NOT start turns; mail queues and drains on release. */
+export function attendedFile(projectRoot, seat) {
+    return join(turnsDir(projectRoot, seat), "attended");
+}
+export function isAttended(projectRoot, seat, isAlive = pidAlive) {
+    const f = attendedFile(projectRoot, seat);
+    if (!existsSync(f))
+        return false;
+    try {
+        const { pid } = JSON.parse(readFileSync(f, "utf8"));
+        if (pid && isAlive(pid))
+            return true;
+    }
+    catch {
+        /* unreadable = stale */
+    }
+    try {
+        rmSync(f);
+    }
+    catch { /* gone already */ }
+    return false; // owner died without cleanup — never hold a seat hostage
+}
 /**
  * True iff this seat already holds a LIVE session for THIS agent — i.e. the
  * binder/docs orientation from a prior turn is still in the model's context,
@@ -140,7 +198,19 @@ export async function runTurn(opts) {
     const oldestMs = Math.min(...mail.map((m) => Number(m.name.split("-")[0] ?? NaN)).filter((n) => Number.isFinite(n)));
     const waitMs = Number.isFinite(oldestMs) ? Math.max(0, startedAt.getTime() - oldestMs) : undefined;
     const logPath = join(turnsDir(projectRoot, seat), `${startedAt.toISOString().replaceAll(":", "-")}.jsonl`);
-    const result = await execTurn(inv, projectRoot, logPath, agent, opts.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS, seatEnv(projectRoot));
+    // Native-seat-access: mark the turn live for its duration so the TTY door
+    // refuses to open mid-turn (two doors, never two writers on one session).
+    writeFileSync(activeTurnFile(projectRoot, seat), JSON.stringify({ pid: process.pid, startedAt: startedAt.toISOString() }));
+    let result;
+    try {
+        result = await execTurn(inv, projectRoot, logPath, agent, opts.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS, seatEnv(projectRoot));
+    }
+    finally {
+        try {
+            rmSync(activeTurnFile(projectRoot, seat));
+        }
+        catch { /* stale-lock cleanup covers a miss */ }
+    }
     const meta = {
         turnMeta: true, seat, agent, ok: result.ok, mail: mail.length,
         startedAt: startedAt.toISOString(), durationMs: Date.now() - startedAt.getTime(),
@@ -166,7 +236,7 @@ export async function runTurn(opts) {
  * tools "not installed" and self-graded partial. Composed per turn (cheap,
  * and correct across engine updates). A rig without .agents/bin (test
  * fixtures) falls back to the plain env — the tools shim needs a brain. */
-function seatEnv(projectRoot) {
+export function seatEnv(projectRoot) {
     try {
         const tools = join(deriveBrainRoot(projectRoot), "core", "tools");
         return { ...process.env, PATH: `${tools}:${process.env.PATH ?? ""}` };
@@ -255,8 +325,20 @@ export async function runnerLoop(opts) {
         kick = done;
         opts.signal?.addEventListener("abort", done, { once: true }); // stop is instant, never poll-bounded
     });
+    let heldNoted = false; // one log line per hold, not one per poll
     try {
         while (!opts.signal?.aborted) {
+            // Native-seat-access: a human holds the keys — the runner idles (mail
+            // queues, nothing is lost) until the TUI door closes.
+            if (isAttended(opts.projectRoot, opts.seat)) {
+                if (!heldNoted) {
+                    heldNoted = true;
+                    appendFileSync(join(turnsDir(opts.projectRoot, opts.seat), "turns.log"), `${new Date().toISOString()} | held — operator has the keys (native TUI); turns resume on release\n`);
+                }
+                await idleWait();
+                continue;
+            }
+            heldNoted = false;
             if (getPpid() !== ppid0) {
                 try {
                     appendFileSync(join(turnsDir(opts.projectRoot, opts.seat), "turns.log"), `${new Date().toISOString()} | orphaned — supervisor (pid ${ppid0}) is gone; runner exiting\n`);

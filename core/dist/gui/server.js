@@ -291,6 +291,22 @@ export async function startGuiServer(opts = {}) {
                 res.writeHead(200, { "Content-Type": "font/woff2", "Cache-Control": "public, max-age=86400, immutable" });
                 return res.end(readFileSync(file));
             }
+            if (url.pathname.startsWith("/assets/")) {
+                // Native-seat-access: the terminal renderer, self-hosted from the
+                // engine's own node_modules (no CDN — same law as the fonts). Served
+                // tokenless like them: static library code leaks nothing. Whitelist only.
+                const ASSETS = {
+                    "xterm.js": { file: join("@xterm", "xterm", "lib", "xterm.js"), type: "text/javascript" },
+                    "xterm.css": { file: join("@xterm", "xterm", "css", "xterm.css"), type: "text/css" },
+                    "addon-fit.js": { file: join("@xterm", "addon-fit", "lib", "addon-fit.js"), type: "text/javascript" },
+                };
+                const a = ASSETS[url.pathname.slice("/assets/".length)];
+                const file = a ? join(import.meta.dirname, "..", "..", "node_modules", a.file) : undefined;
+                if (!a || !file || !existsSync(file))
+                    return json(res, 404, { error: "no such asset" });
+                res.writeHead(200, { "Content-Type": a.type, "Cache-Control": "public, max-age=86400" });
+                return res.end(readFileSync(file));
+            }
             const supplied = url.searchParams.get("token") ?? req.headers["x-crate-token"];
             if (supplied !== token)
                 return json(res, 403, { error: "missing or wrong token" });
@@ -528,6 +544,109 @@ export async function startGuiServer(opts = {}) {
                         unsub();
                     });
                     return;
+                }
+                // ── Native seat access (PDR native-seat-access): the second door —
+                // the seat's REAL agent TUI in a server-side PTY, inside its wall. ──
+                case "POST /api/tty/start": {
+                    const proj = url.searchParams.get("project") ?? state.project;
+                    if (!proj)
+                        return json(res, 400, { error: "no project attached" });
+                    const body = await readBody(req);
+                    const seat = String(body.seat ?? "");
+                    if (!SEATS.includes(seat))
+                        return json(res, 400, { error: "unknown seat" });
+                    const confFile = join(proj, ".agents", "rig.conf");
+                    if (!existsSync(confFile))
+                        return json(res, 400, { error: "no rig.conf — attach the project first" });
+                    const conf = parseRigConf(readFileSync(confFile, "utf8"));
+                    const agentKey = `${seat === "tester" ? "TESTER" : seat.toUpperCase()}_AGENT`;
+                    const { startSeatTty } = await import("../ptyseat.js");
+                    const r = await startSeatTty({
+                        projectRoot: proj,
+                        seat,
+                        agent: conf[agentKey] || "pi",
+                        model: conf[agentKey.replace("_AGENT", "_MODEL")] || undefined,
+                        cols: Number(body.cols) || undefined,
+                        rows: Number(body.rows) || undefined,
+                        home: state.home,
+                    });
+                    if (!r.ok)
+                        return json(res, "busy" in r && r.busy ? 409 : 400, r);
+                    return json(res, 200, { ok: true, reattached: r.reattached, agent: r.tty.agent });
+                }
+                case "GET /api/tty/stream": {
+                    const proj = url.searchParams.get("project") ?? state.project;
+                    const seat = url.searchParams.get("seat") ?? "";
+                    if (!proj)
+                        return json(res, 400, { error: "no project" });
+                    const { liveTty } = await import("../ptyseat.js");
+                    const tty = liveTty(proj, seat);
+                    if (!tty)
+                        return json(res, 404, { error: "no live terminal for this seat — start one first" });
+                    res.writeHead(200, {
+                        "Content-Type": "text/event-stream",
+                        "Cache-Control": "no-cache",
+                        Connection: "keep-alive",
+                    });
+                    res.write("retry: 1000\n\n");
+                    res.write(`data: ${JSON.stringify({ replay: tty.replay().toString("base64") })}\n\n`);
+                    const unsub = tty.subscribe((ev) => {
+                        try {
+                            if (ev.data)
+                                res.write(`data: ${JSON.stringify({ d: ev.data.toString("base64") })}\n\n`);
+                            if (ev.exit)
+                                res.write(`data: ${JSON.stringify({ exit: ev.exit.code })}\n\n`);
+                        }
+                        catch {
+                            /* viewer went away; close cleans up */
+                        }
+                    });
+                    const hb = setInterval(() => {
+                        try {
+                            res.write(": hb\n\n");
+                        }
+                        catch { /* ignore */ }
+                    }, 15_000);
+                    hb.unref();
+                    req.on("close", () => {
+                        clearInterval(hb);
+                        unsub();
+                    });
+                    return;
+                }
+                case "POST /api/tty/input": {
+                    const proj = url.searchParams.get("project") ?? state.project;
+                    if (!proj)
+                        return json(res, 400, { error: "no project" });
+                    const body = await readBody(req);
+                    const { liveTty } = await import("../ptyseat.js");
+                    const tty = liveTty(proj, String(body.seat ?? ""));
+                    if (!tty)
+                        return json(res, 404, { error: "no live terminal" });
+                    tty.write(Buffer.from(String(body.data ?? ""), "base64"));
+                    return json(res, 200, { ok: true });
+                }
+                case "POST /api/tty/resize": {
+                    const proj = url.searchParams.get("project") ?? state.project;
+                    if (!proj)
+                        return json(res, 400, { error: "no project" });
+                    const body = await readBody(req);
+                    const { liveTty } = await import("../ptyseat.js");
+                    const tty = liveTty(proj, String(body.seat ?? ""));
+                    if (!tty)
+                        return json(res, 404, { error: "no live terminal" });
+                    const cols = Number(body.cols), rows = Number(body.rows);
+                    if (cols > 0 && rows > 0)
+                        tty.resize(cols, rows);
+                    return json(res, 200, { ok: true });
+                }
+                case "POST /api/tty/stop": {
+                    const proj = url.searchParams.get("project") ?? state.project;
+                    if (!proj)
+                        return json(res, 400, { error: "no project" });
+                    const body = await readBody(req);
+                    const { stopSeatTty } = await import("../ptyseat.js");
+                    return json(res, 200, { ok: true, stopped: stopSeatTty(proj, String(body.seat ?? "")) });
                 }
                 case "GET /api/chat": {
                     const { chatHistory } = await import("./teamctl.js");
