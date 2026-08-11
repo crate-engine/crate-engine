@@ -5,6 +5,7 @@
 // (Engineer) and a narrated digest derived from it (Narrated).
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { isAttended } from "../runner.js";
 import { parseRigConf, RIG_PREFIX } from "../staffing.js";
 import { SEATS } from "../manifest.js";
 import { gaugeFrom, type ContextGauge } from "./context.js";
@@ -119,6 +120,10 @@ export interface SeatView {
   lastActivity?: string;
   /** D12 context fullness gauge (undefined until the seat has run a turn). */
   gauge?: ContextGauge;
+  /** unread mail waiting in the seat's inbox (the hold-blocked queue). */
+  unread: number;
+  /** a human holds this seat's wheel — deliveries are paused. */
+  attended: boolean;
 }
 
 export interface TeamView {
@@ -357,9 +362,21 @@ export function readTeamView(projectRoot: string, maxTurnsPerSeat = 5): TeamView
     const withUsage = turns.find((t) => t.usage?.inputTokens);
     const ctxTokens = withUsage?.usage?.inputTokens ?? turns.find((t) => t.liveTokens)?.liveTokens;
     const gauge = gaugeFrom(ctxTokens, model);
+    // The wheel-as-viewer trap (FLAWS 2026-08-11): a held wheel silently
+    // parks the seat. The view now carries the truth — attended + how much
+    // mail waits behind the hold — so the pane can SAY it.
+    let unread = 0;
+    try {
+      unread = readdirSync(join(projectRoot, ".agents", "state", "inbox", seat, "new")).filter((f) => f.endsWith(".msg")).length;
+    } catch {
+      /* no inbox yet */
+    }
+    const attended = isAttended(projectRoot, seat);
     return {
       seat, title: titles[seat]!, agent: conf[agentKey] || "pi",
       ...(model ? { model } : {}),
+      unread,
+      attended,
       turns,
       ...(st.status ? { status: st.status } : {}),
       ...(st.when ? { lastActivity: st.when } : {}),

@@ -7,8 +7,13 @@ export interface SeatProc {
 }
 /** A launcher for one seat's runner — injectable so tests use a stub. */
 export type SeatSpawner = (seat: Seat, projectRoot: string) => ChildProcess;
-/** The default spawner: `node <cli.js> runner <seat> --project <root>`. */
-export declare function defaultSeatSpawner(cliPath: string): SeatSpawner;
+/** The default spawner: `node <cli.js> runner <seat> --project <root>`.
+ * Runner black box (FLAWS 2026-08-11): four runners died silently on a
+ * relaunch and stdio:"ignore" left NOTHING to diagnose — the gui.log lesson,
+ * runner edition. With `home`, each runner's stdout/stderr lands in
+ * ~/.crate/logs/runners/<seat>.log, spawn and death are stamped there, and a
+ * non-zero exit also lands in gui.log so the supervisor's record shows it. */
+export declare function defaultSeatSpawner(cliPath: string, home?: string): SeatSpawner;
 export interface TeamProcStatus {
     booted: boolean;
     seats: Array<{

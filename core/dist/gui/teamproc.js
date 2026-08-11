@@ -7,16 +7,51 @@
 // the whole team. No new coordination: each child is `crate runner <seat>`,
 // the same loop `crate team` runs; killing/respawning is process lifecycle.
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, openSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { SEATS } from "../manifest.js";
-/** The default spawner: `node <cli.js> runner <seat> --project <root>`. */
-export function defaultSeatSpawner(cliPath) {
-    return (seat, projectRoot) => spawn(process.execPath, [cliPath, "runner", seat, "--project", projectRoot], {
-        cwd: projectRoot,
-        stdio: "ignore",
-        detached: false, // dies with the GUI (the GUI is the supervisor now)
-    });
+/** The default spawner: `node <cli.js> runner <seat> --project <root>`.
+ * Runner black box (FLAWS 2026-08-11): four runners died silently on a
+ * relaunch and stdio:"ignore" left NOTHING to diagnose — the gui.log lesson,
+ * runner edition. With `home`, each runner's stdout/stderr lands in
+ * ~/.crate/logs/runners/<seat>.log, spawn and death are stamped there, and a
+ * non-zero exit also lands in gui.log so the supervisor's record shows it. */
+export function defaultSeatSpawner(cliPath, home) {
+    return (seat, projectRoot) => {
+        let fd = "ignore";
+        let logPath;
+        if (home) {
+            try {
+                logPath = join(home, ".crate", "logs", "runners", `${seat}.log`);
+                mkdirSync(dirname(logPath), { recursive: true });
+                fd = openSync(logPath, "a");
+                appendFileSync(logPath, `[${new Date().toISOString()}] spawn — runner ${seat} on ${projectRoot}\n`);
+            }
+            catch {
+                fd = "ignore"; // a broken log dir never blocks the team
+            }
+        }
+        const child = spawn(process.execPath, [cliPath, "runner", seat, "--project", projectRoot], {
+            cwd: projectRoot,
+            stdio: ["ignore", fd, fd],
+            detached: false, // dies with the GUI (the GUI is the supervisor now)
+        });
+        if (logPath) {
+            const lp = logPath;
+            child.on("exit", (code, sig) => {
+                try {
+                    appendFileSync(lp, `[${new Date().toISOString()}] EXIT code=${code} signal=${sig ?? "none"} (pid ${child.pid})\n`);
+                    if (code !== 0 && home) {
+                        appendFileSync(join(home, ".crate", "logs", "gui.log"), `[${new Date().toISOString()}] runner ${seat} DIED code=${code} signal=${sig ?? "none"} — see logs/runners/${seat}.log\n`);
+                    }
+                }
+                catch {
+                    /* forensics only */
+                }
+            });
+        }
+        return child;
+    };
 }
 /**
  * Supervises one headless team (per project root). Boot spawns a runner child

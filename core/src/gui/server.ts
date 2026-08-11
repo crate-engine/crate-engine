@@ -415,7 +415,7 @@ export async function startGuiServer(
           const { teamProcessFor, defaultSeatSpawner } = await import("./teamproc.js");
           const proj = url.searchParams.get("project") ?? state.project;
           if (!proj) return json(res, 200, { booted: false, seats: [] });
-          return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath)).status());
+          return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home)).status());
         }
         case "POST /api/team/boot": {
           // T7-3: boot the headless team (one supervised runner child per seat).
@@ -423,7 +423,7 @@ export async function startGuiServer(
           const proj = url.searchParams.get("project") ?? state.project;
           if (!proj) return json(res, 400, { error: "no project attached" });
           try {
-            return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath)).boot());
+            return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home)).boot());
           } catch (e) {
             return json(res, 400, { error: e instanceof Error ? e.message : String(e) });
           }
@@ -432,7 +432,7 @@ export async function startGuiServer(
           const { teamProcessFor, defaultSeatSpawner } = await import("./teamproc.js");
           const proj = url.searchParams.get("project") ?? state.project;
           if (!proj) return json(res, 400, { error: "no project" });
-          return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath)).stop());
+          return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home)).stop());
         }
         case "POST /api/team/relaunch": {
           // T7-3: restart exactly one seat's runner (headless per-seat relaunch).
@@ -442,7 +442,7 @@ export async function startGuiServer(
           const body = await readBody(req);
           const seat = String(body.seat ?? "") as Seat;
           if (!(SEATS as readonly string[]).includes(seat)) return json(res, 400, { error: "unknown seat" });
-          return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath)).relaunch(seat));
+          return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home)).relaunch(seat));
         }
         case "POST /api/team/abandon": {
           // T7-2 Team menu: drop a mid-flight loop back to idle (agentctl emit
@@ -626,7 +626,7 @@ export async function startGuiServer(
           const { stopSeatTty } = await import("../ptyseat.js");
           stopSeatTty(proj, seat);
           const { teamProcessFor, defaultSeatSpawner } = await import("./teamproc.js");
-          const tp = teamProcessFor(proj, defaultSeatSpawner(state.cliPath));
+          const tp = teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home));
           let relaunched = false;
           if (tp.booted) {
             tp.relaunch(seat);
@@ -873,7 +873,7 @@ export async function startGuiServer(
           // that exited is "dead" (auto-revive can act); a seat never booted is
           // "unknown" (not-booted ≠ provably dead).
           const { teamProcessFor, defaultSeatSpawner } = await import("./teamproc.js");
-          const st = teamProcessFor(state.project, defaultSeatSpawner(state.cliPath)).status();
+          const st = teamProcessFor(state.project, defaultSeatSpawner(state.cliPath, state.home)).status();
           const seats = st.seats.map((s) => ({
             seat: s.seat,
             liveness: s.alive ? "live" : s.startedAt ? "dead" : "unknown",
@@ -949,14 +949,14 @@ export async function startGuiServer(
   const reviver = makeAutoReviver({
     revive: async (seat) => {
       const { teamProcessFor, defaultSeatSpawner } = await import("./teamproc.js");
-      teamProcessFor(state.project!, defaultSeatSpawner(state.cliPath)).relaunch(seat);
+      teamProcessFor(state.project!, defaultSeatSpawner(state.cliPath, state.home)).relaunch(seat);
     },
   });
   const reviveTimer = setInterval(async () => {
     try {
       if (!state.project || !autoReviveEnabled(state.project)) return;
       const { teamProcessFor, defaultSeatSpawner } = await import("./teamproc.js");
-      const st = teamProcessFor(state.project, defaultSeatSpawner(state.cliPath)).status();
+      const st = teamProcessFor(state.project, defaultSeatSpawner(state.cliPath, state.home)).status();
       if (!st.booted) return; // team not booted — nothing to monitor
       // Map the lifecycle status to the reviver's SeatHealth shape.
       const seats = st.seats.map((s) => ({

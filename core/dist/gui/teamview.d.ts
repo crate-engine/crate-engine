@@ -50,6 +50,10 @@ export interface SeatView {
     lastActivity?: string;
     /** D12 context fullness gauge (undefined until the seat has run a turn). */
     gauge?: ContextGauge;
+    /** unread mail waiting in the seat's inbox (the hold-blocked queue). */
+    unread: number;
+    /** a human holds this seat's wheel — deliveries are paused. */
+    attended: boolean;
 }
 export interface TeamView {
     project: string;

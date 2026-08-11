@@ -187,6 +187,11 @@ grid-template-rows:var(--r1,1fr) 1px var(--r2,1fr)}
 .tagent[data-restaff]:hover{color:var(--amber);text-decoration:underline}
 .pktag.untested{color:var(--faint);border-color:var(--line2)}
 .pkco{padding:12px 20px 5px;font:600 9.5px/1 var(--mono);letter-spacing:.2em;text-transform:uppercase;color:var(--amber);border-bottom:1px solid var(--line)}
+/* held-wheel truth chip: quiet when nothing waits, amber when mail queues */
+.pausechip{font:600 9.5px/1 var(--mono);letter-spacing:.06em;color:var(--faint);white-space:nowrap}
+.pausechip.hot{color:var(--amber)}
+/* dead-runner distress: the masthead must never hide a partially-down team */
+.downchip{font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--bad);white-space:nowrap}
 /* D12 context gauge (fuel gauge per seat) */
 .gauge{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
 .gauge:hover .gbar{outline:1px solid var(--line2)}
@@ -691,12 +696,15 @@ function tileHead(s){
   // Racing language (Adam's pick, 2026-08-10) — matches the cockpit's
   // revving/drafting spinner words. Plain text, never a glyph (U+2328
   // rendered as a broken "=" in the pane font).
+  // A held wheel PAUSES the seat (deliveries queue) — say it, with the queue
+  // depth, instead of letting the loop park silently (FLAWS 2026-08-11).
+  const paused=(TTYS[s.seat]||s.attended)?'<span class="pausechip'+((s.unread||0)>0?" hot":"")+'" title="A held wheel pauses this seat — mail queues until you hand back">⏸ paused'+((s.unread||0)>0?' · '+s.unread+' waiting':'')+'</span>':'';
   const keysOn=!!TTYS[s.seat];
   const keys='<button class="keysbtn'+(keysOn?" on":"")+'" data-keys="'+s.seat+'" title="'
     +(keysOn?'Hand back the wheel — the engine resumes deliveries to this seat':'Take the wheel — open the real '+esc(s.agent)+' session in this pane; the team holds its deliveries while you drive')+'">'
     +(keysOn?'YOUR WHEEL · hand back':'TAKE THE WHEEL')+'</button>';
   return '<div class="thead"><span class="tname"><span class="dot '+dotClass(s)+'"></span>'+esc(s.title)+'</span>'
-    +'<span class="thead-r">'+gaugeHtml(s.gauge,s.seat)+right+keys+'</span></div>';
+    +'<span class="thead-r">'+paused+gaugeHtml(s.gauge,s.seat)+right+keys+'</span></div>';
 }
 function tickWorking(){
   if(document.body.classList.contains("dead"))return; // offline — no fake "working" ticks
@@ -802,15 +810,24 @@ function renderTile(s,slot){
 let POLLFAILS=0;
 async function refresh(){
   try{
-    const [tr,gr,cr,pv,lp]=await Promise.all([
+    const [tr,gr,cr,pv,lp,ps]=await Promise.all([
       fetch(api("/api/team"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()),
       fetch(api("/api/gates"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()),
       fetch(api("/api/chat"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()),
       fetch(api("/api/preview"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()),
       fetch(api("/api/loop"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()),
+      fetch(api("/api/team/status"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()).catch(()=>null),
     ]);
     CHAT=cr.messages||[];GATES=gr.gates||[];SEATSVIEW=tr.seats||[];PREVIEWS=pv.previews||[];
     renderLoopChip(lp&&lp.narration);
+    // dead-runner distress (FLAWS 2026-08-11: four runners died silently and
+    // the cockpit showed no distress): booted team with dead seats = red chip.
+    const dc=document.getElementById("downchip");
+    if(dc&&ps&&ps.seats){
+      const dead=ps.booted?ps.seats.filter(x=>!x.alive):[];
+      dc.hidden=dead.length===0;
+      if(dead.length)dc.textContent="⚠ "+dead.length+"/"+ps.seats.length+" seats DOWN ("+dead.map(x=>x.seat).join(", ")+") — Team menu → Boot/Resume";
+    }
     syncPreviewTab();
     if(document.getElementById("pvoverlay").classList.contains("open"))renderPreview();
     if(document.getElementById("ctxoverlay").classList.contains("open"))renderConsole();
@@ -1173,6 +1190,7 @@ export function teamPage(view: TeamView): string {
     <span class="ver">2.1 <b>BETA</b></span>
     <span class="proj" id="projlabel">${escHtml(view.project)}</span>
     <span class="loopchip" id="loopchip" hidden></span>
+    <span class="downchip" id="downchip" hidden></span>
   </div>
   <div style="display:flex;align-items:center;gap:12px">
     ${badge}
