@@ -355,7 +355,7 @@ function gutMove(e){
 function gutUp(){
   if(!GUTDRAG)return;
   GUTDRAG=null;saveLayout();
-  if(TTY&&TTY.fit)TTY.fit();
+  Object.values(TTYS).forEach(t=>{if(t.fit)t.fit();});
 }
 // header drag (swap seats) — pointer-based (8px threshold keeps clicks clicks)
 let SWAP=null;
@@ -393,79 +393,86 @@ function swapUp(e){
 }
 document.addEventListener("pointermove",e=>{gutMove(e);swapMove(e);});
 document.addEventListener("pointerup",e=>{gutUp();swapUp(e);});
-// ── Native seat access: TTY = the one open door (seat, xterm, SSE). The
-// terminal DOM node lives OUTSIDE the 2s repaint: renderTile leaves a host
-// div, mountTty re-appends the living terminal into it after every paint. ──
-let TTY=null;
+// ── Native seat access: TTYS = the open doors, one per seat (any number of
+// panes can hold a wheel at once — every attended seat's deliveries hold, so
+// all five wheels = the whole team paused, deliberately: that IS cmux mode).
+// Terminal DOM nodes live OUTSIDE the 2s repaint: renderTile leaves a host
+// div per wheeled seat; mountTtys re-appends the living terminals after
+// every paint. ──
+let TTYS={};
 function b64enc(s){const b=new TextEncoder().encode(s);let x="";b.forEach(c=>x+=String.fromCharCode(c));return btoa(x);}
 function b64dec(s){const raw=atob(s);const u=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)u[i]=raw.charCodeAt(i);return u;}
+// terminal font follows the pane's Cmd+/- zoom scale (same store, same keys)
+function ttyFontFor(seat){return Math.round(12.5*(SCALES[seat]||1)*10)/10;}
 async function openTty(seat){
-  if(TTY)await closeTty();
-  TTY={seat:seat,waiting:true};
+  if(TTYS[seat])return;
+  TTYS[seat]={seat:seat,waiting:true};
   refresh();
-  tryStartTty();
+  tryStartTty(seat);
 }
-async function tryStartTty(){
-  if(!TTY)return;
-  const seat=TTY.seat;
+async function tryStartTty(seat){
+  if(!TTYS[seat])return;
   const r=await fetch(api("/api/tty/start"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat,cols:120,rows:32})}).then(r=>r.json()).catch(()=>null);
-  if(!TTY||TTY.seat!==seat)return; // door changed hands while we waited
-  if(!r){TTY=null;refresh();await uiNotice("Could not reach the engine — the keys stay with the team.");return;}
-  if(r.busy){TTY.waiting=true;mountTty();setTimeout(tryStartTty,2000);return;} // mid-turn: keys arrive when it finishes
-  if(r.error){TTY=null;refresh();await uiNotice(r.error);return;}
+  if(!TTYS[seat])return; // released while we waited
+  if(!r){delete TTYS[seat];refresh();await uiNotice("Could not reach the engine — the keys stay with the team.");return;}
+  if(r.busy){TTYS[seat].waiting=true;mountTtys();setTimeout(()=>tryStartTty(seat),2000);return;} // mid-turn: keys arrive when it finishes
+  if(r.error){delete TTYS[seat];refresh();await uiNotice(r.error);return;}
   attachTty(seat);
 }
 function attachTty(seat){
-  TTY.waiting=false;
+  const t=TTYS[seat];if(!t)return;
+  t.waiting=false;
   const wrap=document.createElement("div");wrap.className="ttywrap";
-  const term=new Terminal({fontFamily:"'JetBrains Mono',ui-monospace,Menlo,monospace",fontSize:12.5,cursorBlink:true,scrollback:5000,
+  const term=new Terminal({fontFamily:"'JetBrains Mono',ui-monospace,Menlo,monospace",fontSize:ttyFontFor(seat),cursorBlink:true,scrollback:5000,
     theme:{background:"#0b0e14",foreground:"#f1f3f6",cursor:"#e2a33c",selectionBackground:"#32405a"}});
   const fit=new FitAddon.FitAddon();term.loadAddon(fit);
   term.open(wrap);
-  TTY.wrap=wrap;TTY.term=term;
-  TTY.fit=()=>{try{fit.fit();
+  t.wrap=wrap;t.term=term;
+  t.fit=()=>{try{fit.fit();
     fetch(api("/api/tty/resize"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat,cols:term.cols,rows:term.rows})}).catch(()=>{});
   }catch(e){}};
   // keystrokes → the PTY (8ms micro-batch so paste isn't a POST per char)
-  let buf="",t=null;
-  term.onData(d=>{buf+=d;if(!t)t=setTimeout(()=>{const s=buf;buf="";t=null;
+  let buf="",tm=null;
+  term.onData(d=>{buf+=d;if(!tm)tm=setTimeout(()=>{const s=buf;buf="";tm=null;
     fetch(api("/api/tty/input"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat,data:b64enc(s)})}).catch(()=>{});
   },8);});
   const es=new EventSource(api("/api/tty/stream")+"&seat="+encodeURIComponent(seat));
   es.onmessage=e=>{let d;try{d=JSON.parse(e.data);}catch(err){return;}
     if(d.replay!==undefined){term.reset();term.write(b64dec(d.replay));return;} // (re)connect replaces, never duplicates
     if(d.d)term.write(b64dec(d.d));
-    if(d.exit!==undefined){es.close();teardownTty();refresh();uiNotice("The agent session ended (exit "+d.exit+") — keys returned, deliveries resume.");}
+    if(d.exit!==undefined){es.close();teardownTty(seat);refresh();uiNotice("The "+seat+" agent session ended (exit "+d.exit+") — keys returned, deliveries resume.");}
   };
-  TTY.es=es;
-  refresh(); // repaint puts the host div in place; mountTty attaches the terminal
+  t.es=es;
+  refresh(); // repaint puts the host div in place; mountTtys attaches the terminal
 }
-function teardownTty(){
-  if(!TTY)return;
-  try{TTY.es&&TTY.es.close();}catch(e){}
-  try{TTY.ro&&TTY.ro.disconnect();}catch(e){}
-  try{TTY.term&&TTY.term.dispose();}catch(e){}
-  TTY=null;
+function teardownTty(seat){
+  const t=TTYS[seat];if(!t)return;
+  try{t.es&&t.es.close();}catch(e){}
+  try{t.ro&&t.ro.disconnect();}catch(e){}
+  try{t.term&&t.term.dispose();}catch(e){}
+  delete TTYS[seat];
 }
-async function closeTty(){
-  if(!TTY)return;
-  const seat=TTY.seat;
-  teardownTty();
+async function closeTty(seat){
+  if(!TTYS[seat])return;
+  teardownTty(seat);
   await fetch(api("/api/tty/stop"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat})}).catch(()=>{});
   refresh();
 }
-function mountTty(){
-  if(!TTY)return;
-  const host=document.querySelector('[data-ttyhost="'+TTY.seat+'"]');
-  if(!host)return;
-  if(TTY.waiting){host.innerHTML='<div class="ttywait">seat is mid-turn — the keys are yours the moment it finishes…</div>';return;}
-  if(TTY.wrap&&TTY.wrap.parentElement!==host){
-    host.innerHTML="";host.appendChild(TTY.wrap);
-    if(TTY.ro)TTY.ro.disconnect();
-    TTY.ro=new ResizeObserver(()=>{if(TTY&&TTY.fit)TTY.fit();});
-    TTY.ro.observe(host);
-    TTY.fit&&TTY.fit();TTY.term&&TTY.term.focus();
-  }
+function mountTtys(){
+  Object.keys(TTYS).forEach(seat=>{
+    const t=TTYS[seat];
+    const host=document.querySelector('[data-ttyhost="'+seat+'"]');
+    if(!host)return;
+    if(t.waiting){host.innerHTML='<div class="ttywait">seat is mid-turn — the keys are yours the moment it finishes…</div>';return;}
+    if(t.wrap&&t.wrap.parentElement!==host){
+      host.innerHTML="";host.appendChild(t.wrap);
+      if(t.ro)t.ro.disconnect();
+      t.ro=new ResizeObserver(()=>{if(TTYS[seat]&&TTYS[seat].fit)TTYS[seat].fit();});
+      t.ro.observe(host);
+      t.fit&&t.fit();
+      if(!t.focused){t.focused=true;t.term.focus();} // focus once, never steal on repaints
+    }
+  });
 }
 // 2d durable echo: messages the operator just sent, rendered instantly and
 // kept until the durable copy arrives (pending) or the send provably failed
@@ -608,7 +615,7 @@ function tileHead(s){
   // Racing language (Adam's pick, 2026-08-10) — matches the cockpit's
   // revving/drafting spinner words. Plain text, never a glyph (U+2328
   // rendered as a broken "=" in the pane font).
-  const keysOn=TTY&&TTY.seat===s.seat;
+  const keysOn=!!TTYS[s.seat];
   const keys='<button class="keysbtn'+(keysOn?" on":"")+'" data-keys="'+s.seat+'" title="'
     +(keysOn?'Hand back the wheel — the engine resumes deliveries to this seat':'Take the wheel — open the real '+esc(s.agent)+' session in this pane; the team holds its deliveries while you drive')+'">'
     +(keysOn?'YOUR WHEEL · hand back':'TAKE THE WHEEL')+'</button>';
@@ -657,7 +664,7 @@ function renderTile(s,slot){
   // Native seat access: while the human holds this seat's keys, the pane IS
   // the agent's terminal (the head stays; the living xterm node re-mounts
   // after each repaint via mountTty).
-  if(TTY&&TTY.seat===s.seat){
+  if(TTYS[s.seat]){
     return '<div class="tile'+cls+'" data-seat="'+s.seat+'">'+tileHead(s)
       +'<div class="ttyhost" data-ttyhost="'+s.seat+'"></div></div>';
   }
@@ -744,7 +751,7 @@ async function refresh(){
     applyLayout();
     wire();
     const cb2=document.getElementById("chatbox");if(cb2){cb2.value=chatVal;if(chatFocused)cb2.focus();}
-    mountTty(); // native seat access: re-seat the living terminal after the repaint
+    mountTtys(); // native seat access: re-seat the living terminals after the repaint
     document.querySelectorAll(".feed").forEach(f=>{if(!f.hasAttribute("data-ttyhost"))f.scrollTop=f.scrollHeight;});
     const cl=document.getElementById("chatlog");if(cl)cl.scrollTop=cl.scrollHeight;
     POLLFAILS=0;document.body.classList.remove("dead");
@@ -861,7 +868,7 @@ function wire(){
   document.querySelectorAll(".chip[data-fill]").forEach(c=>{c.onclick=()=>{const b=document.getElementById("chatbox");if(b){b.value=c.getAttribute("data-fill");b.focus();}};});
   document.querySelectorAll(".keysbtn[data-keys]").forEach(b=>{b.onclick=()=>{
     const s=b.getAttribute("data-keys");
-    if(TTY&&TTY.seat===s)closeTty();else openTty(s);
+    if(TTYS[s])closeTty(s);else openTty(s);
   };});
   // custom layout: seams resize (double-click resets an axis), headers drag to swap
   document.querySelectorAll(".gut").forEach(g=>{
@@ -890,15 +897,17 @@ let SCALES={};try{SCALES=JSON.parse(localStorage.getItem("crate.scales")||"{}");
 let hoveredSeat=null;
 const SEATS_ALL=["orchestrator","coder","reviewer","designer","tester"];
 function saveScales(){localStorage.setItem("crate.scales",JSON.stringify(SCALES));}
-function setSeatScale(seat,v){SCALES[seat]=Math.min(2.4,Math.max(0.6,Math.round(v*100)/100));const el=document.querySelector('.tile[data-seat="'+seat+'"]');if(el)el.style.setProperty("--tscale",SCALES[seat]);}
+function setSeatScale(seat,v){SCALES[seat]=Math.min(2.4,Math.max(0.6,Math.round(v*100)/100));const el=document.querySelector('.tile[data-seat="'+seat+'"]');if(el)el.style.setProperty("--tscale",SCALES[seat]);
+  // a wheeled pane zooms its TERMINAL font with the same shortcut
+  const t=TTYS[seat];if(t&&t.term){t.term.options.fontSize=ttyFontFor(seat);if(t.fit)t.fit();}}
 function bumpScale(d){
   if(hoveredSeat){setSeatScale(hoveredSeat,(SCALES[hoveredSeat]||1)+d);}
   else{SEATS_ALL.forEach(s=>setSeatScale(s,(SCALES[s]||1)+d));}
   saveScales();
 }
 function resetScale(){
-  if(hoveredSeat){SCALES[hoveredSeat]=1;const el=document.querySelector('.tile[data-seat="'+hoveredSeat+'"]');if(el)el.style.setProperty("--tscale",1);}
-  else{SEATS_ALL.forEach(s=>{SCALES[s]=1;const el=document.querySelector('.tile[data-seat="'+s+'"]');if(el)el.style.setProperty("--tscale",1);});}
+  if(hoveredSeat)setSeatScale(hoveredSeat,1);
+  else SEATS_ALL.forEach(s=>setSeatScale(s,1));
   saveScales();
 }
 document.getElementById("grid").addEventListener("mousemove",e=>{const t=e.target.closest?e.target.closest(".tile"):null;hoveredSeat=t?t.getAttribute("data-seat"):null;});
