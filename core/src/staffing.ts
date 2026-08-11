@@ -171,7 +171,10 @@ const COMPANY_ORDER = ["Anthropic", "OpenAI", "Google", "DeepSeek", "Moonshot AI
 /** Version-desc rank for discovered entries; small numbers only (context
  * sizes and dates never count as versions). */
 export function versionRank(model: string, display: string): number {
-  const s = `${model} ${display}`.toLowerCase().replace(/(\d)-(\d)/g, "$1.$2");
+  const s = `${model} ${display}`
+    .toLowerCase()
+    .replace(/(\d)-(\d)/g, "$1.$2")
+    .replace(/([a-z])(?=\d)/g, "$1 "); // "k3"/"m3" style: split the letter off so the number counts
   let v = 0;
   for (const m of s.matchAll(/\b(\d{1,2}(?:\.\d{1,2})?)\b/g)) {
     const n = parseFloat(m[1]!);

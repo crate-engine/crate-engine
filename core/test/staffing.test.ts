@@ -148,7 +148,9 @@ test("orderCatalog: company blocks in lab order; curated hand-order first; disco
   assert.equal(out[0]!.company, "Anthropic");
 });
 
-test("versionRank: dashed versions normalize; context sizes never count", () => {
+test("versionRank: dashed versions normalize; k3-style reads as 3; context sizes never count", () => {
   assert.ok(versionRank("anthropic/claude-opus-4-8", "") > versionRank("anthropic/claude-opus-4-5", ""));
+  assert.ok(versionRank("zenmux/moonshotai/kimi-k3", "") > versionRank("zenmux/moonshotai/kimi-k2.7-code", ""),
+    "the frontier K3 outranks K2.7 — 'k3' has no separator but still counts");
   assert.equal(versionRank("some/model-262144", "big context"), 0);
 });
