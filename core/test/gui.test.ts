@@ -99,13 +99,17 @@ test("W1: /start renders the preflight; the retired arm/check/health screens red
   }
 });
 
-test("staffing catalog: five seats + honest labels (Claude-via-Pi metered, never verified)", async () => {
+test("staffing catalog: five seats + the first-party-only Claude law (no Claude-via-Pi, ever)", async () => {
   const r = await call("GET", "/api/staffing");
   assert.equal(r.status, 200);
   assert.equal(r.body.seats.length, 5);
-  const viaPi = r.body.models.find((m: any) => m.model.startsWith("anthropic/"));
-  assert.match(viaPi.billing, /METERED/);
-  assert.equal(viaPi.verifiedFor.length, 0);
+  // Adam's staffing law (2026-08-11): Claude runs FIRST-PARTY ONLY — no
+  // anthropic/* model may appear in the catalog from any source.
+  assert.equal(
+    r.body.models.find((m: any) => m.model.startsWith("anthropic/")),
+    undefined,
+    "Claude-via-Pi must never be offered",
+  );
   const coderDefault = r.body.models.find((m: any) => m.verifiedFor.includes("coder"));
   assert.equal(coderDefault.agent, "claude");
   // PHASE-B #4: pi 0.80.6's default model is offered — verified NOWHERE yet,

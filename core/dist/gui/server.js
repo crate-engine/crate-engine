@@ -94,13 +94,9 @@ const MODELS = [
         billing: "provider-billed (API key via Pi)",
         verifiedFor: [],
     },
-    {
-        agent: "pi",
-        model: "anthropic/claude-opus-4-8",
-        display: "Claude via Pi — ⚠ metered",
-        billing: "⚠ METERED extra usage — a Claude sub does NOT run flat through Pi (P0-5); use first-party Claude Code for flat-rate Claude",
-        verifiedFor: [],
-    },
+    // (Removed 2026-08-11, Adam's staffing law: Claude runs FIRST-PARTY ONLY —
+    // the "Claude via Pi" metered path is gone from the catalog entirely; see
+    // the discovery filter below for the same rule on detected models.)
     // ── 2026-07-14 seat expansion (agent-agnostic = OPTIONS): offered when the
     // CLI is detected installed + signed in; verified nowhere yet, so every seat
     // labels them "not yet battle-tested". Headless wires: turn.ts (flag surfaces
@@ -231,7 +227,13 @@ function staffingCatalog(state, detectPath) {
     const discovered = discoverPiModels(state.home, {
         curated: curated.filter((m) => m.ready),
         piInstalled: whichBin("pi", pathOpt) !== undefined,
-    });
+    }).filter(
+    // Adam's staffing law (2026-08-11): Claude runs FIRST-PARTY ONLY — never
+    // through Pi. The metered path duplicated every Claude model in the
+    // picker, its OAuth rots (live case: an expired anthropic refresh token
+    // killed EVERY pi startup on both machines), and first-party is flat-rate
+    // for the same brains. Claude Code entries are the only Claude offered.
+    (m) => !m.model.startsWith("anthropic/"));
     // Company grouping (Adam, 2026-08-11): lab blocks, frontier-first — the
     // pickers render `company` as group headers in this exact order.
     const models = orderCatalog([...curated, ...discovered]);
