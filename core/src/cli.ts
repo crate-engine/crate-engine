@@ -317,6 +317,12 @@ switch (command) {
               `(stop whatever holds it — a local crate app? — and retry)`,
           );
         }
+        // --print-url (native-mac-shell PDR): do everything EXCEPT opening a
+        // browser — the native shell loads this URL in its own window.
+        if (rest.includes("--print-url")) {
+          console.log(plan.teamUrl);
+          break;
+        }
         const win = openWin(plan.teamUrl, { home: process.env.HOME ?? "" });
         console.log(
           `Crate Engine (on ${host}) is open — ${win.mode === "app" ? "the ⚡ app window" : "your browser"} is loading through the ssh tunnel.`,
@@ -404,7 +410,10 @@ switch (command) {
         // A display-less host (linux server over ssh) boots the server exactly
         // the same but hands the WINDOW to the operator's laptop instead of
         // dead-ending in xdg-open (PDR linux-headless-server).
-        const win = hasDisplay() ? openAppWindow(teamUrl, { home }) : undefined;
+        // --print-url (native-mac-shell PDR): the native shell asks for the
+        // door, never a browser window.
+        const printOnly = rest.includes("--print-url");
+        const win = !printOnly && hasDisplay() ? openAppWindow(teamUrl, { home }) : undefined;
         // boot the team (GUI-owned lifecycle) so the operator lands on a live rig
         if (project) {
           try {
@@ -415,7 +424,9 @@ switch (command) {
             });
           } catch { /* the Team menu can boot it if this misses */ }
         }
-        if (win) {
+        if (printOnly) {
+          console.log(teamUrl);
+        } else if (win) {
           console.log(`Crate Engine is open — ${win.mode === "app" ? "the ⚡ app window" : "your browser"} is loading${project ? ` (${project})` : ""}.`);
           console.log(teamUrl);
         } else {
