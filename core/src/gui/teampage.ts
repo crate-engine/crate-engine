@@ -501,6 +501,12 @@ function attachTty(seat,skipRefresh){
   });
   t.wrap=wrap;t.term=term;
   t.fit=()=>{try{fit.fit();
+    // Resize-storm guard (2026-08-12): the 2s repaint re-seats every wheel and
+    // re-fires fit(); only a REAL dim change may leave the client. Without
+    // this, every tick SIGWINCHed five TUIs into full-transcript repaints —
+    // ~3 GB in 15 min down the cockpit link, drowning the operator's WiFi.
+    if(term.cols===t.pcols&&term.rows===t.prows)return;
+    t.pcols=term.cols;t.prows=term.rows;
     fetch(api("/api/tty/resize"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat,cols:term.cols,rows:term.rows})}).catch(()=>{});
   }catch(e){}};
   // keystrokes → the PTY (8ms micro-batch so paste isn't a POST per char)
@@ -859,7 +865,11 @@ async function refresh(){
     (tr.seats||[]).forEach(s=>{
       if(!s.blended||!s.ptyStartedAt)return;
       if(!TTYS[s.seat]){TTYS[s.seat]={seat:s.seat,waiting:false,blended:true,gen:s.ptyStartedAt};attachTty(s.seat,true);}
-      else if(TTYS[s.seat].gen!==s.ptyStartedAt){TTYS[s.seat].gen=s.ptyStartedAt;syncTtyStream();}
+      else if(TTYS[s.seat].gen!==s.ptyStartedAt){TTYS[s.seat].gen=s.ptyStartedAt;
+        // a respawn is a NEW PTY at default dims — forget the remembered size
+        // so the guard lets the next fit() re-send the real one
+        TTYS[s.seat].pcols=TTYS[s.seat].prows=null;
+        syncTtyStream();}
     });
     renderLoopChip(lp&&lp.narration);
     // dead-runner distress (FLAWS 2026-08-11: four runners died silently and

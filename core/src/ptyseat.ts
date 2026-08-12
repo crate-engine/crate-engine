@@ -434,6 +434,11 @@ export async function startSeatTty(opts: StartTtyOpts): Promise<StartTtyResult> 
       try { proc.write(typeof d === "string" ? d : d.toString("utf8")); } catch { /* exited */ }
     },
     resize: (c, r) => {
+      // Resize-storm guard (2026-08-12): the cockpit's 2s repaint re-fits
+      // every seat; identical dims must never reach the TUI — a SIGWINCH
+      // makes claude repaint its FULL transcript, and five seats doing that
+      // flooded the cockpit link (~3 GB in 15 min over WiFi).
+      if (c === tty.cols && r === tty.rows) return;
       tty.cols = c;
       tty.rows = r;
       try { proc.resize(c, r); } catch { /* exited */ }
