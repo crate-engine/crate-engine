@@ -173,9 +173,13 @@ grid-template-rows:var(--r1,1fr) 1px var(--r2,1fr)}
 .thead-r{display:inline-flex;align-items:center;gap:11px}
 .tname{font:400 11px/1 var(--disp);letter-spacing:.1em;text-transform:uppercase}
 .tagent{font:500 10px/1 var(--mono);color:var(--faint)}
+/* the model chip IS a menu (restaff picker) — say so quietly: a small caret,
+   brightening with the chip on hover (Adam, 2026-08-12: discoverable, minimal) */
+.tagent .tcaret{display:inline-block;margin-left:3px;font-size:7px;vertical-align:1px;opacity:.55}
+.tagent[data-restaff]:hover .tcaret{opacity:1}
 /* restaff-on-the-fly: the agent name is the control */
 .tagent[data-restaff]{cursor:pointer}
-.tagent[data-restaff]:hover{color:var(--amber);text-decoration:underline}
+.tagent[data-restaff]:hover{color:var(--amber)}
 .pktag.untested{color:var(--faint);border-color:var(--line2)}
 .pkco{padding:12px 20px 5px;font:600 9.5px/1 var(--mono);letter-spacing:.2em;text-transform:uppercase;color:var(--amber);border-bottom:1px solid var(--line)}
 /* held-wheel truth chip: quiet when nothing waits, amber when mail queues */
@@ -719,7 +723,7 @@ function tileHead(s){
     const q=(s.unread||0)>0?'<span class="pausechip hot" title="Mail queued — the engine delivers when your composer goes quiet (it yields to you)">✉ '+s.unread+' queued</span>':'';
     const act=s.responding?'<span class="working"><span class="wd"></span><span class="rtext">responding…</span></span>'
       :(s.lastOutputAt?'<span class="idlechip">idle since '+new Date(s.lastOutputAt).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",hour12:false})+'</span>':'');
-    const agent='<span class="tagent" data-restaff="'+s.seat+'" title="Change this seat\\'s agent (applies to this project)">'+esc(s.agent)+(s.model?"/"+esc(s.model.split("/").pop()):"")+'</span>';
+    const agent='<span class="tagent" data-restaff="'+s.seat+'" title="Change this seat\\'s agent (applies to this project)">'+esc(s.agent)+(s.model?"/"+esc(s.model.split("/").pop()):"")+'<span class="tcaret">▾</span></span>';
     // No BLENDED tag (Adam, 2026-08-12): when the pane IS the agent,
     // announcing it is noise — the absence of a wheel button says it all.
     return '<div class="thead"><span class="tname"><span class="dot '+(s.responding?"run":(s.ptyStartedAt?"ok":"idle"))+'"></span>'+esc(s.title)+'</span>'
@@ -727,7 +731,7 @@ function tileHead(s){
   }
   const run=s.turns&&s.turns.find(t=>t.ok===null);
   const right=run?workingSpan(run)
-    :idleChip(s)+'<span class="tagent" data-restaff="'+s.seat+'" title="Change this seat\\'s agent (applies to this project)">'+esc(s.agent)+(s.model?"/"+esc(s.model.split("/").pop()):"")+'</span>';
+    :idleChip(s)+'<span class="tagent" data-restaff="'+s.seat+'" title="Change this seat\\'s agent (applies to this project)">'+esc(s.agent)+(s.model?"/"+esc(s.model.split("/").pop()):"")+'<span class="tcaret">▾</span></span>';
   // Native seat access: ⌨ takes the keys — the seat's REAL agent TUI, live
   // in this pane, inside the wall. Lit amber while the human holds them.
   // Racing language (Adam's pick, 2026-08-10) — matches the cockpit's
