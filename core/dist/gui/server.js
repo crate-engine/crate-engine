@@ -16,7 +16,7 @@ import { deriveBrainRoot } from "../launcher.js";
 import { loadLoadout, loadoutPath, SEATS } from "../manifest.js";
 import { discoverPiModels } from "../pidiscovery.js";
 import { loadUserDefaults, orderCatalog, parseRigConf, resolveSeatDetailed, RIG_PREFIX, updateRigStaffing } from "../staffing.js";
-import { readLastProject, seedDefaultsIfAbsent, tierPaths, updateEngine, writeLastProject } from "../usertier.js";
+import { appUrlPath, readLastProject, seedDefaultsIfAbsent, tierPaths, updateEngine, writeLastProject } from "../usertier.js";
 import { join } from "node:path";
 import { attachPage, staffingPage, startPage, welcomePage } from "./pages.js";
 // ── the staffing catalog (P0-5 EVIDENCE + the ladder-proven verified defaults) ──
@@ -139,6 +139,34 @@ async function readBody(req) {
         chunks.push(c);
     const text = Buffer.concat(chunks).toString("utf8");
     return text ? JSON.parse(text) : {};
+}
+/** The engine sha on DISK right now (~/.crate/engine HEAD; dev fallback =
+ * this source tree). At server BOOT this is the loaded code's sha (the
+ * process was just spawned from that disk); `crate open` calls it later to
+ * know what a FRESH server would load. "unknown" on any failure. */
+export function diskEngineSha(home) {
+    const { engineDir } = tierPaths(home);
+    const dir = existsSync(join(engineDir, ".git")) ? engineDir : join(import.meta.dirname, "..", "..", "..");
+    try {
+        return execFileSync("git", ["rev-parse", "--short", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
+    }
+    catch {
+        return "unknown";
+    }
+}
+/** Pack 3 (stale-reattach): a reattaching `crate open` keeps the running
+ * server ONLY when it provably runs the disk engine. Order matters:
+ * an unjudgeable DISK (no git — tarball install) keeps the server (never
+ * restart-thrash what we cannot compare), while a server that cannot name
+ * its loaded sha (pre-Pack-3 survivor) restarts once onto code that can —
+ * a restart costs seconds; a silent stale server broke the update promise
+ * (live-found 2026-08-12). */
+export function serverIsStale(loadedSha, diskSha) {
+    if (diskSha === "unknown")
+        return false;
+    if (!loadedSha || loadedSha === "unknown")
+        return true;
+    return loadedSha !== diskSha;
 }
 export function engineVersion(home) {
     const { engineDir } = tierPaths(home);
@@ -316,6 +344,9 @@ export async function startGuiServer(opts = {}) {
         // T7-3: the dist cli.js this server runs from (spawns seat runners). The
         // caller passes it explicitly; fall back to this process's entry script.
         cliPath: opts.cliPath ?? process.argv[1] ?? "",
+        // Pack 3: captured NOW, while disk == the code this process just loaded;
+        // /api/version reports it forever after, however the disk moves on.
+        loadedSha: diskEngineSha(home),
     };
     const token = randomUUID();
     const server = createServer(async (req, res) => {
@@ -800,7 +831,35 @@ export async function startGuiServer(opts = {}) {
                     return json(res, 200, sendToOrchestrator(proj, text));
                 }
                 case "GET /api/version":
-                    return json(res, 200, engineVersion(state.home));
+                    // loadedSha = what THIS process runs (boot-captured); version = disk
+                    // truth (drives the update UI). They disagree exactly when a stale
+                    // survivor is serving — the reattach probe reads loadedSha.
+                    return json(res, 200, { ...engineVersion(state.home), loadedSha: state.loadedSha ?? "unknown", pid: process.pid });
+                case "POST /api/shutdown": {
+                    // Pack 3 (stale-reattach, cure 2): the CONFIRMED way down — `crate
+                    // stop` calls this instead of a blind pkill (the incident's kill
+                    // "landed" on a dead control channel and the survivor kept serving
+                    // old code). Same clean-kill order as /api/restart (runner-deaths
+                    // fix): stop the team while we are alive to stamp the exits, drop
+                    // the standing app-url handshake (a dead server must not leave a
+                    // live-looking pointer), answer, THEN exit.
+                    const { handoffStop } = await import("./teamproc.js");
+                    const { guiLog } = await import("./guilog.js");
+                    const { rmSync } = await import("node:fs");
+                    const handoff = handoffStop();
+                    if (handoff.stopped > 0)
+                        guiLog(state.home, `shutdown: stopped ${handoff.stopped} seats`);
+                    try {
+                        rmSync(appUrlPath(state.home));
+                    }
+                    catch {
+                        /* absent already */
+                    }
+                    guiLog(state.home, `shutdown requested (/api/shutdown — crate stop) — exiting`);
+                    json(res, 200, { ok: true, pid: process.pid, stoppedSeats: handoff.stopped });
+                    setTimeout(() => process.exit(0), 400); // after the response flushes
+                    return;
+                }
                 case "POST /api/restart": {
                     // W3 (audit K2): "Update now" ends with the app BACK, not homework.
                     // Runner-deaths fix (FLAWS 2026-08-11): it also ends with the TEAM

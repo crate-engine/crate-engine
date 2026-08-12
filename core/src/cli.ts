@@ -169,8 +169,9 @@ switch (command) {
           const alive = await fetch(url, { signal: AbortSignal.timeout(2000) }).then(() => true).catch(() => false);
           if (alive) {
             console.log(
-              `NOTE: a Crate Engine app is RUNNING — it keeps the old engine (${r.before.slice(0, 7)}) until relaunched. ` +
-                `Quit it (Ctrl+C in the terminal running it, or close the app window), then: crate open`,
+              `NOTE: a Crate Engine app is RUNNING — it keeps the old engine (${r.before.slice(0, 7)}) until restarted. ` +
+                `Run \`crate open\` — it detects the stale server and restarts it onto the new engine automatically ` +
+                `(or \`crate stop\` to just bring it down).`,
             );
           }
         }
@@ -390,6 +391,44 @@ switch (command) {
         const { openAppWindow, hasDisplay, headlessHandoff } = await import("./gui/appwindow.js");
         const { writeLastProject } = await import("./usertier.js");
         let url = await appAlive();
+        if (url) {
+          // Pack 3 (stale-reattach, live-found 2026-08-12): NEVER reattach
+          // blind — a surviving server may still run the engine it loaded
+          // before an update (old code kept serving while `crate update`'s
+          // NOTE promised a relaunch would land the new one). Ask what it
+          // LOADED, compare with disk, and restart it in place on mismatch
+          // via the existing /api/restart handoff (team stops with honest
+          // exit stamps and comes back by itself). Probe failures fail OPEN
+          // to the old reattach — availability over freshness.
+          try {
+            const { serverIsStale, diskEngineSha } = await import("./gui/server.js");
+            const u0 = new URL(url);
+            const tok = u0.searchParams.get("token") ?? "";
+            const v = (await (
+              await fetch(`${u0.origin}/api/version`, { headers: { "X-Crate-Token": tok }, signal: AbortSignal.timeout(8000) })
+            ).json()) as { loadedSha?: string };
+            const disk = diskEngineSha(home);
+            if (serverIsStale(v.loadedSha, disk)) {
+              console.log(
+                `crate open: the running app server is on an OLD engine (${v.loadedSha ?? "pre-update"}; disk has ${disk}) — restarting it in place...`,
+              );
+              const r = (await (
+                await fetch(`${u0.origin}/api/restart`, { method: "POST", headers: { "X-Crate-Token": tok }, signal: AbortSignal.timeout(60000) })
+              ).json()) as { ok?: boolean; url?: string };
+              if (r.ok === true && r.url) {
+                url = r.url.trim();
+                console.log(`crate open: fresh server is up on ${disk}.`);
+              } else {
+                console.log(
+                  `crate open: the restart did not confirm — continuing with the RUNNING (old-engine) server. ` +
+                    `If it misbehaves: crate stop, then crate open.`,
+                );
+              }
+            }
+          } catch {
+            /* version probe failed — reattach as before */
+          }
+        }
         if (url && project) {
           // already open — switch it to this project (idempotent attach)
           try {
@@ -459,6 +498,104 @@ switch (command) {
       } catch (e) {
         fail(e instanceof Error ? e.message : String(e));
       }
+    }
+    break;
+  }
+  case "stop": {
+    // crate stop [--remote <ssh-host>] — Pack 3 (stale-reattach, cure 2): the
+    // CONFIRMED way to bring the app server down. The incident's blind kill
+    // "landed" on a control channel that had died with a network switch and
+    // the survivor kept serving old code — so the confirmation here is the
+    // server actually STOPPING TO ANSWER, and --remote runs the whole stop ON
+    // the host over a fresh ssh exec (confirmed where the network cannot lie).
+    const sIdx = rest.indexOf("--remote");
+    if (sIdx !== -1) {
+      const host = rest[sIdx + 1];
+      if (!host || host.startsWith("--")) fail("crate stop --remote <ssh-host> — the ssh host is missing.");
+      const { execFile } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      const sh = promisify(execFile);
+      try {
+        const { stdout, stderr } = await sh("ssh", ["-o", "BatchMode=yes", host!, '"$HOME/.local/bin/crate" stop'], { timeout: 60000 });
+        process.stdout.write(stdout);
+        process.stderr.write(stderr);
+      } catch (e) {
+        fail(
+          `could not run the stop on ${host} over ssh — the server state there is UNKNOWN (NOT confirmed stopped): ` +
+            `${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+      break;
+    }
+    const { appUrlPath } = await import("./usertier.js");
+    const { rmSync: rmf } = await import("node:fs");
+    const f = appUrlPath(HOME);
+    if (!existsSync(f)) {
+      console.log("crate stop: no app-server handshake here (~/.crate/app-url) — nothing to stop.");
+      break;
+    }
+    const url = readFileSync(f, "utf8").trim();
+    let u: URL;
+    try {
+      u = new URL(url);
+    } catch {
+      try { rmf(f); } catch { /* best-effort */ }
+      console.log("crate stop: the handshake file was junk — cleared; nothing to stop.");
+      break;
+    }
+    let alive = true;
+    try {
+      await fetch(url, { signal: AbortSignal.timeout(2500) });
+    } catch {
+      alive = false;
+    }
+    if (!alive) {
+      try { rmf(f); } catch { /* best-effort */ }
+      console.log("crate stop: the app server is already down (stale handshake cleared).");
+      break;
+    }
+    const tok = u.searchParams.get("token") ?? "";
+    let pid: number | undefined;
+    let accepted = false;
+    try {
+      const res0 = await fetch(`${u.origin}/api/shutdown`, {
+        method: "POST",
+        headers: { "X-Crate-Token": tok },
+        signal: AbortSignal.timeout(15000),
+      });
+      const body = (await res0.json().catch(() => ({}))) as { ok?: boolean; pid?: number };
+      accepted = res0.ok && body.ok === true;
+      pid = body.pid;
+    } catch {
+      /* it may have died mid-response — the poll below is the truth */
+    }
+    // The CONFIRMATION: the server stops answering. Never report a kill that
+    // was merely SENT (the whole point of this command).
+    const t0 = Date.now();
+    let dead = false;
+    while (Date.now() - t0 < 10000 && !dead) {
+      await new Promise((r) => setTimeout(r, 500));
+      try {
+        await fetch(url, { signal: AbortSignal.timeout(1500) });
+      } catch {
+        dead = true;
+      }
+    }
+    if (dead) {
+      console.log(
+        `crate stop: the app server is DOWN — confirmed (it stopped answering${pid ? `; pid was ${pid}` : ""}). ` +
+          `Its team seats were stopped with it.`,
+      );
+    } else if (!accepted) {
+      fail(
+        `crate stop: this server does not know /api/shutdown (it predates crate stop) and is STILL RUNNING — ` +
+          `restart it onto the disk engine instead (crate open does this automatically), or kill it by hand.`,
+      );
+    } else {
+      fail(
+        `crate stop: the server ACCEPTED the shutdown but is STILL ANSWERING after 10s${pid ? ` (pid ${pid})` : ""} — ` +
+          `kill it by hand: kill ${pid ?? "<pid>"}`,
+      );
     }
     break;
   }
@@ -732,5 +869,5 @@ switch (command) {
     break;
   }
   default:
-    fail(`usage: crate <open|setup|attach|crew|gui|doctor|update|up|print|relaunch|version> ...`);
+    fail(`usage: crate <open|stop|setup|attach|crew|gui|doctor|update|up|print|relaunch|version> ...`);
 }

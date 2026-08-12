@@ -8,7 +8,26 @@ export interface GuiState {
     reviveNotes?: ReviveNote[];
     /** T7-3: the dist cli.js this server runs from — used to spawn seat runners. */
     cliPath: string;
+    /** Pack 3 (stale-reattach): the engine sha THIS process loaded at boot.
+     * /api/version reports it so a reattaching `crate open` can tell a stale
+     * survivor from a fresh server — engineVersion()'s own sha is DISK truth
+     * at request time, which on a stale server reports the NEW sha and hides
+     * exactly the mismatch that matters (live-found 2026-08-12). */
+    loadedSha?: string;
 }
+/** The engine sha on DISK right now (~/.crate/engine HEAD; dev fallback =
+ * this source tree). At server BOOT this is the loaded code's sha (the
+ * process was just spawned from that disk); `crate open` calls it later to
+ * know what a FRESH server would load. "unknown" on any failure. */
+export declare function diskEngineSha(home: string): string;
+/** Pack 3 (stale-reattach): a reattaching `crate open` keeps the running
+ * server ONLY when it provably runs the disk engine. Order matters:
+ * an unjudgeable DISK (no git — tarball install) keeps the server (never
+ * restart-thrash what we cannot compare), while a server that cannot name
+ * its loaded sha (pre-Pack-3 survivor) restarts once onto code that can —
+ * a restart costs seconds; a silent stale server broke the update promise
+ * (live-found 2026-08-12). */
+export declare function serverIsStale(loadedSha: string | undefined, diskSha: string): boolean;
 export declare function engineVersion(home: string): {
     version: string;
     updateAvailable: boolean;

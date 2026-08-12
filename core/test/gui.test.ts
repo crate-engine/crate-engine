@@ -316,3 +316,28 @@ test("projectAt: a folder with attached .agents IS the project anchor; anything 
   assert.equal(projectAt(join(scratch, "exec-repo")), join(scratch, "exec-repo"));
   assert.equal(projectAt(scratch), undefined);
 });
+
+// ── Pack 3: the stale-reattach probe ──
+
+test("/api/version reports the LOADED sha + pid — boot-captured, not disk-at-request-time", async () => {
+  const r = await call("GET", "/api/version");
+  assert.equal(r.status, 200);
+  assert.equal(typeof r.body.loadedSha, "string");
+  assert.equal(r.body.loadedSha, gui.state.loadedSha ?? "unknown", "the probe reads what the process LOADED");
+  assert.equal(r.body.pid, process.pid, "pid rides along for crate stop's plain-words reporting");
+});
+
+test("/api/shutdown is token-gated like everything else (403 without the token — and the handler never runs)", async () => {
+  const wrong = await call("POST", "/api/shutdown", undefined, "nope");
+  assert.equal(wrong.status, 403);
+});
+
+test("serverIsStale: mismatch or an unnameable server restarts; an unjudgeable disk never thrashes", async () => {
+  const { serverIsStale } = await import("../src/gui/server.js");
+  assert.equal(serverIsStale("abc1234", "abc1234"), false, "same sha = fresh, keep the server");
+  assert.equal(serverIsStale("abc1234", "def5678"), true, "mismatch = the stale survivor (the live-found incident)");
+  assert.equal(serverIsStale(undefined, "def5678"), true, "a pre-Pack-3 server cannot prove itself — restart once onto code that can");
+  assert.equal(serverIsStale("unknown", "def5678"), true);
+  assert.equal(serverIsStale(undefined, "unknown"), false, "no git on disk — never restart-thrash what cannot be compared");
+  assert.equal(serverIsStale("abc1234", "unknown"), false);
+});
