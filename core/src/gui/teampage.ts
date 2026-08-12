@@ -709,9 +709,10 @@ function tileHead(s){
     const act=s.responding?'<span class="working"><span class="wd"></span><span class="rtext">responding…</span></span>'
       :(s.lastOutputAt?'<span class="idlechip">idle since '+new Date(s.lastOutputAt).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",hour12:false})+'</span>':'');
     const agent='<span class="tagent" data-restaff="'+s.seat+'" title="Change this seat\\'s agent (applies to this project)">'+esc(s.agent)+(s.model?"/"+esc(s.model.split("/").pop()):"")+'</span>';
+    // No BLENDED tag (Adam, 2026-08-12): when the pane IS the agent,
+    // announcing it is noise — the absence of a wheel button says it all.
     return '<div class="thead"><span class="tname"><span class="dot '+(s.responding?"run":(s.ptyStartedAt?"ok":"idle"))+'"></span>'+esc(s.title)+'</span>'
-      +'<span class="thead-r">'+q+gaugeHtml(s.gauge,s.seat)+act+agent
-      +'<span class="blendtag" title="Blended pane — one live session in an engine-owned PTY; team mail is delivered into it, and you can type any time">BLENDED</span></span></div>';
+      +'<span class="thead-r">'+q+gaugeHtml(s.gauge,s.seat)+act+agent+'</span></div>';
   }
   const run=s.turns&&s.turns.find(t=>t.ok===null);
   const right=run?workingSpan(run)
