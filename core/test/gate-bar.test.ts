@@ -26,6 +26,13 @@ test("the bar renders from the poll and releases through the one shared route", 
   assert.ok(fn.includes("/api/gates/release"), "bar releases via the same endpoint every surface shares");
 });
 
+test("a hidden bar actually hides — explicit display must not beat the hidden attribute", () => {
+  // Adam's catch (2026-08-12): #gatebar{display:flex} overrode the HTML
+  // `hidden` attribute, so the ticket-#3 "released" message fossilized on
+  // screen 3.5h after DEPLOYED. The [hidden] rule is load-bearing.
+  assert.ok(html.includes("#gatebar[hidden]{display:none}"), "the [hidden] display rule ships");
+});
+
 test("the bar is wired once at boot and takes the phrase on Enter", () => {
   assert.ok(html.includes('getElementById("gbinput")'), "input wired");
   assert.ok(/gbinput.*Enter.*releaseFromBar|Enter.*releaseFromBar/s.test(html), "Enter submits the phrase");

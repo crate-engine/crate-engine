@@ -32,9 +32,19 @@ test("a new START_IMPL resets the round count (narrate the current run only)", (
   assert.equal(loopNarration(next)?.text, "round 1 — the coder is building");
 });
 
-test("cockpit masthead carries the loop chip wired to /api/loop", () => {
+// The masthead chip itself is GONE (Adam, 2026-08-12): it narrated the loop
+// for the wheels era; blended panes made it noise — the orchestrator's live
+// session IS the narration. loopNarration (above) stays as the /api/loop
+// server logic for programmatic callers. The masthead keeps only the LIVE
+// project label, the dead-seat distress chip, and the gate bar; the
+// NARRATED/ENGINEER lens toggle left with it (lenses styled the summarized
+// feeds the blend replaced — ?lens=engineer stays as the URL escape hatch).
+test("cockpit masthead is stripped: no loop chip, no lens toggle — the live surfaces remain", () => {
   const html = teamPage({ project: "demo", seats: [] });
-  assert.ok(html.includes('id="loopchip"'), "chip element present");
-  assert.ok(html.includes("renderLoopChip"), "renderer wired");
-  assert.ok(html.includes("/api/loop"), "polls the loop endpoint");
+  assert.ok(!html.includes('id="loopchip"'), "loop chip element removed");
+  assert.ok(!html.includes("renderLoopChip"), "chip renderer removed");
+  assert.ok(!html.includes('id="bn"') && !html.includes(">Narrated<"), "lens toggle removed");
+  assert.ok(html.includes('id="projlabel"'), "live project label stays");
+  assert.ok(html.includes('id="downchip"'), "dead-seat distress chip stays (safety)");
+  assert.ok(html.includes('id="gatebar"'), "gate bar stays (the operator's release surface)");
 });

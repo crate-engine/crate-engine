@@ -53,11 +53,6 @@ header{padding:12px 22px;border-bottom:1px solid var(--line);display:flex;align-
 /* PHASE-B #2: the loop-narration chip — round N + whose move it is, straight
    from events.log. THE "it feels slow" fix: minutes-long agent turns must
    read as a loop in motion, not a frozen page. */
-.loopchip{display:inline-flex;align-items:center;gap:7px;font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--amber);white-space:nowrap}
-.loopchip .ld{width:5px;height:5px;border-radius:50%;background:var(--amber);animation:pulse 1.1s infinite;flex:0 0 auto}
-.loopchip .lm{color:var(--faint);letter-spacing:0;text-transform:none}
-.loopchip.calm{color:var(--ok)}
-.loopchip.calm .ld{animation:none;background:var(--ok)}
 /* PHASE-B #5 (Adam): the top nav is CLEAN TEXT — no boxes anywhere in the
    masthead (nav items, hamburger, badges, toggle). Panel-openers carry an
    amber spin-down chevron that flips while their panel is open. */
@@ -110,10 +105,6 @@ header{padding:12px 22px;border-bottom:1px solid var(--line);display:flex;align-
 .cactions button:hover{border-color:var(--amber)}
 .cpolicy{margin-top:14px;font-size:11px;color:var(--faint);line-height:1.6;border-top:1px solid var(--line);padding-top:10px}
 .cpolicy b{color:var(--dim)}
-.toggle{display:inline-flex;gap:14px}
-.toggle button{background:transparent;color:var(--faint);border:0;padding:6px 0;font:600 10px/1 var(--body);letter-spacing:.14em;text-transform:uppercase;cursor:pointer}
-.toggle button:hover{color:var(--fg)}
-.toggle button.on{color:var(--amber)}
 /* T7-1: the workspace rail — a left drawer, HIDDEN by default so a
    single-project user gets the full-bleed grid edge-to-edge (Adam). */
 .railbtn{background:transparent;border:0;color:var(--dim);width:30px;height:28px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto}
@@ -194,6 +185,10 @@ grid-template-rows:var(--r1,1fr) 1px var(--r2,1fr)}
    tile IS a terminal), so "merge go" had nowhere to land — the one law only
    the human may exercise must never depend on which panes are blended. */
 #gatebar{display:flex;align-items:center;gap:12px;padding:8px 18px;border-bottom:1px solid var(--line2);background:rgba(226,163,60,.07);font:600 10px/1.4 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--amber);white-space:nowrap;overflow-x:auto}
+/* explicit display beats the hidden attribute — without this the bar NEVER
+   hides and the last released message fossilizes on screen (Adam caught the
+   ticket-#3 "released" strip still showing 3.5h after DEPLOYED) */
+#gatebar[hidden]{display:none}
 #gatebar .gbdot{width:6px;height:6px;border-radius:50%;background:var(--amber);animation:pulse 1.1s infinite;flex:0 0 auto}
 #gatebar .gbwhat{color:var(--fg)}
 #gatebar .gbwhat b{color:var(--amber)}
@@ -889,12 +884,11 @@ function renderTile(s,slot){
 let POLLFAILS=0;
 async function refresh(){
   try{
-    const [tr,gr,cr,pv,lp,ps]=await Promise.all([
+    const [tr,gr,cr,pv,ps]=await Promise.all([
       fetch(api("/api/team"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()),
       fetch(api("/api/gates"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()),
       fetch(api("/api/chat"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()),
       fetch(api("/api/preview"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()),
-      fetch(api("/api/loop"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()),
       fetch(api("/api/team/status"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()).catch(()=>null),
     ]);
     CHAT=cr.messages||[];GATES=gr.gates||[];SEATSVIEW=tr.seats||[];PREVIEWS=pv.previews||[];
@@ -912,7 +906,6 @@ async function refresh(){
         TTYS[s.seat].pcols=TTYS[s.seat].prows=null;
         syncTtyStream();}
     });
-    renderLoopChip(lp&&lp.narration);
     renderGateBar();
     // dead-runner distress (FLAWS 2026-08-11: four runners died silently and
     // the cockpit showed no distress): booted team with dead seats = red chip.
@@ -955,20 +948,11 @@ async function refresh(){
     if(++POLLFAILS>=2)document.body.classList.add("dead");
   }
 }
-// PHASE-B #2: the masthead loop chip — narrates round + state from events.log.
-function agoText(at){
-  if(!at)return"";const ms=Date.now()-new Date(at).getTime();if(!(ms>=0))return"";
-  const m=Math.floor(ms/60000);return m<1?"just now":m<60?m+"m ago":Math.floor(m/60)+"h ago";
-}
-function renderLoopChip(n){
-  const c=document.getElementById("loopchip");if(!c)return;
-  if(!n){c.hidden=true;return;}
-  const active=n.state==="implementing"||n.state==="code_ready";
-  c.classList.toggle("calm",!active);
-  const ago=agoText(n.at);
-  c.innerHTML='<span class="ld"></span>'+esc(n.text)+(ago?'<span class="lm">· '+ago+'</span>':'');
-  c.hidden=false;
-}
+// The PHASE-B loop chip is GONE (Adam, 2026-08-12): it narrated the loop for
+// the wheels era, when panes showed summaries. Blended panes made it noise —
+// the orchestrator's live session IS the narration. /api/loop stays for
+// programmatic callers; the masthead keeps only the live project label, the
+// dead-seat distress chip, and the gate bar.
 function gateErr(msg){const e=document.getElementById("gperr");if(e){e.textContent=msg;e.style.display="";}}
 async function sendChat(){
   const box=document.getElementById("chatbox");if(!box)return;const text=box.value.trim();if(!text)return;
@@ -1072,11 +1056,12 @@ function wire(){
   document.querySelectorAll(".thead").forEach(h=>{h.onpointerdown=swapDown;});
   document.querySelectorAll(".tagent[data-restaff]").forEach(a=>{a.onclick=()=>restaffDialog(a.getAttribute("data-restaff"));});
 }
-function setLens(l){lens=l;localStorage.setItem("crate.lens",l);
-  document.getElementById("bn").classList.toggle("on",l==="narrated");
-  document.getElementById("be").classList.toggle("on",l==="engineer");refresh();}
-document.getElementById("bn").onclick=()=>setLens("narrated");
-document.getElementById("be").onclick=()=>setLens("engineer");
+// The NARRATED/ENGINEER toggle is GONE from the masthead (Adam, 2026-08-12):
+// lenses styled the SUMMARIZED feeds, which blended panes replaced with the
+// real terminals. The lens machinery stays (unblended seats still render
+// feeds until S4 retires them) — narrated is simply the standing default;
+// ?lens=engineer in the URL remains the escape hatch.
+function setLens(l){lens=l;localStorage.setItem("crate.lens",l);refresh();}
 // Context Console open/close
 const ctxOv=document.getElementById("ctxoverlay");
 document.getElementById("ctxbtn").onclick=()=>{ctxOv.classList.add("open");renderConsole();};
@@ -1285,7 +1270,6 @@ export function teamPage(view) {
     <span class="mark">CRATE<svg class="bolt" viewBox="0 0 24 24" aria-hidden="true"><path d="M13.2 2 4.8 13.4h5L8.6 22l10.6-13.2h-6.2L13.2 2z"/></svg>ENGINE</span>
     <span class="ver">2.1 <b>BETA</b></span>
     <span class="proj" id="projlabel">${escHtml(view.project)}</span>
-    <span class="loopchip" id="loopchip" hidden></span>
     <span class="downchip" id="downchip" hidden></span>
   </div>
   <div style="display:flex;align-items:center;gap:12px">
@@ -1294,7 +1278,6 @@ export function teamPage(view) {
     <button class="navbtn" id="teambtn">Team</button>
     <button class="navbtn" id="ctxbtn">Context</button>
     <button class="navbtn" id="healthbtn">Health</button>
-    <div class="toggle"><button id="bn">Narrated</button><button id="be">Engineer</button></div>
   </div>
 </header>
 <div id="gatebar" hidden><span class="gbdot"></span><span class="gbwhat" id="gbwhat"></span><input id="gbinput" placeholder='type "merge go" to release' autocomplete="off" spellcheck="false"><button id="gbgo">Release</button><span class="gberr" id="gberr"></span></div>
