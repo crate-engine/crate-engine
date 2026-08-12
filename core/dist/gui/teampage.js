@@ -184,7 +184,7 @@ grid-template-rows:var(--r1,1fr) 1px var(--r2,1fr)}
    FLAWS 2026-08-12: the all-blended cockpit has no chat box (the orchestrator
    tile IS a terminal), so "merge go" had nowhere to land — the one law only
    the human may exercise must never depend on which panes are blended. */
-#gatebar{display:flex;align-items:center;gap:12px;padding:8px 18px;border-bottom:1px solid var(--line2);background:rgba(226,163,60,.07);font:600 10px/1.4 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--amber);white-space:nowrap;overflow-x:auto}
+#gatebar{display:flex;align-items:center;gap:12px;padding:8px 14px;border-top:1px solid var(--line2);background:rgba(226,163,60,.07);font:600 10px/1.4 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--amber);white-space:nowrap;overflow-x:auto;flex:0 0 auto}
 /* explicit display beats the hidden attribute — without this the bar NEVER
    hides and the last released message fossilizes on screen (Adam caught the
    ticket-#3 "released" strip still showing 3.5h after DEPLOYED) */
@@ -769,31 +769,38 @@ function gatePanelHtml(){
     +'<div class="gp-sub"><span class="gp-v '+(g.reviewOk?"":"no")+'">review '+(g.reviewOk?"✓":"·")+'</span>'
     +'<span class="gp-v '+(g.qaOk?"":"no")+'">QA '+(g.qaOk?"✓":"·")+'</span>'
     +'<span class="gp-deploy">deploys to production</span></div>'
-    +'<div class="gp-hint">Type <b>merge go</b> below to release.</div>'
+    +(g.released?'<div class="gp-hint">Released — the coder is merging; DEPLOYED will confirm.</div>'
+      :'<div class="gp-hint">Type <b>merge go</b> below to release.</div>')
     +'<div class="gp-err" id="gperr" style="display:none"></div></div>';
 }
-// ── the masthead gate bar: the operator's release surface in EVERY layout.
-// FLAWS 2026-08-12: with the orchestrator blended, its tile is a terminal —
-// no chat box, so "merge go" had nowhere to land and the operator was told
-// to run agentctl by hand. The bar lives OUTSIDE the grid (repaints never
-// touch it), appears only while a gate holds, and takes the phrase alone. ──
+// ── the gate bar: the operator's release surface in EVERY layout, docked
+// UNDER the orchestrator pane (Adam's placement call, 2026-08-12 — the
+// release belongs visually with the seat that holds the loop; the masthead
+// strip retired when it moved here). It now lives INSIDE the repainted grid,
+// so refresh() carries #gbinput's value + focus across the 2s repaint (the
+// chatbox preservation pattern). Release state renders from the RECORD
+// (g.released = gateAlreadyReleased over events.log), so a release honored
+// on ANY surface — the pane phrase, another window, the CLI — shows here
+// too, never only in the releasing client's memory. ──
 let GATEREL={};
-function renderGateBar(){
-  const gb=document.getElementById("gatebar");if(!gb)return;
-  if(!GATES.length){gb.hidden=true;gb.classList.remove("released");GATEREL={};return;}
-  const g=GATES[0];const w=document.getElementById("gbwhat");
-  const inp=document.getElementById("gbinput");const go=document.getElementById("gbgo");
-  if(GATEREL[g.task]){
-    gb.classList.add("released");
-    w.innerHTML='released — the coder is merging <b>'+esc(g.branch)+'</b>; DEPLOYED will confirm';
-    inp.hidden=true;go.hidden=true;
-  }else{
-    gb.classList.remove("released");
-    w.innerHTML='merge gate holding — <b>'+esc(g.branch)+'</b> → '+esc(g.deploysTo)
-      +' · review '+(g.reviewOk?"✓":"·")+' · QA '+(g.qaOk?"✓":"·");
-    inp.hidden=false;go.hidden=false;
+function gateBarHtml(){
+  if(!GATES.length)return"";
+  const g=GATES[0];
+  if(g.released||GATEREL[g.task]){
+    return '<div id="gatebar" class="released"><span class="gbdot"></span>'
+      +'<span class="gbwhat" id="gbwhat">released — the coder is merging <b>'+esc(g.branch)+'</b>; DEPLOYED will confirm</span></div>';
   }
-  gb.hidden=false;
+  return '<div id="gatebar"><span class="gbdot"></span>'
+    +'<span class="gbwhat" id="gbwhat">merge gate holding — <b>'+esc(g.branch)+'</b> → '+esc(g.deploysTo)
+    +' · review '+(g.reviewOk?"✓":"·")+' · QA '+(g.qaOk?"✓":"·")+'</span>'
+    +'<input id="gbinput" placeholder=\\'type "merge go" to release\\' autocomplete="off" spellcheck="false"><button id="gbgo">Release</button><span class="gberr" id="gberr"></span></div>';
+}
+function renderGateBar(){
+  // the instant flip after a bar release (between polls) — the next repaint
+  // renders the same truth from the record
+  const gb=document.getElementById("gatebar");if(!gb||!GATES.length)return;
+  const g=GATES[0];
+  if(g.released||GATEREL[g.task])gb.outerHTML=gateBarHtml();
 }
 async function releaseFromBar(){
   const inp=document.getElementById("gbinput");const err=document.getElementById("gberr");
@@ -810,8 +817,11 @@ function renderTile(s,slot){
   // the agent's terminal (the head stays; the living xterm node re-mounts
   // after each repaint via mountTty).
   if(TTYS[s.seat]){
+    // the orchestrator's live pane carries the gate bar docked at its foot —
+    // the release belongs visually with the seat that holds the loop
+    const bar=s.seat==="orchestrator"?gateBarHtml():"";
     return '<div class="tile'+cls+'" data-seat="'+s.seat+'">'+tileHead(s)
-      +'<div class="ttyhost" data-ttyhost="'+s.seat+'"></div></div>';
+      +'<div class="ttyhost" data-ttyhost="'+s.seat+'"></div>'+bar+'</div>';
   }
   if(s.seat==="orchestrator"){
     const ph=GATES.length?'Type merge go to release, or message the orchestrator…':'Message the orchestrator…';
@@ -835,9 +845,11 @@ function renderTile(s,slot){
   }
   if(s.blended){
     // Flagged but no live PTY yet (team not booted): say so honestly instead
-    // of rendering a phantom feed — the pane goes live at boot.
+    // of rendering a phantom feed — the pane goes live at boot. The
+    // orchestrator still carries the gate bar: a release needs no live team.
     return '<div class="tile'+cls+'" data-seat="'+s.seat+'">'+tileHead(s)
-      +'<div class="ttyhost"><div class="ttywait">blended pane — the live session opens when the team boots (Team menu → Boot / Resume)</div></div></div>';
+      +'<div class="ttyhost"><div class="ttywait">blended pane — the live session opens when the team boots (Team menu → Boot / Resume)</div></div>'
+      +(s.seat==="orchestrator"?gateBarHtml():"")+'</div>';
   }
   const status=s.status?'<div class="tstatus"><b>'+esc(s.status)+'</b> · '+esc(s.lastActivity||"")+'</div>':'';
   let feed;
@@ -885,6 +897,7 @@ async function refresh(){
       fetch(api("/api/team/status"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()).catch(()=>null),
     ]);
     CHAT=cr.messages||[];GATES=gr.gates||[];SEATSVIEW=tr.seats||[];PREVIEWS=pv.previews||[];
+    if(!GATES.length)GATEREL={}; // gate consumed (DEPLOYED) — clear the client-side release memory
     // Blended panes auto-attach (PDR S2): the SERVER owns the PTY lifecycle;
     // the client is purely viewer + keyboard (stream-all + /api/tty/input —
     // no /api/tty/start). Attach once the live PTY exists; when its spawn
@@ -899,7 +912,6 @@ async function refresh(){
         TTYS[s.seat].pcols=TTYS[s.seat].prows=null;
         syncTtyStream();}
     });
-    renderGateBar();
     // dead-runner distress (FLAWS 2026-08-11: four runners died silently and
     // the cockpit showed no distress): booted team with dead seats = red chip.
     const dc=document.getElementById("downchip");
@@ -913,6 +925,9 @@ async function refresh(){
     if(document.getElementById("ctxoverlay").classList.contains("open"))renderConsole();
     // preserve in-progress chat typing across the re-render
     const cb=document.getElementById("chatbox");const chatVal=cb?cb.value:"";const chatFocused=document.activeElement===cb;
+    // …and the gate bar's half-typed phrase (the bar lives INSIDE the grid
+    // now — Adam's placement call — so the repaint would clobber it)
+    const gbi=document.getElementById("gbinput");const gbVal=gbi?gbi.value:"";const gbFocused=document.activeElement===gbi;
     // Wheel focus (Adam's catch, 2026-08-11): the repaint re-seats the living
     // terminal, which silently DROPS keyboard focus — 4-5 keystrokes then
     // beeps. Remember which wheel held focus and hand it back after mount.
@@ -930,6 +945,7 @@ async function refresh(){
     applyLayout();
     wire();
     const cb2=document.getElementById("chatbox");if(cb2){cb2.value=chatVal;if(chatFocused)cb2.focus();}
+    const gbi2=document.getElementById("gbinput");if(gbi2){if(gbVal)gbi2.value=gbVal;if(gbFocused)gbi2.focus();}
     mountTtys(); // native seat access: re-seat the living terminals after the repaint
     if(ttyFocusSeat&&TTYS[ttyFocusSeat]&&TTYS[ttyFocusSeat].term)TTYS[ttyFocusSeat].term.focus();
     document.querySelectorAll(".feed").forEach(f=>{if(!f.hasAttribute("data-ttyhost"))f.scrollTop=f.scrollHeight;});
@@ -1035,6 +1051,9 @@ function renderConsole(){
 function wire(){
   const send=document.getElementById("chatsend");if(send)send.onclick=sendChat;
   const box=document.getElementById("chatbox");if(box)box.onkeydown=e=>{if(e.key==="Enter")sendChat();};
+  // the gate bar lives inside the repainted grid now — rewire per repaint
+  const gbi=document.getElementById("gbinput");if(gbi)gbi.onkeydown=e=>{if(e.key==="Enter")releaseFromBar();};
+  const gbg=document.getElementById("gbgo");if(gbg)gbg.onclick=releaseFromBar;
   document.querySelectorAll(".gauge[data-seat]").forEach(g=>{g.onclick=()=>refreshSeat(g.getAttribute("data-seat"));});
   document.querySelectorAll(".chip[data-fill]").forEach(c=>{c.onclick=()=>{const b=document.getElementById("chatbox");if(b){b.value=c.getAttribute("data-fill");b.focus();}};});
   document.querySelectorAll(".keysbtn[data-keys]").forEach(b=>{b.onclick=()=>{
@@ -1237,9 +1256,7 @@ window.addEventListener("keydown",e=>{if(e.key==="Escape")closeRail();});
 });
 loadWorkspaces();
 setLens(lens);setInterval(refresh,2000);setInterval(tickWorking,1000);
-// gate bar wiring — once, at boot (the bar is static chrome, never repainted)
-{const gbi=document.getElementById("gbinput");if(gbi)gbi.onkeydown=e=>{if(e.key==="Enter")releaseFromBar();};
- const gbg=document.getElementById("gbgo");if(gbg)gbg.onclick=releaseFromBar;}
+// gate bar wiring lives in wire() — the bar repaints with the grid (Pack 4)
 startStream(); // 2c: the SSE push channel — the poll above stays as the floor
 anchorPanels();
 `;
@@ -1273,7 +1290,6 @@ export function teamPage(view) {
     <button class="navbtn" id="healthbtn">Health</button>
   </div>
 </header>
-<div id="gatebar" hidden><span class="gbdot"></span><span class="gbwhat" id="gbwhat"></span><input id="gbinput" placeholder='type "merge go" to release' autocomplete="off" spellcheck="false"><button id="gbgo">Release</button><span class="gberr" id="gberr"></span></div>
 <div class="overlay" id="ctxoverlay"><div class="console" id="console"></div></div>
 <div class="overlay" id="healthoverlay"><div class="console" id="healthpanel"></div></div>
 <div class="overlay" id="teamoverlay"><div class="console" id="teampanel"></div></div>

@@ -354,6 +354,10 @@ export interface GuiServer {
   state: GuiState;
 }
 
+/** Pack 4: per-pane typed-line buffers for the pane-phrase honor (keyed
+ * `project|seat`). Server-lifetime state, epsilon-sized (64-char cap each). */
+const paneLineBuf = new Map<string, string>();
+
 export async function startGuiServer(
   opts: { home?: string; project?: string; detectPath?: string; cliPath?: string } = {},
 ): Promise<GuiServer> {
@@ -775,7 +779,29 @@ export async function startGuiServer(
           const { liveTty } = await import("../ptyseat.js");
           const tty = liveTty(proj, String(body.seat ?? ""));
           if (!tty) return json(res, 404, { error: "no live terminal" });
-          tty.write(Buffer.from(String(body.data ?? ""), "base64"));
+          const raw = Buffer.from(String(body.data ?? ""), "base64");
+          tty.write(raw);
+          // Pack 4 (cockpit truth): the pane-phrase honor. Adam typed "merge
+          // go" into the orchestrator pane at BOTH ticket-#4 gates — habit
+          // beats the surface, so the engine folds the typed bytes at this
+          // one human chokepoint and honors the exact phrase while a gate is
+          // armed (same authority as the gate bar: these keystrokes ARE the
+          // operator's). Best-effort — the keystrokes already landed above.
+          try {
+            const { foldHumanLines, honorPaneRelease } = await import("./teamctl.js");
+            const key = `${proj}|${String(body.seat ?? "")}`;
+            const folded = foldHumanLines(paneLineBuf.get(key) ?? "", raw);
+            paneLineBuf.set(key, folded.buf);
+            if (folded.lines.length > 0) {
+              const h = honorPaneRelease(proj, folded.lines);
+              if (h.released) {
+                const { guiLog } = await import("./guilog.js");
+                guiLog(state.home, `gate released from the ${String(body.seat ?? "")} pane (typed phrase honored) — task ${h.released}`);
+              }
+            }
+          } catch {
+            /* the honor is best-effort; the input path must never fail on it */
+          }
           return json(res, 200, { ok: true });
         }
         case "POST /api/tty/resize": {

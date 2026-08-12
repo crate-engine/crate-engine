@@ -15,16 +15,50 @@ export interface GateCard {
     deploysTo: string;
     reviewOk: boolean;
     qaOk: boolean;
+    /** Pack 4 (cockpit truth): released-but-unconsumed, from the EVENT record
+     * (gateAlreadyReleased) — every surface renders release state from the log,
+     * so a release honored elsewhere (pane phrase, another window, the CLI)
+     * shows everywhere, not just in the releasing client's memory. */
+    released: boolean;
 }
-/** W4 finding #3 (2026-07-13, live): the tester wrote `status:
- * partial-verification` + "Verified the main page…" — the old prose regex
- * read "verified" as qa-green, the operator released, and the orchestrator
- * (reading the nuance) REOPENED. The panel and the orchestrator must read one
- * truth: green requires a CLEAN pass signal in the CURRENT status (never the
- * history log), and any partial/fail/bug marker vetoes. */
-export declare function qaGreen(qa: string): boolean;
-/** Tasks currently at `approved` = pending merge gates awaiting "merge go". */
+/** TS twin of agentctl's join_verdicts() — Pack 4 (cockpit truth): the gate
+ * lights read the SAME record the JOIN itself trusts. Verifier verdicts
+ * recorded in events.log since this task's most recent CODE_READY (a fresh
+ * sha voids all verdicts — the same freshness law as the pin); task
+ * filtering mirrors gateAlreadyReleased. This REPLACED the prose regexes
+ * over seat state files (verdicts()/qaGreen — deleted 2026-08-12): the
+ * blended-era tester report format didn't match them, so QA showed "·" on
+ * the gate card while QA had APPROVED on the record (ticket-#4), and before
+ * that a partial-verification note read as green (W4 #3). Events, not prose. */
+export declare function joinVerdicts(projectRoot: string, task: string): {
+    reviewer?: string;
+    tester?: string;
+};
+/** Tasks currently at `approved` = pending merge gates awaiting "merge go".
+ * Lights are PER TASK from the event record (joinVerdicts) — green iff that
+ * verifier's recorded result since the last code_ready is `approve`. */
 export declare function pendingGates(projectRoot: string): GateCard[];
+/** Pack 4 (cockpit truth): the pane-phrase fold. The operator's habit is
+ * typing "merge go" INTO the orchestrator pane (both ticket-#4 gates) —
+ * habit beats the surface, so the engine watches the ONE human chokepoint
+ * (cockpit keyboard → POST /api/tty/input) and folds the typed bytes into
+ * completed lines. CSI sequences are stripped (arrows are not typing),
+ * Esc/Ctrl+C clear the draft, backspace pops, CR completes a line. The
+ * buffer is capped — the phrase is short, and this is a phrase watcher,
+ * never a keylogger. */
+export declare function foldHumanLines(buf: string, data: Buffer): {
+    buf: string;
+    lines: string[];
+};
+/** Honor a pane-typed release: a completed line that IS the exact phrase,
+ * while a gate is armed, releases through the SAME releaseGate the bar and
+ * chat use (validation, durable echo, absorb-on-repeat included). The
+ * keystrokes came through the cockpit's tokened human door — the OPERATOR's
+ * keyboard — so the authority is the gate bar's, and the seat the pane
+ * hosts never touches the emit. No gate armed / wrong phrase = nothing. */
+export declare function honorPaneRelease(projectRoot: string, lines: string[]): {
+    released?: string;
+};
 /** The operator releases a gate by typing the phrase. Validates here AND lets
  * agentctl enforce it (defense in depth); returns the emit's output. */
 export declare function releaseGate(projectRoot: string, task: string, phrase: string): {

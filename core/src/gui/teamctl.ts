@@ -95,6 +95,11 @@ export interface GateCard {
   deploysTo: string;
   reviewOk: boolean;
   qaOk: boolean;
+  /** Pack 4 (cockpit truth): released-but-unconsumed, from the EVENT record
+   * (gateAlreadyReleased) — every surface renders release state from the log,
+   * so a release honored elsewhere (pane phrase, another window, the CLI)
+   * shows everywhere, not just in the releasing client's memory. */
+  released: boolean;
 }
 
 /** Best-effort deploy target for the card (honest, never invented): rig.conf
@@ -110,51 +115,103 @@ function deployTarget(projectRoot: string, conf: Record<string, string>): string
   return "main";
 }
 
-/** Did the given task record a green Review / QA verdict since code_ready?
- * Reads the reviewer/tester state files (the verdict homes). Best-effort. */
-function verdicts(projectRoot: string): { reviewOk: boolean; qaOk: boolean } {
-  const read = (seat: string): string => {
-    const f = join(projectRoot, ".agents", "state", `${seat}.md`);
-    return existsSync(f) ? readFileSync(f, "utf8") : "";
-  };
-  const rv = read("reviewer");
-  const qa = read("tester");
-  return {
-    reviewOk: /APPROVED|approved/.test(rv) && !/CHANGES_NEEDED|changes_needed/.test(rv.split("## ")[0] ?? rv),
-    qaOk: qaGreen(qa),
-  };
+/** TS twin of agentctl's join_verdicts() — Pack 4 (cockpit truth): the gate
+ * lights read the SAME record the JOIN itself trusts. Verifier verdicts
+ * recorded in events.log since this task's most recent CODE_READY (a fresh
+ * sha voids all verdicts — the same freshness law as the pin); task
+ * filtering mirrors gateAlreadyReleased. This REPLACED the prose regexes
+ * over seat state files (verdicts()/qaGreen — deleted 2026-08-12): the
+ * blended-era tester report format didn't match them, so QA showed "·" on
+ * the gate card while QA had APPROVED on the record (ticket-#4), and before
+ * that a partial-verification note read as green (W4 #3). Events, not prose. */
+export function joinVerdicts(projectRoot: string, task: string): { reviewer?: string; tester?: string } {
+  const log = join(projectRoot, ".agents", "state", "events.log");
+  const v: { reviewer?: string; tester?: string } = {};
+  if (!existsSync(log)) return v;
+  const wanted = task && task !== "(single loop)" ? task : "";
+  for (const raw of readFileSync(log, "utf8").split("\n")) {
+    if (!raw.trim() || raw.trimStart().startsWith("#")) continue;
+    const toks = raw.split(/\s+/);
+    const evt = toks[1] ?? "";
+    let rowTask: string | undefined;
+    let actor = "";
+    let result = "";
+    for (const t of toks) {
+      if (t.startsWith("task=")) rowTask = t.slice(5);
+      else if (t.startsWith("branch=") && rowTask === undefined) rowTask = t.slice(7);
+      else if (t.startsWith("actor=")) actor = t.slice(6);
+      else if (t.startsWith("result=")) result = t.slice(7);
+    }
+    if (wanted && rowTask !== undefined && rowTask !== wanted) continue;
+    if (evt === "CODE_READY") {
+      delete v.reviewer;
+      delete v.tester;
+    } else if (evt === "VERDICT" && (actor === "reviewer" || actor === "tester")) {
+      v[actor as "reviewer" | "tester"] = result;
+    }
+  }
+  return v;
 }
 
-/** W4 finding #3 (2026-07-13, live): the tester wrote `status:
- * partial-verification` + "Verified the main page…" — the old prose regex
- * read "verified" as qa-green, the operator released, and the orchestrator
- * (reading the nuance) REOPENED. The panel and the orchestrator must read one
- * truth: green requires a CLEAN pass signal in the CURRENT status (never the
- * history log), and any partial/fail/bug marker vetoes. */
-export function qaGreen(qa: string): boolean {
-  const head = qa.split(/\r?\nLog:/)[0] ?? qa; // current status only — the log is history
-  if (/partial|\bFAIL(ED)?\b|BUGS_FOUND|BLOCKER|CHANGES_NEEDED/i.test(head)) return false;
-  const status = head.match(/^status:\s*(.+)$/im)?.[1]?.trim().toLowerCase();
-  if (status) return /^(pass|passed|verified|green|ok)\b/.test(status);
-  return /\[PASS\]|verdict:\s*PASS|\bPASS\b/.test(head);
-}
-
-/** Tasks currently at `approved` = pending merge gates awaiting "merge go". */
+/** Tasks currently at `approved` = pending merge gates awaiting "merge go".
+ * Lights are PER TASK from the event record (joinVerdicts) — green iff that
+ * verifier's recorded result since the last code_ready is `approve`. */
 export function pendingGates(projectRoot: string): GateCard[] {
   const conf = parseRigConf(readFileSync(join(projectRoot, ".agents", "rig.conf"), "utf8"));
   const { scalar, tasks } = taskStates(projectRoot);
   const dep = deployTarget(projectRoot, conf);
-  const v = verdicts(projectRoot);
+  const lights = (task: string): { reviewOk: boolean; qaOk: boolean } => {
+    const v = joinVerdicts(projectRoot, task);
+    return { reviewOk: v.reviewer === "approve", qaOk: v.tester === "approve" };
+  };
   const cards: GateCard[] = [];
   const approved = Object.entries(tasks).filter(([, s]) => s === "approved");
   if (approved.length > 0) {
-    for (const [task] of approved) cards.push({ task, branch: task, deploysTo: dep, ...v });
+    for (const [task] of approved)
+      cards.push({ task, branch: task, deploysTo: dep, ...lights(task), released: gateAlreadyReleased(projectRoot, task) });
   } else if (scalar === "approved") {
     let branch = "HEAD";
     try { branch = execFileSync("git", ["branch", "--show-current"], { cwd: projectRoot, encoding: "utf8" }).trim() || "HEAD"; } catch { /* */ }
-    cards.push({ task: "(single loop)", branch, deploysTo: dep, ...v });
+    cards.push({ task: "(single loop)", branch, deploysTo: dep, ...lights("(single loop)"), released: gateAlreadyReleased(projectRoot, "(single loop)") });
   }
   return cards;
+}
+
+/** Pack 4 (cockpit truth): the pane-phrase fold. The operator's habit is
+ * typing "merge go" INTO the orchestrator pane (both ticket-#4 gates) —
+ * habit beats the surface, so the engine watches the ONE human chokepoint
+ * (cockpit keyboard → POST /api/tty/input) and folds the typed bytes into
+ * completed lines. CSI sequences are stripped (arrows are not typing),
+ * Esc/Ctrl+C clear the draft, backspace pops, CR completes a line. The
+ * buffer is capped — the phrase is short, and this is a phrase watcher,
+ * never a keylogger. */
+export function foldHumanLines(buf: string, data: Buffer): { buf: string; lines: string[] } {
+  const text = data.toString("latin1").replace(/\x1b\[[0-9;?]*[A-Za-z~]/g, "\x1b");
+  const lines: string[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 0x0d || c === 0x0a) {
+      lines.push(buf);
+      buf = "";
+    } else if (c === 0x1b || c === 0x03) buf = "";
+    else if (c === 0x7f || c === 0x08) buf = buf.slice(0, -1);
+    else if (c >= 0x20) buf = (buf + text[i]).slice(-64);
+  }
+  return { buf, lines };
+}
+
+/** Honor a pane-typed release: a completed line that IS the exact phrase,
+ * while a gate is armed, releases through the SAME releaseGate the bar and
+ * chat use (validation, durable echo, absorb-on-repeat included). The
+ * keystrokes came through the cockpit's tokened human door — the OPERATOR's
+ * keyboard — so the authority is the gate bar's, and the seat the pane
+ * hosts never touches the emit. No gate armed / wrong phrase = nothing. */
+export function honorPaneRelease(projectRoot: string, lines: string[]): { released?: string } {
+  if (!lines.some((l) => l.trim().toLowerCase() === "merge go")) return {};
+  const gate = pendingGates(projectRoot)[0];
+  if (!gate) return {};
+  const r = releaseGate(projectRoot, gate.task, "merge go");
+  return r.ok ? { released: gate.task } : {};
 }
 
 /** The operator releases a gate by typing the phrase. Validates here AND lets

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { pendingGates, qaGreen, releaseGate, chatHistory, sendToOrchestrator, pendingPreviews, resolvePreview } from "../src/gui/teamctl.js";
+import { foldHumanLines, honorPaneRelease, joinVerdicts, pendingGates, releaseGate, chatHistory, sendToOrchestrator, pendingPreviews, resolvePreview } from "../src/gui/teamctl.js";
 import { readNew } from "../src/mailbox.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -92,25 +92,93 @@ test("preview: agentctl preview queues it; resolve clears it and messages the or
   assert.equal(pendingPreviews(rig).length, 0);
 });
 
-// ── W4 finding #3 (2026-07-13, live-caught): the gate light must read ONE
-// truth with the orchestrator — a partial verdict is never qa-green. ──
-test("qaGreen: the live partial-verification shape is NOT green", () => {
-  const live = [
-    "updated: 2026-07-13 16:20 UTC",
-    "status: partial-verification",
-    "Now: Verified the main page over localhost:3000 via a temporary static server fallback.",
-    "Concerns: qa-sweep/agent-browser/axe-check are not installed in this environment.",
-    "",
-    "Log:",
-    "- 16:20 UTC — npm test passed (`index.html passes`).",
-  ].join("\n");
-  assert.equal(qaGreen(live), false, "'Verified …' prose inside a partial verdict must not read green");
+// ── Pack 4 (cockpit truth, 2026-08-12): the gate lights read the EVENT
+// record — the same VERDICT rows the JOIN trusts — never seat-file prose.
+// (The prose regexes lied twice: W4 #3's partial-verification read green;
+// ticket-#4's blended-era QA report read "·" while QA had APPROVED.) ──
+test("gate lights come from recorded VERDICT events; no verdicts on record = honest '·'", () => {
+  const rig = makeRig("lights");
+  emit(rig, "boot", "--actor", "orchestrator");
+  emit(rig, "start_impl", "--actor", "coder");
+  emit(rig, "code_ready", "--actor", "coder");
+  // seat-file prose says PASS loudly — it must move NOTHING (deleted regexes)
+  writeFileSync(join(rig, ".agents", "state", "tester.md"), "status: pass\nNow: [PASS] everything green.\n");
+  emit(rig, "verdict", "--actor", "tester", "result=approve", "report=all paths green");
+  emit(rig, "approved", "--actor", "orchestrator");
+  const one = pendingGates(rig)[0]!;
+  assert.equal(one.qaOk, true, "QA's recorded approve lights the lamp");
+  assert.equal(one.reviewOk, false, "no reviewer verdict on record = no light, whatever any file says");
 });
 
-test("qaGreen: a clean pass IS green; history-log failures don't poison the current status", () => {
-  const clean = "updated: now\nstatus: pass\nNow: verified end to end.\n\nLog:\n- earlier — [FAIL] old task failed once.\n";
-  assert.equal(qaGreen(clean), true, "a FAIL in the history log must not veto a clean current status");
-  assert.equal(qaGreen("Now: [PASS] all checks green.\n"), true, "no status line → explicit PASS marker counts");
-  assert.equal(qaGreen("status: pass\nNow: fine.\nConcerns: BUGS_FOUND upstream.\n\nLog:\n"), false, "bug markers in the head veto");
-  assert.equal(qaGreen(""), false, "no verdict is not green");
+test("both recorded approves light both lamps; a fresh code_ready VOIDS them (freshness law)", () => {
+  const rig = makeRig("lights-void");
+  emit(rig, "boot", "--actor", "orchestrator");
+  emit(rig, "start_impl", "--actor", "coder");
+  emit(rig, "code_ready", "--actor", "coder");
+  emit(rig, "verdict", "--actor", "reviewer", "result=approve", "report=clean");
+  emit(rig, "verdict", "--actor", "tester", "result=approve", "report=green");
+  emit(rig, "approved", "--actor", "orchestrator");
+  const g = pendingGates(rig)[0]!;
+  assert.equal(g.reviewOk && g.qaOk, true, "both recorded approves = both lamps");
+  // a gate-time bug: reopen → rework → NEW code_ready — the old verdicts are void
+  emit(rig, "reopen", "--actor", "orchestrator");
+  emit(rig, "code_ready", "--actor", "coder");
+  emit(rig, "approved", "--actor", "orchestrator");
+  const g2 = pendingGates(rig)[0]!;
+  assert.equal(g2.reviewOk || g2.qaOk, false, "the rebased/reworked branch RE-EARNS its lights");
+});
+
+// ── Pack 4: the pane-phrase honor — habit beats the surface. Adam typed
+// "merge go" into the orchestrator pane at BOTH ticket-#4 gates; the human
+// chokepoint now folds typed bytes and honors the exact phrase. ──
+test("foldHumanLines: CR completes a line; Esc/Ctrl+C clear; backspace pops; CSI arrows are not typing", () => {
+  let s = foldHumanLines("", Buffer.from("merge g"));
+  assert.deepEqual(s.lines, []);
+  s = foldHumanLines(s.buf, Buffer.from("o\r"));
+  assert.deepEqual(s.lines, ["merge go"], "the typed line completes on Enter");
+  assert.equal(s.buf, "");
+  assert.deepEqual(foldHumanLines("half a draft", Buffer.from("\x1b")).buf, "", "Esc cancels the draft");
+  assert.deepEqual(foldHumanLines("halt", Buffer.from("\x03")).buf, "", "Ctrl+C clears");
+  assert.equal(foldHumanLines("mergee", Buffer.from("\x7f go\r")).lines[0], "merge go", "backspace pops before the fold");
+  assert.equal(foldHumanLines("", Buffer.from("\x1b[A\x1b[Bmerge go\r")).lines[0], "merge go", "arrow keys are stripped, never typed");
+});
+
+test("the pane-typed phrase RELEASES an armed gate through the one shared route (absorb included)", () => {
+  const rig = makeRig("pane-honor");
+  emit(rig, "boot", "--actor", "orchestrator");
+  emit(rig, "start_impl", "--actor", "coder");
+  emit(rig, "code_ready", "--actor", "coder");
+  emit(rig, "approved", "--actor", "orchestrator");
+  // wrong phrase / small talk typed into the pane: nothing happens
+  assert.deepEqual(honorPaneRelease(rig, ["looks good, ship it"]), {});
+  assert.equal(readNew(join(rig, ".agents", "state", "inbox"), "coder").length, 0);
+  // the exact phrase (case/space-insensitive) releases — one [MERGE] order
+  const h = honorPaneRelease(rig, ["  Merge Go  "]);
+  assert.equal(h.released, "(single loop)");
+  assert.equal(readNew(join(rig, ".agents", "state", "inbox"), "coder").length, 1, "the same mechanical route as the bar");
+  assert.equal(pendingGates(rig)[0]!.released, true, "the RECORD now says released — every surface renders it");
+  // typed again (the habit repeats): absorbed, never a duplicate order
+  const again = honorPaneRelease(rig, ["merge go"]);
+  assert.equal(again.released, "(single loop)");
+  assert.equal(readNew(join(rig, ".agents", "state", "inbox"), "coder").length, 1, "first release wins on every surface");
+});
+
+test("no gate armed: the pane phrase is inert (nothing emitted, nothing mailed)", () => {
+  const rig = makeRig("pane-idle");
+  emit(rig, "boot", "--actor", "orchestrator");
+  assert.deepEqual(honorPaneRelease(rig, ["merge go"]), {});
+  assert.equal(readNew(join(rig, ".agents", "state", "inbox"), "coder").length, 0);
+});
+
+test("a recorded REJECT is not a light — and joinVerdicts is task-scoped in concurrent mode", () => {
+  const rig = makeRig("lights-scope", "CONCURRENT_LOOPS=1\n");
+  emit(rig, "boot", "--actor", "orchestrator");
+  emit(rig, "start_impl", "--actor", "coder", "task=feat/a");
+  emit(rig, "code_ready", "--actor", "coder", "task=feat/a");
+  emit(rig, "verdict", "--actor", "tester", "result=reject", "report=broken", "task=feat/a");
+  emit(rig, "verdict", "--actor", "reviewer", "result=approve", "report=fine", "task=feat/a");
+  const v = joinVerdicts(rig, "feat/a");
+  assert.equal(v.tester, "reject");
+  assert.equal(v.reviewer, "approve");
+  assert.deepEqual(joinVerdicts(rig, "feat/other"), {}, "another task's verdicts never bleed in");
 });
