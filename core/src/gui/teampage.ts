@@ -194,6 +194,21 @@ grid-template-rows:var(--r1,1fr) 1px var(--r2,1fr)}
 .blendtag{font:600 8.5px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ok);border:1px solid var(--ok);padding:3px 6px;white-space:nowrap}
 /* dead-runner distress: the masthead must never hide a partially-down team */
 .downchip{font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--bad);white-space:nowrap}
+/* the merge-gate bar: the OPERATOR'S release surface, alive in EVERY layout.
+   FLAWS 2026-08-12: the all-blended cockpit has no chat box (the orchestrator
+   tile IS a terminal), so "merge go" had nowhere to land — the one law only
+   the human may exercise must never depend on which panes are blended. */
+#gatebar{display:flex;align-items:center;gap:12px;padding:8px 18px;border-bottom:1px solid var(--line2);background:rgba(226,163,60,.07);font:600 10px/1.4 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--amber);white-space:nowrap;overflow-x:auto}
+#gatebar .gbdot{width:6px;height:6px;border-radius:50%;background:var(--amber);animation:pulse 1.1s infinite;flex:0 0 auto}
+#gatebar .gbwhat{color:var(--fg)}
+#gatebar .gbwhat b{color:var(--amber)}
+#gatebar input{flex:0 1 240px;min-width:130px;background:transparent;border:1px solid var(--line2);border-radius:0;color:var(--fg);font:600 11px var(--mono);letter-spacing:.06em;padding:6px 9px;outline:none}
+#gatebar input:focus{border-color:var(--amber)}
+#gatebar button{background:transparent;border:1px solid var(--line2);border-radius:0;color:var(--dim);font:600 9px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;padding:7px 10px;cursor:pointer}
+#gatebar button:hover{color:var(--amber);border-color:var(--amber)}
+#gatebar .gberr{color:var(--bad);text-transform:none;letter-spacing:0}
+#gatebar.released{color:var(--ok)}
+#gatebar.released .gbdot{background:var(--ok);animation:none}
 /* D12 context gauge (fuel gauge per seat) */
 .gauge{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
 .gauge:hover .gbar{outline:1px solid var(--line2)}
@@ -775,6 +790,38 @@ function gatePanelHtml(){
     +'<div class="gp-hint">Type <b>merge go</b> below to release.</div>'
     +'<div class="gp-err" id="gperr" style="display:none"></div></div>';
 }
+// ── the masthead gate bar: the operator's release surface in EVERY layout.
+// FLAWS 2026-08-12: with the orchestrator blended, its tile is a terminal —
+// no chat box, so "merge go" had nowhere to land and the operator was told
+// to run agentctl by hand. The bar lives OUTSIDE the grid (repaints never
+// touch it), appears only while a gate holds, and takes the phrase alone. ──
+let GATEREL={};
+function renderGateBar(){
+  const gb=document.getElementById("gatebar");if(!gb)return;
+  if(!GATES.length){gb.hidden=true;gb.classList.remove("released");GATEREL={};return;}
+  const g=GATES[0];const w=document.getElementById("gbwhat");
+  const inp=document.getElementById("gbinput");const go=document.getElementById("gbgo");
+  if(GATEREL[g.task]){
+    gb.classList.add("released");
+    w.innerHTML='released — the coder is merging <b>'+esc(g.branch)+'</b>; DEPLOYED will confirm';
+    inp.hidden=true;go.hidden=true;
+  }else{
+    gb.classList.remove("released");
+    w.innerHTML='merge gate holding — <b>'+esc(g.branch)+'</b> → '+esc(g.deploysTo)
+      +' · review '+(g.reviewOk?"✓":"·")+' · QA '+(g.qaOk?"✓":"·");
+    inp.hidden=false;go.hidden=false;
+  }
+  gb.hidden=false;
+}
+async function releaseFromBar(){
+  const inp=document.getElementById("gbinput");const err=document.getElementById("gberr");
+  const phrase=(inp.value||"").trim();if(!phrase||!GATES.length)return;
+  err.textContent="";
+  const task=GATES[0].task;
+  const r=await fetch(api("/api/gates/release"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({task,phrase})}).then(r=>r.json()).catch(()=>null);
+  if(r&&r.ok){inp.value="";GATEREL[task]=true;renderGateBar();}
+  else err.textContent=(r&&r.out)||"release failed — the server did not answer";
+}
 function renderTile(s,slot){
   const cls=" slot"+(slot||0);
   // Native seat access: while the human holds this seat's keys, the pane IS
@@ -872,6 +919,7 @@ async function refresh(){
         syncTtyStream();}
     });
     renderLoopChip(lp&&lp.narration);
+    renderGateBar();
     // dead-runner distress (FLAWS 2026-08-11: four runners died silently and
     // the cockpit showed no distress): booted team with dead seats = red chip.
     const dc=document.getElementById("downchip");
@@ -1217,6 +1265,9 @@ window.addEventListener("keydown",e=>{if(e.key==="Escape")closeRail();});
 });
 loadWorkspaces();
 setLens(lens);setInterval(refresh,2000);setInterval(tickWorking,1000);
+// gate bar wiring — once, at boot (the bar is static chrome, never repainted)
+{const gbi=document.getElementById("gbinput");if(gbi)gbi.onkeydown=e=>{if(e.key==="Enter")releaseFromBar();};
+ const gbg=document.getElementById("gbgo");if(gbg)gbg.onclick=releaseFromBar;}
 startStream(); // 2c: the SSE push channel — the poll above stays as the floor
 anchorPanels();
 `;
@@ -1253,6 +1304,7 @@ export function teamPage(view: TeamView): string {
     <div class="toggle"><button id="bn">Narrated</button><button id="be">Engineer</button></div>
   </div>
 </header>
+<div id="gatebar" hidden><span class="gbdot"></span><span class="gbwhat" id="gbwhat"></span><input id="gbinput" placeholder='type "merge go" to release' autocomplete="off" spellcheck="false"><button id="gbgo">Release</button><span class="gberr" id="gberr"></span></div>
 <div class="overlay" id="ctxoverlay"><div class="console" id="console"></div></div>
 <div class="overlay" id="healthoverlay"><div class="console" id="healthpanel"></div></div>
 <div class="overlay" id="teamoverlay"><div class="console" id="teampanel"></div></div>
