@@ -20,7 +20,7 @@ test("healDevUrl: a non-loopback DEV_URL is rewritten to a free loopback port, o
   try {
     const busy = new Set([3100, 3101]); // scan walks past occupied candidates
     const note = await healDevUrl(p, { probeBusy: async (port) => busy.has(port), scanFrom: 3100 });
-    assert.ok(note && note.includes("192.168.100.218") && note.includes("http://127.0.0.1:3102"), note);
+    assert.ok(note && note.includes("192.168.100.218") && note.includes("http://127.0.0.1:3102"), String(note));
     assert.match(readFileSync(join(p, ".agents", "rig.conf"), "utf8"), /^DEV_URL="http:\/\/127\.0\.0\.1:3102"$/m);
   } finally {
     rmSync(p, { recursive: true, force: true });
@@ -31,7 +31,7 @@ test("healDevUrl: a loopback port already owned by a foreign server is healed to
   const p = rigWith("http://localhost:3000");
   try {
     const note = await healDevUrl(p, { probeBusy: async (port) => port === 3000, scanFrom: 3100 });
-    assert.ok(note && note.includes("already owned"), note);
+    assert.ok(note && note.includes("already owned"), String(note));
     assert.match(readFileSync(join(p, ".agents", "rig.conf"), "utf8"), /127\.0\.0\.1:3100/);
   } finally {
     rmSync(p, { recursive: true, force: true });

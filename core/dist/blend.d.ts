@@ -101,6 +101,11 @@ export declare function findBlendSession(cli: BlendCli, opts: {
  * the marker in later lines, and an echo is not a delivery. Malformed and
  * partial trailing lines are skipped, never thrown on. */
 export declare function verifyDelivered(jsonlText: string, marker: string, cli: BlendCli): boolean;
+/** True iff an ASSISTANT record follows the marker's USER record — the mail
+ * is being attended (or already was). The early-stop watchdog's disarm
+ * signal. Records before the marker never count: an assistant that was
+ * mid-response when the mail queued has not necessarily seen it. */
+export declare function assistantTurnStartedAfter(jsonlText: string, marker: string, cli: BlendCli): boolean;
 /** Gauge fuel without headless stream-json: the LAST assistant record's
  * message.usage. Context fullness = input + cache-read tokens. Absent or
  * unparseable → undefined — degrade honestly, never fake a gauge. The exact
@@ -109,10 +114,15 @@ export declare function sessionUsage(jsonlText: string): TurnUsage | undefined;
 /** Per-CLI delivery physics, all live-probed. The submit gap is uniform at
  * 1s: codex groups literal-text+immediate-CR as one paste (the CR becomes a
  * composer newline — reproduced), claude proved 400ms, pi tolerated 0 — one
- * safe gap for all three. Verify ceilings differ because pi/codex write the
- * queued message to the session file only when the in-flight turn ENDS
- * (timing law), so the window must span the turn remainder; claude wrote
- * mid-turn in ~1.2s. */
+ * safe gap for all three. Verify ceilings are uniform at 120s: pi/codex
+ * write the queued message to the session file only when the in-flight turn
+ * ENDS (timing law), so the window must span the turn remainder — and
+ * claude's probed ~1.2s mid-turn write turned out to hold only on a QUIET
+ * boundary. A long tool execution defers it past any short ceiling
+ * (recurrence data, ticket-#4 retro: 6 dead-letters in one day under a 30s
+ * ceiling, ALL at busy boundaries — joins and a 98-tool-call QA session).
+ * The fast poll keeps claude's common case snappy; the long ceiling absorbs
+ * the busy one. */
 export declare const CLI_DELIVERY: Record<BlendCli, {
     submitDelayMs: number;
     verifyTimeoutMs: number;
@@ -137,6 +147,11 @@ export interface DeliverOpts {
     /** Fresh session's first delivery: the visible re-orientation block. */
     orientation?: string;
     id?: string;
+    /** This call RETRIES a previously-failed delivery under its OWN id (the
+     * fresh-id re-mint fix, ticket-#3 retro): every paste wears the REDELIVERY
+     * header, and the marker is checked BEFORE the first paste — a slow write
+     * that landed the earlier attempt late is drained, never duplicated. */
+    redelivery?: boolean;
     quietMs?: number;
     longQuietMs?: number;
     quietPollMs?: number;
@@ -163,6 +178,52 @@ export interface DeliveryOutcome {
  * loss is not) → honest failure; the CALLER keeps the mail queued and stamps.
  */
 export declare function deliverToBlendedSeat(o: DeliverOpts): Promise<DeliveryOutcome>;
+/** How long a verified delivery may sit with NO assistant turn before the
+ * engine nudges (ticket-#4 flaw: 8 minutes of silence at a full-hand join
+ * until a human typed "continue" — frontier-model early stopping is a known
+ * mode; the harness absorbs it, the operator is never the watchdog). A
+ * normal turn starts within seconds; 3 minutes is far outside honest
+ * latency and far inside the operator's patience. */
+export declare const EARLY_STOP_NUDGE_MS = 180000;
+/** The one standing nudge. Defensive wording on purpose: pi/codex session
+ * files may only gain records at turn boundaries, so a long legitimate turn
+ * can look unstarted from disk — a nudge that lands mid-work must read as
+ * ignorable, exactly like a REDELIVERY header. */
+export declare function renderEarlyStopNudge(id: string): string;
+export interface EarlyStopOpts {
+    tty: BlendTtyHandle;
+    cli: BlendCli;
+    readSession: () => string | undefined;
+    /** The verified delivery this watchdog guards. */
+    id: string;
+    /** Supersession: each delivery bumps gen and arms a fresh watchdog; an
+     * older one seeing a newer gen stands down (one outstanding nudge per
+     * seat, never a pile-up). */
+    wdRef?: {
+        gen: number;
+    };
+    gen?: number;
+    nudgeAfterMs?: number;
+    pollMs?: number;
+    quietMs?: number;
+    longQuietMs?: number;
+    quietPollMs?: number;
+    submitDelayMs?: number;
+    signal?: AbortSignal;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+}
+/**
+ * The other half of verified delivery (build-ready cure, 2026-08-12): the
+ * engine proved the mail landed in the session — now prove it was PICKED UP.
+ * Watches the session file after a verified delivery; if no assistant record
+ * follows the marker within the window, injects ONE standing nudge (quiet-
+ * composer gated, same yield law as delivery). Disarms silently when the
+ * turn starts, a newer delivery supersedes it, the pane dies, or the marker
+ * vanishes from the session text (respawn/refresh — stale marker, stale
+ * watchdog). Returns true iff the nudge was injected.
+ */
+export declare function watchForEarlyStop(o: EarlyStopOpts): Promise<boolean>;
 /** Task-ending events in .agents/state/events.log — agentctl writes accepted
  * lines as `[iso] TRANSITION actor=… state=…`; a task ends when it lands at
  * idle: CLOSE, ABANDON, RESEARCH_DONE (state-machine.yaml is the authority;
@@ -259,6 +320,24 @@ export interface BlendedTurnOpts {
      * record = fresh). The supervisor overrides with spawn-level truth (a
      * crash-RESUMED session is already oriented even though unpinned). */
     needsOrientation?: () => boolean;
+    /** Retry continuity (the fresh-id re-mint fix): a failed delivery parks
+     * its id + batch here; the retry of the SAME batch reuses the id under a
+     * visible REDELIVERY header and drains a late landing without re-pasting.
+     * A changed batch (new mail joined) mints fresh — the content differs.
+     * blendedLoop owns one per seat; absent (direct calls) = every call fresh. */
+    retryRef?: {
+        id?: string;
+        batch?: string;
+    };
+    /** Early-stop watchdog generation counter (one outstanding watchdog per
+     * seat — each verified delivery supersedes the last). blendedLoop owns one
+     * per seat; absent = no watchdog armed (tests drive watchForEarlyStop
+     * directly). */
+    wdRef?: {
+        gen: number;
+    };
+    nudgeAfterMs?: number;
+    watchdogPollMs?: number;
     /** Composer-ready settle after any spawn (probe-1 lesson: a startup modal
      * ate the first paste — never deliver into a just-born TUI instantly). */
     spawnSettleMs?: number;

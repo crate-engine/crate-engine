@@ -306,35 +306,70 @@ function textParts(content: unknown): string {
   return "";
 }
 
+/** One parsed jsonl record is a USER-authored record carrying the marker
+ * (per-CLI probed shapes). Shared by delivery verification and the early-
+ * stop watchdog so both read the same physics. */
+function isUserRecordWithMarker(d: Record<string, unknown>, marker: string, cli: BlendCli): boolean {
+  if (cli === "claude") {
+    // probed: {"type":"user","message":{"role":"user","content":...}}
+    const msg = d.message as { role?: string; content?: unknown } | undefined;
+    return d.type === "user" && msg?.role === "user" && textParts(msg.content).includes(marker);
+  }
+  if (cli === "pi") {
+    // probed: {"type":"message","message":{"role":"user","content":[{"type":"text","text":...}]}}
+    const msg = d.message as { role?: string; content?: unknown } | undefined;
+    return d.type === "message" && msg?.role === "user" && textParts(msg.content).includes(marker);
+  }
+  // probed, two shapes carry the delivered text verbatim:
+  //   {"type":"event_msg","payload":{"type":"user_message","message":...}}
+  //   {"type":"response_item","payload":{"role":"user","content":[{"type":"input_text",...}]}}
+  const payload = d.payload as { type?: string; message?: string; role?: string; content?: unknown } | undefined;
+  if (d.type === "event_msg" && payload?.type === "user_message" && typeof payload.message === "string" && payload.message.includes(marker)) return true;
+  return d.type === "response_item" && payload?.role === "user" && textParts(payload.content).includes(marker);
+}
+
+/** One parsed jsonl record is ASSISTANT-authored (per-CLI probed shapes) —
+ * the sign a response turn is underway. */
+function isAssistantRecord(d: Record<string, unknown>, cli: BlendCli): boolean {
+  if (cli === "claude") return d.type === "assistant";
+  if (cli === "pi") {
+    const msg = d.message as { role?: string } | undefined;
+    return d.type === "message" && msg?.role === "assistant";
+  }
+  const payload = d.payload as { type?: string; role?: string } | undefined;
+  return (d.type === "event_msg" && payload?.type === "agent_message") || (d.type === "response_item" && payload?.role === "assistant");
+}
+
+function parseJsonlLines(jsonlText: string): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  for (const line of jsonlText.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      out.push(JSON.parse(line) as Record<string, unknown>);
+    } catch {
+      /* partial trailing line mid-write, or junk — tolerate */
+    }
+  }
+  return out;
+}
+
 /** True iff the marker appears in a USER-authored record of the session
  * file. The user-only filter is load-bearing: the assistant's reply echoes
  * the marker in later lines, and an echo is not a delivery. Malformed and
  * partial trailing lines are skipped, never thrown on. */
 export function verifyDelivered(jsonlText: string, marker: string, cli: BlendCli): boolean {
-  for (const line of jsonlText.split("\n")) {
-    if (!line.trim()) continue;
-    let d: Record<string, unknown>;
-    try {
-      d = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue; // partial trailing line mid-write, or junk — tolerate
-    }
-    if (cli === "claude") {
-      // probed: {"type":"user","message":{"role":"user","content":...}}
-      const msg = d.message as { role?: string; content?: unknown } | undefined;
-      if (d.type === "user" && msg?.role === "user" && textParts(msg.content).includes(marker)) return true;
-    } else if (cli === "pi") {
-      // probed: {"type":"message","message":{"role":"user","content":[{"type":"text","text":...}]}}
-      const msg = d.message as { role?: string; content?: unknown } | undefined;
-      if (d.type === "message" && msg?.role === "user" && textParts(msg.content).includes(marker)) return true;
-    } else {
-      // probed, two shapes carry the delivered text verbatim:
-      //   {"type":"event_msg","payload":{"type":"user_message","message":...}}
-      //   {"type":"response_item","payload":{"role":"user","content":[{"type":"input_text",...}]}}
-      const payload = d.payload as { type?: string; message?: string; role?: string; content?: unknown } | undefined;
-      if (d.type === "event_msg" && payload?.type === "user_message" && typeof payload.message === "string" && payload.message.includes(marker)) return true;
-      if (d.type === "response_item" && payload?.role === "user" && textParts(payload.content).includes(marker)) return true;
-    }
+  return parseJsonlLines(jsonlText).some((d) => isUserRecordWithMarker(d, marker, cli));
+}
+
+/** True iff an ASSISTANT record follows the marker's USER record — the mail
+ * is being attended (or already was). The early-stop watchdog's disarm
+ * signal. Records before the marker never count: an assistant that was
+ * mid-response when the mail queued has not necessarily seen it. */
+export function assistantTurnStartedAfter(jsonlText: string, marker: string, cli: BlendCli): boolean {
+  let markerSeen = false;
+  for (const d of parseJsonlLines(jsonlText)) {
+    if (!markerSeen) markerSeen = isUserRecordWithMarker(d, marker, cli);
+    else if (isAssistantRecord(d, cli)) return true;
   }
   return false;
 }
@@ -384,12 +419,17 @@ const PASTE_END = "\x1b[201~";
 /** Per-CLI delivery physics, all live-probed. The submit gap is uniform at
  * 1s: codex groups literal-text+immediate-CR as one paste (the CR becomes a
  * composer newline — reproduced), claude proved 400ms, pi tolerated 0 — one
- * safe gap for all three. Verify ceilings differ because pi/codex write the
- * queued message to the session file only when the in-flight turn ENDS
- * (timing law), so the window must span the turn remainder; claude wrote
- * mid-turn in ~1.2s. */
+ * safe gap for all three. Verify ceilings are uniform at 120s: pi/codex
+ * write the queued message to the session file only when the in-flight turn
+ * ENDS (timing law), so the window must span the turn remainder — and
+ * claude's probed ~1.2s mid-turn write turned out to hold only on a QUIET
+ * boundary. A long tool execution defers it past any short ceiling
+ * (recurrence data, ticket-#4 retro: 6 dead-letters in one day under a 30s
+ * ceiling, ALL at busy boundaries — joins and a 98-tool-call QA session).
+ * The fast poll keeps claude's common case snappy; the long ceiling absorbs
+ * the busy one. */
 export const CLI_DELIVERY: Record<BlendCli, { submitDelayMs: number; verifyTimeoutMs: number; verifyPollMs: number }> = {
-  claude: { submitDelayMs: 1000, verifyTimeoutMs: 30_000, verifyPollMs: 250 },
+  claude: { submitDelayMs: 1000, verifyTimeoutMs: 120_000, verifyPollMs: 250 },
   pi: { submitDelayMs: 1000, verifyTimeoutMs: 120_000, verifyPollMs: 2000 },
   codex: { submitDelayMs: 1000, verifyTimeoutMs: 120_000, verifyPollMs: 2000 },
 };
@@ -412,6 +452,11 @@ export interface DeliverOpts {
   /** Fresh session's first delivery: the visible re-orientation block. */
   orientation?: string;
   id?: string;
+  /** This call RETRIES a previously-failed delivery under its OWN id (the
+   * fresh-id re-mint fix, ticket-#3 retro): every paste wears the REDELIVERY
+   * header, and the marker is checked BEFORE the first paste — a slow write
+   * that landed the earlier attempt late is drained, never duplicated. */
+  redelivery?: boolean;
   quietMs?: number;
   longQuietMs?: number;
   quietPollMs?: number;
@@ -433,6 +478,17 @@ export interface DeliveryOutcome {
 }
 
 const realSleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
+
+/** Real-time sleep whose timer never holds the process open — the early-stop
+ * watchdog's clock. The watchdog deliberately does NOT inherit a caller's
+ * injected sleep/now: a fake instant sleep against the real clock turns its
+ * minutes-long window into a hot spin (live-found: blendteam suite pinned at
+ * 100% CPU), and a pending real timer must never block process exit. */
+const unrefSleep = (ms: number) =>
+  new Promise<void>((res) => {
+    const t = setTimeout(res, ms);
+    (t as { unref?: () => void }).unref?.();
+  });
 
 /**
  * Deliver one mail batch into a live blended session, verified. Waits
@@ -464,11 +520,12 @@ export async function deliverToBlendedSeat(o: DeliverOpts): Promise<DeliveryOutc
   for (const attempt of [1, 2] as const) {
     if (o.signal?.aborted) return { ok: false, id, attempts: attempt - 1, error: "aborted" };
     await waitQuiet();
-    // Before a redelivery, look again: a slow write (long in-flight turn on
-    // pi/codex) may have landed attempt 1 late — pasting again would be a
-    // needless duplicate.
-    if (attempt === 2 && verified()) return { ok: true, id, attempts: 1 };
-    const block = renderMailBlock(o.msgs, id, attempt === 2, o.orientation);
+    // Before any re-paste of an already-pasted id, look again: a slow write
+    // (long in-flight turn, long tool execution) may have landed the earlier
+    // attempt late — pasting again would be a needless duplicate. attempts=0
+    // = a prior CALL's paste drained; the caller stamps it as a late landing.
+    if ((attempt === 2 || o.redelivery) && verified()) return { ok: true, id, attempts: attempt - 1 };
+    const block = renderMailBlock(o.msgs, id, attempt === 2 || o.redelivery === true, o.orientation);
     o.tty.inject(PASTE_START + block + PASTE_END);
     await sleep(submitDelayMs);
     o.tty.inject("\r"); // a SEPARATE CR — an immediate one is swallowed into the paste (codex)
@@ -479,6 +536,89 @@ export async function deliverToBlendedSeat(o: DeliverOpts): Promise<DeliveryOutc
     }
   }
   return { ok: false, id, attempts: 2, error: `not verified in session file after 2 attempts` };
+}
+
+// ── the early-stop watchdog (delivered ≠ attended) ────────────────────────
+
+/** How long a verified delivery may sit with NO assistant turn before the
+ * engine nudges (ticket-#4 flaw: 8 minutes of silence at a full-hand join
+ * until a human typed "continue" — frontier-model early stopping is a known
+ * mode; the harness absorbs it, the operator is never the watchdog). A
+ * normal turn starts within seconds; 3 minutes is far outside honest
+ * latency and far inside the operator's patience. */
+export const EARLY_STOP_NUDGE_MS = 180_000;
+
+/** The one standing nudge. Defensive wording on purpose: pi/codex session
+ * files may only gain records at turn boundaries, so a long legitimate turn
+ * can look unstarted from disk — a nudge that lands mid-work must read as
+ * ignorable, exactly like a REDELIVERY header. */
+export function renderEarlyStopNudge(id: string): string {
+  return (
+    `[engine watchdog] team mail #${id} was delivered and verified above, but no response turn has started — ` +
+    `if you are already working, ignore this; otherwise handle the mail now.`
+  );
+}
+
+export interface EarlyStopOpts {
+  tty: BlendTtyHandle;
+  cli: BlendCli;
+  readSession: () => string | undefined;
+  /** The verified delivery this watchdog guards. */
+  id: string;
+  /** Supersession: each delivery bumps gen and arms a fresh watchdog; an
+   * older one seeing a newer gen stands down (one outstanding nudge per
+   * seat, never a pile-up). */
+  wdRef?: { gen: number };
+  gen?: number;
+  nudgeAfterMs?: number;
+  pollMs?: number;
+  quietMs?: number;
+  longQuietMs?: number;
+  quietPollMs?: number;
+  submitDelayMs?: number;
+  signal?: AbortSignal;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
+
+/**
+ * The other half of verified delivery (build-ready cure, 2026-08-12): the
+ * engine proved the mail landed in the session — now prove it was PICKED UP.
+ * Watches the session file after a verified delivery; if no assistant record
+ * follows the marker within the window, injects ONE standing nudge (quiet-
+ * composer gated, same yield law as delivery). Disarms silently when the
+ * turn starts, a newer delivery supersedes it, the pane dies, or the marker
+ * vanishes from the session text (respawn/refresh — stale marker, stale
+ * watchdog). Returns true iff the nudge was injected.
+ */
+export async function watchForEarlyStop(o: EarlyStopOpts): Promise<boolean> {
+  const sleep = o.sleep ?? realSleep;
+  const now = o.now ?? Date.now;
+  const nudgeAfterMs = o.nudgeAfterMs ?? EARLY_STOP_NUDGE_MS;
+  const pollMs = o.pollMs ?? 15_000;
+  const marker = `#${o.id}`;
+  const superseded = () =>
+    o.signal?.aborted === true || o.tty.exited !== undefined || (o.wdRef !== undefined && o.gen !== undefined && o.wdRef.gen !== o.gen);
+  const turnStarted = (): boolean | "stale" => {
+    const text = o.readSession();
+    if (text === undefined || !verifyDelivered(text, marker, o.cli)) return "stale";
+    return assistantTurnStartedAfter(text, marker, o.cli);
+  };
+  const t0 = now();
+  while (now() - t0 < nudgeAfterMs) {
+    await sleep(Math.min(pollMs, Math.max(1, nudgeAfterMs - (now() - t0))));
+    if (superseded()) return false;
+    const started = turnStarted();
+    if (started === true || started === "stale") return false;
+  }
+  // The window closed on silence. Yield to the human, then one last look —
+  // a turn that started during the quiet wait must not be nudged mid-work.
+  while (!superseded() && !composerQuiet(o.tty, now(), o.quietMs, o.longQuietMs)) await sleep(o.quietPollMs ?? 250);
+  if (superseded() || turnStarted() !== false) return false;
+  o.tty.inject(PASTE_START + renderEarlyStopNudge(o.id) + PASTE_END);
+  await sleep(o.submitDelayMs ?? 1000);
+  o.tty.inject("\r");
+  return true;
 }
 
 // ── fresh-per-task session reset (locked Q1) ──────────────────────────────
@@ -670,6 +810,19 @@ export interface BlendedTurnOpts {
    * record = fresh). The supervisor overrides with spawn-level truth (a
    * crash-RESUMED session is already oriented even though unpinned). */
   needsOrientation?: () => boolean;
+  /** Retry continuity (the fresh-id re-mint fix): a failed delivery parks
+   * its id + batch here; the retry of the SAME batch reuses the id under a
+   * visible REDELIVERY header and drains a late landing without re-pasting.
+   * A changed batch (new mail joined) mints fresh — the content differs.
+   * blendedLoop owns one per seat; absent (direct calls) = every call fresh. */
+  retryRef?: { id?: string; batch?: string };
+  /** Early-stop watchdog generation counter (one outstanding watchdog per
+   * seat — each verified delivery supersedes the last). blendedLoop owns one
+   * per seat; absent = no watchdog armed (tests drive watchForEarlyStop
+   * directly). */
+  wdRef?: { gen: number };
+  nudgeAfterMs?: number;
+  watchdogPollMs?: number;
   /** Composer-ready settle after any spawn (probe-1 lesson: a startup modal
    * ate the first paste — never deliver into a just-born TUI instantly). */
   spawnSettleMs?: number;
@@ -785,12 +938,21 @@ export async function blendedTurn(o: BlendedTurnOpts): Promise<TurnResult> {
   // override) gets mail alone (speed law — orientation is already in context).
   const needsOrient = o.needsOrientation ? o.needsOrientation() : !sessionOriented(o.readSession(), o.cli);
 
+  // Retry continuity: the SAME unchanged batch retries under its ORIGINAL id
+  // (visible REDELIVERY, late landings drained) — a fresh id per retry made
+  // dedup-by-id impossible for consumers and re-minted every slow landing as
+  // brand-new mail (live-found by the rig's own orchestrator, 2026-08-12).
+  const batchKey = mail.map((m) => m.name).join("|");
+  const retryId = o.retryRef?.batch === batchKey ? o.retryRef.id : undefined;
+
   const r = await deliverToBlendedSeat({
     tty,
     msgs: mail,
     cli: o.cli,
     readSession: o.readSession,
     orientation: needsOrient ? renderOrientation(seat) : undefined,
+    id: retryId,
+    redelivery: retryId !== undefined,
     quietMs: o.quietMs,
     longQuietMs: o.longQuietMs,
     quietPollMs: o.quietPollMs,
@@ -803,9 +965,19 @@ export async function blendedTurn(o: BlendedTurnOpts): Promise<TurnResult> {
   });
 
   if (!r.ok) {
+    // Park the id for the retry: the next attempt at this same batch wears
+    // the REDELIVERY header and pre-checks the marker before pasting.
+    if (o.retryRef) {
+      o.retryRef.id = r.id;
+      o.retryRef.batch = batchKey;
+    }
     stampTurns(projectRoot, seat, `delivery FAILED | #${r.id} | ${r.error ?? "unverified"} — mail stays queued`);
     stampDeliverFailed(projectRoot, seat, r.id, r.error ?? "unverified");
     return { ok: false, error: `delivery #${r.id} ${r.error ?? "unverified"}` };
+  }
+  if (o.retryRef) {
+    o.retryRef.id = undefined;
+    o.retryRef.batch = undefined;
   }
 
   complete(inboxRoot, seat, mail); // ack ONLY after on-disk verification (at-least-once)
@@ -824,8 +996,50 @@ export async function blendedTurn(o: BlendedTurnOpts): Promise<TurnResult> {
     projectRoot,
     seat,
     `delivered | #${r.id} | mail=${mail.length} | verified in ${sid ? `${sid.slice(0, 8)}….jsonl` : "session file"}` +
-      `${r.verifyMs !== undefined ? ` after ${r.verifyMs}ms` : ""}${r.attempts > 1 ? " | on redelivery" : ""}`,
+      `${r.verifyMs !== undefined ? ` after ${r.verifyMs}ms` : ""}${r.attempts > 1 ? " | on redelivery" : ""}` +
+      `${r.attempts === 0 ? " | late landing drained — no re-paste" : ""}`,
   );
+
+  // The other half of verification: the mail LANDED — now watch that it gets
+  // PICKED UP. One floating watchdog per seat; a newer delivery supersedes.
+  if (o.wdRef) {
+    const gen = ++o.wdRef.gen;
+    void watchForEarlyStop({
+      tty,
+      cli: o.cli,
+      readSession: o.readSession,
+      id: r.id,
+      wdRef: o.wdRef,
+      gen,
+      nudgeAfterMs: o.nudgeAfterMs,
+      pollMs: o.watchdogPollMs,
+      quietMs: o.quietMs,
+      longQuietMs: o.longQuietMs,
+      quietPollMs: o.quietPollMs,
+      submitDelayMs: o.submitDelayMs,
+      signal: o.signal,
+      // ALWAYS the real clock (see unrefSleep) — the delivery's injectable
+      // sleep/now stay out of the background babysitter on purpose.
+      sleep: unrefSleep,
+    })
+      .then((nudged) => {
+        if (!nudged) return;
+        stampTurns(projectRoot, seat, `early-stop watchdog | #${r.id} delivered but no turn started — standing nudge injected`);
+        try {
+          // A record, never a transition — no state= token (agentctl's parser
+          // only reads state=), same law as DELIVER_FAILED.
+          appendFileSync(
+            join(projectRoot, ".agents", "state", "events.log"),
+            `[${new Date().toISOString()}] WATCHDOG_NUDGE actor=engine seat=${seat} id=#${r.id} reason="delivery verified, no assistant turn in window — nudge injected"\n`,
+          );
+        } catch {
+          /* turns.log already carries it */
+        }
+      })
+      .catch(() => {
+        /* a dying watchdog must never take the loop with it */
+      });
+  }
   return { ok: true, sessionId: sid, usage };
 }
 
@@ -859,6 +1073,10 @@ export function blendedLoop(o: BlendedLoopOpts): Promise<void> {
       /* isAttended's dead-pid self-clean covers it */
     }
   }
+  // Per-seat continuity refs, owned by the loop so they span retries: a
+  // failed batch retries under its own id (retryRef), and each verified
+  // delivery arms/supersedes the seat's one early-stop watchdog (wdRef).
+  const turnOpts: BlendedTurnOpts = { ...o, retryRef: o.retryRef ?? {}, wdRef: o.wdRef ?? { gen: 0 } };
   const loopOpts: RunnerLoopOpts = {
     projectRoot: o.projectRoot,
     seat: o.seat,
@@ -874,7 +1092,7 @@ export function blendedLoop(o: BlendedLoopOpts): Promise<void> {
     // retry/dead-letter machinery inherited), never kill the standing loop.
     runTurnImpl: async () => {
       try {
-        return await blendedTurn(o);
+        return await blendedTurn(turnOpts);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         stampTurns(o.projectRoot, o.seat, `delivery turn CRASHED: ${msg} — mail stays queued`);

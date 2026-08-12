@@ -8,8 +8,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+  assistantTurnStartedAfter,
   blendEligible,
   blendedTurn,
+  CLI_DELIVERY,
   codexRolloutMatches,
   codexSessionIdOf,
   claudeTrustHandshake,
@@ -34,6 +36,7 @@ import {
   sessionUsage,
   taskEndsIn,
   verifyDelivered,
+  watchForEarlyStop,
   watchTaskEnds,
   type BlendTtyHandle,
 } from "../src/blend.js";
@@ -832,6 +835,217 @@ test("blendedTurn: onVerified (session pinning) fires after verification, BEFORE
   assert.equal(order[1], "read-sid");
   const sf = JSON.parse(readFileSync(sessionFile(rig.proj, "coder"), "utf8"));
   assert.equal(sf.sessionId, "sess-pinned", "only PINNED truth is ever persisted");
+});
+
+// ── Pack 1: delivery reliability — dead-letter cure + early-stop watchdog ──
+
+test("CLI_DELIVERY: every verify ceiling spans a busy boundary (ticket-#4 retro: 6 dead-letters under claude's 30s ceiling)", () => {
+  for (const cli of ["claude", "pi", "codex"] as const) {
+    assert.ok(CLI_DELIVERY[cli].verifyTimeoutMs >= 120_000, `${cli}'s window must span a long tool execution / turn remainder`);
+  }
+});
+
+test("deliverToBlendedSeat redelivery: EVERY paste wears the REDELIVERY header (a retried id is never invisible)", async () => {
+  const tty = fakeTty();
+  let session = "";
+  const r = await deliverToBlendedSeat({
+    tty,
+    msgs: [msg("orchestrator", "retry me")],
+    cli: "claude",
+    readSession: () => session,
+    id: "aa11bb22",
+    redelivery: true,
+    verifyTimeoutMs: 10,
+    verifyPollMs: 1,
+    sleep: async () => {
+      if (tty.injected.includes("\r")) session = claudeUser("#aa11bb22");
+    },
+    now: Date.now,
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.id, "aa11bb22", "the retry keeps its ORIGINAL id — dedup-by-id stays possible");
+  assert.match(tty.injected[0]!, /REDELIVERY; ignore if already received/, "attempt 1 of a retry is already visibly a duplicate");
+});
+
+test("deliverToBlendedSeat redelivery: a late-landed prior attempt is DRAINED — ok, zero pastes, attempts=0", async () => {
+  const tty = fakeTty();
+  const r = await deliverToBlendedSeat({
+    tty,
+    msgs: [msg("orchestrator", "landed late")],
+    cli: "claude",
+    readSession: () => claudeUser("[team mail #cc33dd44 — engine delivery]\nlanded late"),
+    id: "cc33dd44",
+    redelivery: true,
+    verifyTimeoutMs: 10,
+    verifyPollMs: 1,
+    sleep: noSleep,
+    now: Date.now,
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.attempts, 0, "no paste this call — the prior attempt's landing was found");
+  assert.equal(tty.injected.length, 0, "the slow write is never re-minted as new mail");
+});
+
+test("assistantTurnStartedAfter: assistant AFTER the marker = attended; before it (or an echo alone) is not", () => {
+  const marker = "#ab12cd34";
+  const userLine = claudeUser(`[team mail ${marker} — engine delivery]\nbrief`);
+  assert.equal(assistantTurnStartedAfter(claudeAssistant("old turn") + "\n" + userLine, marker, "claude"), false, "a turn that PRECEDED the mail has not seen it");
+  assert.equal(assistantTurnStartedAfter(userLine + "\n" + claudeAssistant("on it"), marker, "claude"), true);
+  assert.equal(assistantTurnStartedAfter(claudeAssistant(`echoing ${marker}`) + "\n" + claudeAssistant("more"), marker, "claude"), false, "an assistant echo never counts as the delivery");
+  // pi shapes
+  const piUser = JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: `mail ${marker}` }] } });
+  const piAssistant = JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "working" }] } });
+  assert.equal(assistantTurnStartedAfter(piUser + "\n" + piAssistant, marker, "pi"), true);
+  assert.equal(assistantTurnStartedAfter(piUser, marker, "pi"), false);
+  // codex shapes: agent_message event OR assistant response_item
+  const cxUser = JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: `mail ${marker}` } });
+  const cxAgent = JSON.stringify({ type: "event_msg", payload: { type: "agent_message", message: "working" } });
+  const cxItem = JSON.stringify({ type: "response_item", payload: { role: "assistant", content: [{ type: "output_text", text: "working" }] } });
+  assert.equal(assistantTurnStartedAfter(cxUser + "\n" + cxAgent, marker, "codex"), true);
+  assert.equal(assistantTurnStartedAfter(cxUser + "\n" + cxItem, marker, "codex"), true);
+  assert.equal(assistantTurnStartedAfter(cxUser, marker, "codex"), false);
+});
+
+test("watchForEarlyStop: the turn starts inside the window → disarms silently, nothing injected", async () => {
+  const tty = fakeTty();
+  let nowMs = 0;
+  let session = claudeUser("[team mail #ee55ff66 — engine delivery]\nbrief");
+  const r = await watchForEarlyStop({
+    tty,
+    cli: "claude",
+    readSession: () => session,
+    id: "ee55ff66",
+    nudgeAfterMs: 1000,
+    pollMs: 100,
+    sleep: async (ms) => {
+      nowMs += ms;
+      if (nowMs >= 300) session += "\n" + claudeAssistant("on it");
+    },
+    now: () => nowMs,
+  });
+  assert.equal(r, false);
+  assert.equal(tty.injected.length, 0, "an attended delivery is never nudged");
+});
+
+test("watchForEarlyStop: silence past the window → ONE standing nudge, paste-wrapped + separate CR", async () => {
+  const tty = fakeTty();
+  let nowMs = 0;
+  const session = claudeUser("[team mail #ee55ff66 — engine delivery]\nbrief");
+  const r = await watchForEarlyStop({
+    tty,
+    cli: "claude",
+    readSession: () => session,
+    id: "ee55ff66",
+    nudgeAfterMs: 1000,
+    pollMs: 100,
+    submitDelayMs: 1,
+    sleep: async (ms) => {
+      nowMs += ms;
+    },
+    now: () => nowMs,
+  });
+  assert.equal(r, true);
+  assert.equal(tty.injected.length, 2, "one paste + one CR — a single inject, zero new machinery");
+  assert.match(tty.injected[0]!, /^\x1b\[200~\[engine watchdog\] team mail #ee55ff66/);
+  assert.match(tty.injected[0]!, /ignore this/, "defensive wording — a mid-work landing must read as ignorable");
+  assert.equal(tty.injected[1], "\r");
+});
+
+test("watchForEarlyStop: a newer delivery supersedes; a vanished marker (respawn) stands down", async () => {
+  const wdRef = { gen: 2 };
+  const tty = fakeTty();
+  let nowMs = 0;
+  const superseded = await watchForEarlyStop({
+    tty,
+    cli: "claude",
+    readSession: () => claudeUser("[team mail #aa00bb11]"),
+    id: "aa00bb11",
+    wdRef,
+    gen: 1, // an older generation — a newer delivery armed its own watchdog
+    nudgeAfterMs: 1000,
+    pollMs: 100,
+    sleep: async (ms) => {
+      nowMs += ms;
+    },
+    now: () => nowMs,
+  });
+  assert.equal(superseded, false);
+  assert.equal(tty.injected.length, 0);
+
+  nowMs = 0;
+  const stale = await watchForEarlyStop({
+    tty,
+    cli: "claude",
+    readSession: () => claudeUser("a FRESH session with no marker"), // respawn/refresh rewrote the world
+    id: "aa00bb11",
+    nudgeAfterMs: 1000,
+    pollMs: 100,
+    sleep: async (ms) => {
+      nowMs += ms;
+    },
+    now: () => nowMs,
+  });
+  assert.equal(stale, false);
+  assert.equal(tty.injected.length, 0, "a stale watchdog never nudges a session about mail it cannot see");
+});
+
+test("blendedTurn + retryRef: a failed batch RETRIES under its own id; the late landing is drained, not re-minted", async () => {
+  const retryRef: { id?: string; batch?: string } = {};
+  const rig = turnRig("bt-retry-id", { retryRef, sleep: noSleep }); // never lands → attempt fails
+  enqueue(rig.inbox, "coder", "orchestrator", "slow boundary");
+  const r1 = await blendedTurn(rig.opts);
+  assert.equal(r1.ok, false);
+  const id = rig.tty.injected[0]!.match(/#([0-9a-f]{8})/)![1]!;
+  assert.equal(retryRef.id, id, "the failed id is parked for the retry");
+
+  // the paste lands LATE (the long tool execution ends) before the retry turn
+  rig.session.text = claudeUser(`[team mail #${id} — engine delivery]\nslow boundary`);
+  const pastesBefore = rig.tty.injected.filter((s) => s.startsWith("\x1b[200~")).length;
+  const r2 = await blendedTurn(rig.opts);
+  assert.equal(r2.ok, true);
+  assert.equal(rig.tty.injected.filter((s) => s.startsWith("\x1b[200~")).length, pastesBefore, "drained — ZERO new pastes, no duplicate mail");
+  assert.equal(readNew(rig.inbox, "coder").length, 0, "the batch completed under its ORIGINAL id");
+  assert.equal(retryRef.id, undefined, "continuity cleared on success");
+  const log = readFileSync(join(rig.proj, ".agents", "state", "turns", "coder", "turns.log"), "utf8");
+  assert.match(log, new RegExp(`delivered \\| #${id} .*late landing drained`));
+});
+
+test("blendedTurn + retryRef: a CHANGED batch (new mail joined) mints fresh — content differs, no false drain", async () => {
+  const retryRef: { id?: string; batch?: string } = {};
+  const rig = turnRig("bt-retry-grow", { retryRef, sleep: noSleep });
+  enqueue(rig.inbox, "coder", "orchestrator", "first");
+  const r1 = await blendedTurn(rig.opts);
+  assert.equal(r1.ok, false);
+  const failedId = retryRef.id!;
+
+  enqueue(rig.inbox, "coder", "reviewer", "second — joined while queued");
+  rig.opts.sleep = autoLandSleep(rig);
+  const r2 = await blendedTurn(rig.opts);
+  assert.equal(r2.ok, true);
+  const lastPaste = rig.tty.injected.filter((s) => s.startsWith("\x1b[200~")).at(-1)!;
+  assert.ok(!lastPaste.includes(`#${failedId}`), "a grown batch is NEW mail under a new id");
+  assert.ok(!lastPaste.includes("REDELIVERY"), "…and honestly not a redelivery");
+});
+
+test("blendedTurn + wdRef: a verified-but-unattended delivery gets the standing nudge + inert WATCHDOG_NUDGE record", async () => {
+  const wdRef = { gen: 0 };
+  // The watchdog runs on the REAL clock by design (never a test's fake sleep
+  // — the blendteam hot-spin lesson), so the window here is real milliseconds.
+  const rig = turnRig("bt-watchdog", { wdRef, nudgeAfterMs: 50, watchdogPollMs: 10, submitDelayMs: 1 });
+  enqueue(rig.inbox, "coder", "orchestrator", "brief, then silence"); // the default sleep hook lands the marker; no assistant follows
+  const r = await blendedTurn(rig.opts);
+  assert.equal(r.ok, true);
+  assert.equal(wdRef.gen, 1, "the watchdog armed on the verified delivery");
+  await new Promise((res) => setTimeout(res, 500)); // the floating watchdog runs on real time
+  assert.ok(
+    rig.tty.injected.some((s) => s.includes("[engine watchdog] team mail #")),
+    "no assistant turn inside the window → the nudge landed",
+  );
+  const ev = readFileSync(join(rig.proj, ".agents", "state", "events.log"), "utf8");
+  assert.match(ev, /WATCHDOG_NUDGE actor=engine seat=coder id=#[0-9a-f]{8}/);
+  assert.ok(!/state=/.test(ev), "a record, never a transition — no state= token");
+  const log = readFileSync(join(rig.proj, ".agents", "state", "turns", "coder", "turns.log"), "utf8");
+  assert.match(log, /early-stop watchdog \| #[0-9a-f]{8} delivered but no turn started/);
 });
 
 // ── pi node picker (the superman node-20 crash mitigation) ──
