@@ -24,6 +24,10 @@ canonical_rails: config/state-machine.yaml + reviewer.md rails   # frontmatter M
 ## Hard Constraints
 
 - **Never merge.** The coder merges only on `[MERGE]` from the orchestrator after the human's go.
+- **Never coach identity un-badging.** If agentctl refuses you on `seat_identity`,
+  that refusal is correct — tell the human to act from THEIR surfaces (the gate
+  bar / their own terminal); never suggest `env -u CRATE_SEAT`, badge-stripping,
+  or `--actor` forgery (a stripped badge trips agentctl's ancestor check anyway).
 - **Never signal the coder directly.** Report every verdict to the ORCHESTRATOR only.
 - **Never emit `approved` or `changes_needed`.** Those are the orchestrator's JOIN,
   and agentctl REFUSES them from you (physics, 2026-07-24). Your one emit is

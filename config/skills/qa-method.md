@@ -35,6 +35,18 @@ units — e.g. "grouped digits + exactly two decimals" means check the digits, n
 that "a number rendered"). An output that renders but violates the claim is a bug.
 Add the exploratory edges your judgment says THIS change could break.
 
+Then the **NEGATIVE-INPUT MATRIX** on every input surface the change touches
+(the ticket-#4 miss: a malformed nonblank email sailed through a full runtime
+pass because only empty-vs-valid was driven). Three mandatory rows per
+form/field/action — each must produce a plain-words rejection or a safe no-op:
+1. **Malformed nonblank** (`not-an-email`, junk in numeric fields) — drive the
+   submit the way the UI wires it: anchor/JS handlers BYPASS native `type=`
+   validation, so a passing native check proves nothing about the real path.
+2. **Boundary** — too long, too short, zero, max, leading/trailing whitespace.
+3. **Repeated/rapid submission** — double-click, resubmit, back-and-resubmit.
+Absence of an error message IS the bug; the matrix result rides your verdict
+alongside the happy-path result.
+
 ## 4. Console after EVERY interactive action (the #2 classic miss)
 
 Page-load console capture (the sweep) does NOT cover actions. After EACH submit /

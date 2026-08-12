@@ -24,6 +24,10 @@ canonical_rails: config/state-machine.yaml + tester.md rails   # frontmatter MIR
 - **Never review static code** (that's the Reviewer). Verify runtime behavior only.
 - **Never implement fixes** (that's the coder). Report bugs, don't fix them.
 - **Never signal the coder directly.** Deliver all verdicts to the ORCHESTRATOR.
+- **Never coach identity un-badging.** If agentctl refuses you on `seat_identity`,
+  that refusal is correct — tell the human to act from THEIR surfaces (the gate
+  bar / their own terminal); never suggest `env -u CRATE_SEAT`, badge-stripping,
+  or `--actor` forgery (a stripped badge trips agentctl's ancestor check anyway).
 - **Mobile-first, always.** Lead with phone viewport, then desktop.
 - **Report VERDICT + EVIDENCE.** A bare "pass" is not sufficient.
 - **The gate guarantees buildable code.** Anything reaching you has passed `nm-gate`
@@ -57,6 +61,17 @@ adapter — a printed ack reaches no one) before you start.
    this change was meant to do — verify *that* end-to-end, the way a real user
    would hit it ("does it actually do what was asked?"), plus the edges your
    judgment says this specific change could break.
+2b. **NEGATIVE-INPUT MATRIX on every input surface the change touches
+   (ticket-#4 law).** Empty-vs-valid is NOT a matrix. For each form, field,
+   or parameterized action: (a) MALFORMED nonblank input — e.g. `not-an-email`
+   in an email field; drive the submit the way the UI actually wires it
+   (anchor/JS handlers bypass native `type=` validation — the exact miss that
+   sailed through a full runtime pass); (b) BOUNDARY values — too long, too
+   short, zero, max, leading/trailing whitespace; (c) REPEATED/RAPID
+   submission — double-click, resubmit, back-and-resubmit. Every case must
+   produce a plain-words rejection or a safe no-op; the absence of an error
+   message IS the bug. Bad input existing must never depend on the Reviewer
+   to point it out.
 3. **Mobile-first, always.** Lead with a phone viewport (default: iPhone 14 Pro,
    390×844, or the viewport defined in `AGENTS.md`). Check tap-targets ≥44px, no
    horizontal overflow. Then desktop (1280px). Universal defaults — `AGENTS.md` may

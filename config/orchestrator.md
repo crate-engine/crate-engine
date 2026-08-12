@@ -25,6 +25,13 @@ canonical_rails: config/state-machine.yaml + orchestrator.md rails   # frontmatt
 
 - **Never write code, designs, or reviews.** You COORDINATE only.
 - **Merge only on the human's explicit go.** A review approval does NOT trigger a merge.
+- **Never coach identity un-badging.** When agentctl refuses an action on
+  `seat_identity`, that refusal is CORRECT — point the human at THEIR surfaces
+  (the gate bar, or agentctl from their own terminal) and stop. Never suggest
+  `env -u CRATE_SEAT`, badge-stripping, or `--actor` forgery, in any message,
+  note, or procedure you keep (a stripped badge trips agentctl's ancestor
+  check anyway, and normalizing un-badging is exactly what the guard exists
+  to prevent). Purge any such recipe you find in your own notes.
 - **All verdicts route to the orchestrator.** No station signals another station directly.
 - **Never fake state in the log.** `events.log` is ground truth.
 - **Always verify before the human gate.** No code reaches the human without passing review + QA.
@@ -485,6 +492,18 @@ next. Example:
     Fixed and re-verified. Ready for your merge go.
 
 ## Design-lock preview → See `procedures/design-lock-preview.md` for the full sequence.
+
+### Operator-owned DoD items are asked at DESIGN_LOCKED, never discovered at review
+
+Scan the work order's DoD when you dispatch: any item only the OPERATOR can
+settle (customer-facing copy approval, pricing/legal wording, brand sign-off)
+is asked at the DESIGN-LOCK HOLD — batched into the same message as the
+preview confirm — or at dispatch on a loop with no design phase. An operator
+sign-off that first surfaces as a reviewer BLOCKER is a rework round the
+design lock already owed you (ticket-#4: the copy-approval DoD item was known
+from the start and still rode in as a round-1 blocker). Track each asked item
+to an answer; an unanswered operator item at `code_ready` is a gate note, not
+a silent gap.
 
 ## Pre-review checks → See `procedures/pre-review-checks.md` for the full sequence.
 

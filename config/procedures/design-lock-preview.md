@@ -20,6 +20,11 @@ Then report to the human: the route is open for the desktop review; scan the QR 
 confirm: the human reviews desktop + mobile, and only on the human's confirm do you brief the
 coder to implement.
 
+OPERATOR-OWNED DoD ITEMS RIDE THIS HOLD (orchestrator.md law, ticket-#4): batch every DoD
+item only the human can settle (copy approval, pricing/legal wording, brand sign-off) into
+the SAME design-lock message and get answers here — a sign-off first surfacing as a review
+blocker is a rework round this hold already owed you.
+
 NON-BLOCKING: this is a review aid. If the preview step fails (segno missing — one-time fix
 `pip3 install --user segno` — or no browser), still report the preview URL as text and proceed
 to the normal design-lock hold. The preview never blocks the loop. If every route 500s, the

@@ -2,7 +2,7 @@
 // interactive argv per CLI, the attended/busy markers, the claude session
 // re-point seam. The PTY itself is proven live (the gate), not mocked here.
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -196,6 +196,33 @@ test("evictSeatTty: a relaunch can never reattach a dying pane, and its late exi
     }
     assert.ok(b.ok && liveTty(p, "coder") === b.tty, "late exit of the evicted pane left the successor registered");
     evictSeatTty(p, "coder"); // cleanup: kill the successor's stub process too
+  } finally {
+    rmSync(p, { recursive: true, force: true });
+  }
+});
+
+// ── pane-pid registry (Pack 2: badge absence ≠ humanity) ──
+
+test("the PTY door registers the pane's pid (pty.json) at spawn and clears it on exit", async () => {
+  const p = tmpProject();
+  try {
+    const { startSeatTty, evictSeatTty } = await import("../src/ptyseat.js");
+    const r = await startSeatTty({ projectRoot: p, seat: "coder", agent: "pi", blended: true, argvOverride: ["sleep", "5"] });
+    assert.ok(r.ok && !r.reattached);
+    const f = join(p, ".agents", "state", "turns", "coder", "pty.json");
+    const reg = JSON.parse(readFileSync(f, "utf8")) as { pid: number; atMs: number };
+    assert.ok(reg.pid > 0, "the live pane's pid is on record for agentctl's ancestor tripwire");
+    assert.ok(Math.abs(Date.now() - reg.atMs) < 60_000, "spawn time recorded (the pid-reuse guard reads it)");
+    evictSeatTty(p, "coder"); // kill → exit clears the registry
+    if (r.ok) {
+      await new Promise<void>((res) => {
+        if (r.tty.exited) return res();
+        r.tty.subscribe((ev) => {
+          if (ev.exit) res();
+        });
+      });
+    }
+    assert.equal(existsSync(f), false, "a dead pane leaves no registry entry behind");
   } finally {
     rmSync(p, { recursive: true, force: true });
   }

@@ -24,6 +24,10 @@ canonical_rails: config/state-machine.yaml + coder.md rails   # frontmatter MIRR
 ## Hard Constraints
 
 - **Never push to main.** All work on feature branches.
+- **Never coach identity un-badging.** If agentctl refuses you on `seat_identity`,
+  that refusal is correct — tell the human to act from THEIR surfaces (the gate
+  bar / their own terminal); never suggest `env -u CRATE_SEAT`, badge-stripping,
+  or `--actor` forgery (a stripped badge trips agentctl's ancestor check anyway).
 - **Verify via the gate — it IS your build.** Build/verify ONLY through
   `bash .agents/bin/nm-gate <branch>` (on the pushed branch). It builds + typechecks
   (lint advisory) in an ISOLATED worktree — so a bare build can never corrupt the

@@ -343,6 +343,19 @@ export async function startSeatTty(opts) {
             /* the session matters more than the note */
         }
     };
+    // BADGE ABSENCE ≠ HUMANITY (Pack 2): persist the pane's pid so agentctl can
+    // corroborate "is this command inside a seat session?" by ANCESTRY when the
+    // env badge was stripped (`env -u CRATE_SEAT`) — macOS refuses to read
+    // another process's env, but the parent-pid chain is always readable.
+    // Removed on exit; a stale file self-heals on the reader side (alive +
+    // spawn-time check guards pid reuse).
+    const ptyPidFile = join(turnsDir(projectRoot, seat), "pty.json");
+    try {
+        writeFileSync(ptyPidFile, JSON.stringify({ pid: proc.pid, atMs: startedAtMs, agent }));
+    }
+    catch {
+        /* the tripwire is best-effort — the session matters more */
+    }
     const tty = {
         seat,
         projectRoot,
@@ -409,6 +422,10 @@ export async function startSeatTty(opts) {
     });
     proc.onExit(({ exitCode }) => {
         tty.exited = { code: exitCode };
+        try {
+            rmSync(ptyPidFile);
+        }
+        catch { /* stale-safe: the reader alive-checks */ }
         if (blended) {
             // No hand-back seam: one door, nothing forked — the engine tracked the
             // session id continuously, so no re-point. The blend supervisor reads

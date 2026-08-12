@@ -310,6 +310,144 @@ def seat_identity():
     those paths stay trusted exactly as before."""
     return os.environ.get("CRATE_SEAT", "").strip()
 
+def _proc_env_text(pid):
+    """Best-effort environment text of another (same-user) process. Linux:
+    /proc/<pid>/environ (NUL-separated). macOS: `ps -E` appends the
+    environment to the command line for processes we own — exactly the case
+    that matters (a seat runs as the same user). '' on any failure."""
+    p = "/proc/%d/environ" % pid
+    if os.path.exists(p):
+        try:
+            with open(p, "rb") as fh:
+                return fh.read().decode("utf-8", "replace")
+        except OSError:
+            return ""
+    try:
+        # -ww: unlimited width — without it macOS ps truncates the appended
+        # environment and a badge sitting late in a fat env goes unseen
+        # (live-caught by the regression test: node's env pushed CRATE_SEAT
+        # past the cut).
+        out = subprocess.run(["ps", "-E", "-ww", "-o", "command=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=3)
+        return out.stdout or ""
+    except Exception:
+        return ""
+
+def _proc_ppid(pid):
+    """Parent pid of <pid>, 0 on any failure. Linux via /proc/<pid>/stat
+    (field 4, after the parenthesized comm); portable fallback via ps."""
+    p = "/proc/%d/stat" % pid
+    if os.path.exists(p):
+        try:
+            with open(p, encoding="utf-8", errors="replace") as fh:
+                stat = fh.read()
+            return int(stat[stat.rindex(")") + 1:].split()[1])
+        except Exception:
+            return 0
+    try:
+        out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=3)
+        return int(out.stdout.strip() or 0)
+    except Exception:
+        return 0
+
+def _pid_alive_since(pid, at_ms, tolerance_s=300):
+    """The pid is ALIVE and its start time matches <at_ms> (epoch ms) within
+    tolerance — the pid-reuse guard for the pane registry. ps -o etime= is
+    portable ([[dd-]hh:]mm:ss elapsed). False on any doubt (fail-open: a
+    doubtful pid must never block the real operator)."""
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    try:
+        out = subprocess.run(["ps", "-o", "etime=", "-p", str(pid)],
+                             capture_output=True, text=True, timeout=3).stdout.strip()
+        if not out:
+            return False
+        days = 0
+        if "-" in out:
+            d, out = out.split("-", 1)
+            days = int(d)
+        secs = 0
+        for part in out.split(":"):
+            secs = secs * 60 + int(part)
+        started = time.time() - (secs + days * 86400)
+        return abs(started - at_ms / 1000.0) < tolerance_s
+    except Exception:
+        return False
+
+def _pane_seat_of(pid):
+    """Seat name iff <pid> IS an engine-registered live pane process — the
+    PTY door persists {pid, atMs} to state/turns/<seat>/pty.json at spawn and
+    removes it on exit. '' when the pid matches no live pane."""
+    import json
+    root = os.path.join(A, "state", "turns")
+    try:
+        seats = os.listdir(root)
+    except OSError:
+        return ""
+    for seat in seats:
+        p = os.path.join(root, seat, "pty.json")
+        try:
+            with open(p, encoding="utf-8") as fh:
+                d = json.load(fh)
+            if int(d.get("pid") or 0) == pid and _pid_alive_since(pid, int(d.get("atMs") or 0)):
+                return seat
+        except Exception:
+            continue
+    return ""
+
+def stripped_seat_badge(max_depth=12):
+    """BADGE ABSENCE ≠ HUMANITY (Pack 2 hardening, 2026-08-12; FLAWS 'a
+    blocked seat COACHES the operator to strip its identity badge —
+    RECURRED'): an empty CRATE_SEAT alone is not proof this command runs in
+    the operator's own terminal. `env -u CRATE_SEAT` strips the badge from
+    the agentctl process, but the seat's session ABOVE it still betrays
+    itself two ways — walk the parent chain and check both:
+      (a) an ancestor's ENVIRONMENT carries CRATE_SEAT (Linux: /proc/environ;
+          macOS refuses cross-process env reads, hence probe b);
+      (b) an ancestor pid IS an engine-registered live PANE process
+          (state/turns/<seat>/pty.json — the PTY door writes it at spawn).
+    Returns the seat name ('' = genuinely badge-free: the operator's own
+    terminal or the GUI server, which never descend from a pane and never
+    carry the badge). Fail-OPEN on every probe error: this is a tripwire for
+    the live-caught un-badging coaching, not cryptography, and a false block
+    on the real operator would be worse than a miss."""
+    if seat_identity():
+        return ""  # openly badged — each caller's existing check handles it
+    try:
+        pid = os.getppid()
+        for _ in range(max_depth):
+            if pid <= 1:
+                break
+            m = re.search(r"(?:^|[\0\s])CRATE_SEAT=([A-Za-z0-9_-]+)", _proc_env_text(pid))
+            if m and m.group(1) != "operator":
+                return m.group(1)
+            pane = _pane_seat_of(pid)
+            if pane:
+                return pane
+            pid = _proc_ppid(pid)
+    except Exception:
+        pass
+    return ""
+
+def refuse_stripped_badge(event, actor, claim):
+    """Log + die when an operator-privileged <claim> is made from a seat
+    session whose badge was stripped. Call ONLY on operator claims where
+    seat_identity() is empty — the walk costs a few process probes."""
+    hidden = stripped_seat_badge()
+    if not hidden:
+        return
+    append("[%s] REJECTED event=%s actor=%s reason=seat_identity_stripped seat=%s"
+           % (now(), event, actor, hidden))
+    die("REJECTED: %s belongs to the HUMAN OPERATOR alone, and while this command's own env "
+        "carries no CRATE_SEAT, its parent process chain does (%s) — a stripped badge "
+        "(`env -u CRATE_SEAT`) is still the seat's session, not the operator's terminal. "
+        "Never strip the badge, and never coach anyone to. The operator acts from THEIR "
+        "surfaces: the gate bar, or agentctl from their own terminal. Nothing was emitted."
+        % (claim, hidden))
+
 def operator_released(task):
     """PHASE-8 T3: True iff the operator emitted a valid gate_release for THIS
     task AFTER it most recently reached `approved` (a stale release from a
@@ -1168,6 +1306,11 @@ def main():
             die("REJECTED: NMGATE_OVERRIDE=1 is the HUMAN's emergency bypass, but this command is "
                 "running inside the %s seat (CRATE_SEAT) — a seat cannot claim it. Run the real "
                 "gate instead: bash .agents/bin/nm-gate <branch>. Nothing was emitted." % seat_identity())
+        if (transition == "code_ready" and enforce_gate()
+                and os.environ.get("NMGATE_OVERRIDE") == "1"):
+            # BADGE ABSENCE ≠ HUMANITY (Pack 2): the bypass from a badge-
+            # stripped seat session is the same forgery, one layer deeper.
+            refuse_stripped_badge("code_ready", actor, "NMGATE_OVERRIDE=1")
         if transition == "code_ready" and enforce_gate() and os.environ.get("NMGATE_OVERRIDE") != "1":
             okg, detail = gate_ok_for_head()
             if not okg:
@@ -1219,6 +1362,8 @@ def main():
                     die("REJECTED: JOIN_OVERRIDE=1 is the HUMAN's emergency bypass, but this command "
                         "is running inside the %s seat (CRATE_SEAT) — a seat cannot claim it. Wait for "
                         "both verdicts (or ask the operator). Nothing was emitted." % seat_identity())
+                # BADGE ABSENCE ≠ HUMANITY (Pack 2): same bypass, badge stripped.
+                refuse_stripped_badge(transition, actor, "JOIN_OVERRIDE=1")
                 kv.append("join_override=1")
                 print("JOIN OVERRIDE: join checks skipped by the human -- recorded in the log.")
             elif effective_tier_at_join(cur_task) == "chore":
@@ -1239,6 +1384,10 @@ def main():
                         "  transition once BOTH verdicts are on record). Nothing was emitted."
                         % (transition, actor, actor if actor in VERIFIER_ROLES else "<you>",
                            (" task=%s" % cur_task) if cur_task else ""))
+                if actor == "operator":
+                    # BADGE ABSENCE ≠ HUMANITY (Pack 2): the join's operator
+                    # claim from a badge-stripped seat session is a forgery.
+                    refuse_stripped_badge(transition, actor, "the operator's join claim")
                 vmap = join_verdicts(cur_task)
                 missing = [r for r in parallel_verifiers() if not vmap.get(r)]
                 not_green = [r for r in parallel_verifiers() if vmap.get(r) and vmap[r] != "approve"]
@@ -1319,6 +1468,10 @@ def main():
                     "belongs to the HUMAN OPERATOR alone, and a seat cannot claim the operator's "
                     "identity. Ask the operator to release the gate (GUI gate card, or agentctl from "
                     "their own terminal). Nothing was released." % caller)
+            # BADGE ABSENCE ≠ HUMANITY (Pack 2): an empty env is not enough —
+            # a stripped badge (`env -u CRATE_SEAT`) still leaves the seat's
+            # badge in the parent chain; refuse it the same visible way.
+            refuse_stripped_badge("gate_release", actor, "gate_release")
             if actor != "operator":
                 # Log the wrong-actor refusal too (it used to die silently —
                 # the one refusal here that left NO trace in events.log).
