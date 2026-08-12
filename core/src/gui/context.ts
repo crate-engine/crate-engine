@@ -7,9 +7,16 @@
 /** Context window (tokens) per model — the denominator for fullness. Keyed
  * by a loose substring match on the staffed model; a safe default otherwise.
  * Values are the usable input windows; conservative when a model is unknown. */
+// Verified against the Claude API model catalog 2026-08-12 (Adam's catch: the
+// orchestrator gauge read 91% while /context said ~10% — fable fell to the
+// 128k default, 116k/128k vs the true 116k/1M). The whole current Claude line
+// (fable/mythos, opus 4.6+, sonnet 4.6+) is a 1M window; only haiku is 200k.
+// Order matters: haiku must precede the claude-family catch-all.
 const WINDOWS: Array<[RegExp, number]> = [
+  [/fable|mythos/i, 1_000_000],
   [/gpt-5|codex/i, 272_000],
-  [/opus|sonnet|claude/i, 200_000],
+  [/haiku/i, 200_000],
+  [/opus|sonnet|claude/i, 1_000_000],
   [/deepseek/i, 128_000],
   [/gemini/i, 1_000_000],
 ];

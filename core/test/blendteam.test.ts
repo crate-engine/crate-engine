@@ -256,7 +256,7 @@ test("verify-dispatch fresh-eyes (agentctl e84bd0d) end-to-end: a dropped sessio
 
 test("CONTEXT_AUTO_REFRESH on a blended seat: over the ceiling → session dropped → the NEXT delivery is a visible fresh restart", async () => {
   const r = teamRig("team-autorefresh", 'CODER_AGENT="claude"; CODER_MODEL="opus"\nBLEND_CODER=1\nCONTEXT_AUTO_REFRESH=1\n');
-  r.seedUsageTokens = 180_000; // opus window 200k → 90% ≥ the 85% ceiling
+  r.seedUsageTokens = 920_000; // opus window 1M (real, 2026-08-12 gauge fix) → 92% ≥ the 85% ceiling
   const coder = makeSeat(r, "coder", { contextAutoRefresh: true, model: "opus" });
   coder.start();
   try {

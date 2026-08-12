@@ -320,7 +320,10 @@ export function sessionUsage(jsonlText) {
             const u = d.message?.usage;
             if (d.type === "assistant" && u && (u.input_tokens !== undefined || u.output_tokens !== undefined)) {
                 out = {
-                    inputTokens: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0),
+                    // Context fullness = the WHOLE prompt: fresh + cache-read + cache-
+                    // creation tokens (Adam's gauge catch, 2026-08-12 — omitting cache
+                    // creation undercounts turns that write new cache).
+                    inputTokens: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
                     outputTokens: u.output_tokens ?? 0,
                 };
             }

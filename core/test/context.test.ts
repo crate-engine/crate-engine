@@ -6,11 +6,28 @@ import { ADVISORY, CEILING, contextWindowFor, gaugeFrom } from "../src/gui/conte
 
 test("contextWindowFor maps models to windows, defaults safely", () => {
   assert.equal(contextWindowFor("openai-codex/gpt-5.5"), 272_000);
-  assert.equal(contextWindowFor("opus"), 200_000);
   assert.equal(contextWindowFor("deepseek/deepseek-v4-pro"), 128_000);
   assert.equal(contextWindowFor("gemini/pro"), 1_000_000);
   assert.equal(contextWindowFor("some-unknown-model"), 128_000);
   assert.equal(contextWindowFor(undefined), 128_000);
+});
+
+// Adam's gauge catch (2026-08-12): the orchestrator pane read 91% while the
+// session's real /context said ~10% — "fable" matched NO row and fell to the
+// 128k default (116k/128k = 91%; truth was 116k/1M = 11.6%). The whole current
+// Claude line is a 1M window; only haiku is 200k. Verified against the model
+// catalog — the gauge must never overstate by falling to a stale default.
+test("claude-family windows are 1M — the 91%-vs-10% inversion never returns", () => {
+  assert.equal(contextWindowFor("fable"), 1_000_000);
+  assert.equal(contextWindowFor("mythos"), 1_000_000);
+  assert.equal(contextWindowFor("opus"), 1_000_000);
+  assert.equal(contextWindowFor("sonnet"), 1_000_000);
+  assert.equal(contextWindowFor("claude-opus-5"), 1_000_000);
+  assert.equal(contextWindowFor("haiku"), 200_000, "haiku is the 200k exception and must match before the family catch-all");
+  // The exact live repro: ~116k tokens on fable reads ~12%, never 91%.
+  const g = gaugeFrom(116_000, "fable")!;
+  assert.ok(g.pct < 0.15, `fable at 116k tokens must read ~12%, got ${Math.round(g.pct * 100)}%`);
+  assert.equal(g.band, "ok");
 });
 
 test("gaugeFrom: bands at Adam's 40% advisory and the hard ceiling", () => {
