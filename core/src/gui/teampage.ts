@@ -1166,8 +1166,7 @@ async function renderTeamMenu(){
   let h='<h3>Team</h3><div class="csub">'+(ps.booted?alive+'/5 seat runners alive (GUI-owned)':'not booted — the GUI can boot it')+'</div>';
   // per-seat lifecycle rows (boot lights these up)
   h+=(ps.seats||[]).map(s=>'<div class="crow">'+(s.alive?'<span class="wsdot live"></span>':'<span class="wsdot gone"></span>')
-    +'<div style="flex:1;font:600 11px/1.2 var(--mono);letter-spacing:.08em;text-transform:uppercase">'+esc(s.seat)
-    +(s.mode==="blended"?' <span style="color:var(--ok);font-size:9px">· blended pane (engine-owned session)</span>':'')+'</div>'
+    +'<div style="flex:1;font:600 11px/1.2 var(--mono);letter-spacing:.08em;text-transform:uppercase">'+esc(s.seat)+'</div>'
     +'<button class="crefresh" data-relaunch="'+esc(s.seat)+'">Relaunch</button></div>').join("");
   h+='<div class="crow"><div style="flex:1"><div style="font:600 11px/1.3 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim)">Gates pending</div>'
     +'<div style="font:400 11px/1.4 var(--mono);color:var(--faint)">'+(tasks.length?tasks.map(esc).join(", "):"none")+'</div></div></div>';
