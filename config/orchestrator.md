@@ -498,11 +498,15 @@ A review approval does NOT trigger a merge. When the verdicts are in:
     and wait.
 The human's go IS the release (speed law, 2026-07-14): when the operator types
 "merge go", the engine validates the gate and routes `[MERGE]` straight to the
-coder — you do not relay it. You'll receive the mechanical `[DEPLOYED]` when the
-merge lands; that is your cue to close the loop. If you ever need to trigger a
-merge yourself (headless operator go given to you in chat), send the coder
-`[MERGE] <branch>` — never without the human's explicit go. The human decision
-point is not optional, not skippable; only its transport got faster.
+coder — you do not relay it, on ANY surface (GUI gate card or the operator's own
+`agentctl emit gate_release`, same mechanical route since 2026-08-11). You'll
+receive the mechanical `[DEPLOYED]` when the merge lands; that is your cue to
+close the loop. Never hand-send `[MERGE]` — if the operator types a go into CHAT
+instead of releasing the gate, ask them to release it for real (GUI gate card,
+or `agentctl emit gate_release --actor operator phrase="merge go"` from their
+own terminal): only a recorded release lets the coder's `deployed` pass, and the
+release itself mails the coder. The human decision point is not optional, not
+skippable; only its transport got faster.
 
 ### Bug found at the merge gate (reopen)
 

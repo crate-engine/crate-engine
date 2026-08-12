@@ -56,7 +56,7 @@ export declare function runTurn(opts: RunTurnOpts): Promise<TurnResult>;
  * tools "not installed" and self-graded partial. Composed per turn (cheap,
  * and correct across engine updates). A rig without .agents/bin (test
  * fixtures) falls back to the plain env — the tools shim needs a brain. */
-export declare function seatEnv(projectRoot: string): NodeJS.ProcessEnv;
+export declare function seatEnv(projectRoot: string, seat: string): NodeJS.ProcessEnv;
 export interface RunnerLoopOpts extends RunTurnOpts {
     pollMs?: number;
     /** Retries before a batch is dead-lettered (honest, never silent). */
@@ -67,6 +67,15 @@ export interface RunnerLoopOpts extends RunTurnOpts {
     signal?: AbortSignal;
     /** Injectable for tests; defaults to reading process.ppid. */
     getParentPid?: () => number;
+    /** The supervisor's pid as the SPAWNER knew it (env CRATE_SUPERVISOR_PID) —
+     * fixed before the child even starts, so the watchdog catches a supervisor
+     * that died during our boot window (runner-deaths fix, FLAWS 2026-08-11).
+     * Absent (standalone `crate runner`): fall back to capturing ppid at loop
+     * start, today's behavior. */
+    supervisorPid?: number;
+    /** Where the orphan self-stamp lands (~/.crate/logs); defaults to $HOME.
+     * Injectable so tests never write the developer's real ~/.crate. */
+    home?: string;
 }
 /** The seat's standing loop: watch → turn → ack/retry → watch. */
 export declare function runnerLoop(opts: RunnerLoopOpts): Promise<void>;

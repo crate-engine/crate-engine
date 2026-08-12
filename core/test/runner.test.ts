@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { enqueue, readNew } from "../src/mailbox.js";
-import { runTurn, sessionFile } from "../src/runner.js";
+import { runTurn, seatEnv, sessionFile } from "../src/runner.js";
 
 // PHASE-8 T1: the seat runner. Driven with FAKE agents (stub scripts that
 // emit claude-shaped streams) so the semantics are provable without tokens:
@@ -124,6 +124,36 @@ test("the seat PATH carries the brain's core/tools shim (W4 finding #2 — headl
   const { realpathSync } = await import("node:fs");
   assert.ok(seen.startsWith(join(realpathSync(brain), "core", "tools") + ":"),
     `seat PATH must lead with the tools shim — got: ${seen.slice(0, 120)}`);
+});
+
+test("every turn's child env carries CRATE_SEAT=<seat> (emit-identity fix — agentctl trusts this stamp)", async () => {
+  const proj = makeProject("seatid");
+  const inbox = join(proj, ".agents", "state", "inbox");
+  enqueue(inbox, "reviewer", "orchestrator", "review it");
+  const seatFile = join(proj, "seen-seat.txt");
+  const bin = stub(proj, "seat-probe.sh", `echo "$CRATE_SEAT" > '${seatFile}'\n${okStream("s-seat")}`);
+  const r = await runTurn({
+    projectRoot: proj, seat: "reviewer", agent: "claude",
+    invocationOverride: () => ({ argv: [bin], stdin: "ignore" }),
+  });
+  assert.equal(r.ok, true);
+  assert.equal(readFileSync(seatFile, "utf8").trim(), "reviewer",
+    "the harness child must see its seat's true identity");
+});
+
+test("seatEnv stamps CRATE_SEAT and OVERWRITES an inherited one (engine-nested-in-a-seat must not leak)", () => {
+  const proj = makeProject("seatenv");
+  assert.equal(seatEnv(proj, "coder").CRATE_SEAT, "coder");
+  // spread-order proof: an outer CRATE_SEAT in the engine's own env must lose
+  const had = "CRATE_SEAT" in process.env;
+  const prev = process.env.CRATE_SEAT;
+  process.env.CRATE_SEAT = "outer-seat";
+  try {
+    assert.equal(seatEnv(proj, "tester").CRATE_SEAT, "tester",
+      "the seat's own identity wins over anything inherited");
+  } finally {
+    if (had) process.env.CRATE_SEAT = prev; else delete process.env.CRATE_SEAT;
+  }
 });
 
 test("ack-only mail is ABSORBED without a turn (the courtesy-ack loop-breaker)", async () => {

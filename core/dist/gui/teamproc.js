@@ -35,6 +35,13 @@ export function defaultSeatSpawner(cliPath, home) {
             cwd: projectRoot,
             stdio: ["ignore", fd, fd],
             detached: false, // dies with the GUI (the GUI is the supervisor now)
+            // runner-deaths fix (FLAWS 2026-08-11): tell the child WHO its supervisor
+            // is, fixed before it even starts. The runner's ppid watchdog used to
+            // capture ppid at loop start (~1-3s after spawn: node boot + wall render);
+            // a supervisor dying inside that window meant the runner captured the
+            // REPARENTED ppid (init) and could never notice the death — the immortal
+            // orphan. Comparing against this env value closes the race.
+            env: { ...process.env, CRATE_SUPERVISOR_PID: String(process.pid) },
         });
         if (logPath) {
             const lp = logPath;
@@ -137,5 +144,24 @@ export function stopAllTeams() {
     for (const tp of registry.values())
         tp.stop();
     registry.clear();
+}
+/** The /api/restart handoff (runner-deaths fix, FLAWS 2026-08-11): stop every
+ * team while THIS process is still alive — so the runners die by
+ * parent-delivered SIGTERM and the parent's EXIT handlers actually get to
+ * write their stamps (the old restart just process.exit(0)'d, orphaning the
+ * children to silent code-0 watchdog deaths with no forensic trail). Returns
+ * what was running so the caller can tell the fresh server to boot it back. */
+export function handoffStop() {
+    let wasBooted = false;
+    let stopped = 0;
+    for (const tp of registry.values()) {
+        const st = tp.status();
+        if (st.booted)
+            wasBooted = true;
+        stopped += st.seats.filter((s) => s.alive).length;
+        tp.stop();
+    }
+    registry.clear();
+    return { wasBooted, stopped };
 }
 //# sourceMappingURL=teamproc.js.map

@@ -5,9 +5,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadLoadout, loadoutPath, SEATS, type Seat } from "./manifest.js";
 import { buildInvocation, toShellCommand } from "./invocation.js";
-import { deriveBrainRoot, isUnwalledSeat, planSeats } from "./launcher.js";
+import { deriveBrainRoot, isUnwalledSeat, planSeats, resolveRigSeats, type ResolvedRigSeat } from "./launcher.js";
 import { listOverlayEntries, overlayDirFor } from "./overlay.js";
-import { loadUserDefaults, parseRigConf, resolveSeatDetailed, RIG_PREFIX } from "./staffing.js";
+import { loadUserDefaults, parseRigConf, resolveSeatDetailed } from "./staffing.js";
 import { setupTier, tierPaths, updateEngine } from "./usertier.js";
 
 function fail(msg: string): never {
@@ -498,6 +498,22 @@ switch (command) {
       } catch {
         /* best-effort — the URL is printed above either way */
       }
+      // Runner-deaths fix (FLAWS 2026-08-11): --boot = the /api/restart
+      // handoff. The old server stopped its team before exiting (so the
+      // runners died with EXIT stamps, not as orphans) and passes this flag
+      // iff the team WAS running — we bring it back so the relaunched cockpit
+      // lands on a live rig, not five booted:false seats. Flag-gated: a plain
+      // `crate gui` never auto-boots; boot() is idempotent, so a later
+      // crate-open boot POST landing on top of this is harmless.
+      if (rest.includes("--boot") && gui.state.project && existsSync(join(gui.state.project, ".agents", "rig.conf"))) {
+        try {
+          const { teamProcessFor, defaultSeatSpawner } = await import("./gui/teamproc.js");
+          const st = teamProcessFor(gui.state.project, defaultSeatSpawner(gui.state.cliPath, gui.state.home)).boot();
+          guiLog(HOME, `restart handoff: team rebooted — ${st.seats.map((s) => `${s.seat}:${s.pid ?? "?"}`).join(" ")}`);
+        } catch (e) {
+          guiLog(HOME, `restart handoff: team reboot FAILED — ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
       console.log(`  Ctrl+C stops the app server.`);
       await new Promise(() => {}); // serve until interrupted
     } catch (e) {
@@ -522,7 +538,7 @@ switch (command) {
     // crate runner <seat> [--project <path>] [--once] — PHASE-8 T1: host one
     // seat headless (turn-per-invocation; the pane's replacement). --once
     // processes a single turn and exits (probes/tests); default is the
-    // standing loop. Staffing comes from rig.conf exactly like `up`.
+    // standing loop.
     const seat = rest[0];
     if (!seat || !(SEATS as readonly string[]).includes(seat)) fail(`usage: crate runner <${SEATS.join("|")}> [--project <path>] [--once]`);
     const pIdx = rest.indexOf("--project");
@@ -530,10 +546,22 @@ switch (command) {
     const confFile = join(projectRoot, ".agents", "rig.conf");
     if (!existsSync(confFile)) fail(`no rig.conf at ${confFile} — run crate install first`);
     const conf = parseRigConf(readFileSync(confFile, "utf8"));
-    const agentKey = `${RIG_PREFIX[seat as Seat]}_AGENT`; // rig.conf keys use ORCH, not ORCHESTRATOR
-    const modelKey = agentKey.replace("_AGENT", "_MODEL");
-    const agent = conf[agentKey] || "pi";
-    const model = conf[modelKey] || undefined;
+    // team-defaults fix (FLAWS "crate team ignores ~/.crate/defaults.yaml"):
+    // staffing resolves through the ONE
+    // canonical chain (rig.conf → ~/.crate/defaults.yaml → loadout floor) —
+    // the same resolution `crate print`, doctor, and the GUI staffing screen
+    // display. The old hand-rolled `conf[key] || "pi"` meant a fresh rig.conf
+    // ran bare pi on the ACCOUNT default model; and since the GUI's team boot
+    // spawns `crate runner <seat>` per seat, THIS line is what makes the
+    // staffing screen's promise true at runtime.
+    let resolvedSeats: ResolvedRigSeat[];
+    try {
+      resolvedSeats = resolveRigSeats(projectRoot, HOME);
+    } catch (e) {
+      fail(e instanceof Error ? e.message : String(e));
+    }
+    const staffed = resolvedSeats.find((s) => s.seat === seat)!;
+    const { agent, model } = staffed;
     const { runTurn, runnerLoop, bootWall } = await import("./runner.js");
     // T6: resolve + cache the wall at boot — a walled-required seat that cannot
     // be walled refuses HERE, in plain words, not on its first turn; the first
@@ -544,21 +572,36 @@ switch (command) {
     } catch (e) {
       fail(e instanceof Error ? e.message : String(e));
     }
-    console.log(`crate runner — ${seat} headless (${agent}${model ? `/${model}` : ""}, ${wallNote}) on ${projectRoot}`);
+    console.log(
+      `crate runner — ${seat} headless (${agent}${model ? `/${model}` : ""} ` +
+        `[agent: ${staffed.agentSource}, model: ${staffed.modelSource}], ${wallNote}) on ${projectRoot}`,
+    );
     if (rest.includes("--once")) {
       const r = await runTurn({ projectRoot, seat: seat!, agent, model });
       console.log(r.idle ? "idle (no unread mail)" : r.ok ? `turn ok — log: ${r.logPath}` : `turn FAILED — ${r.error} (mail retained; log: ${r.logPath})`);
       if (!r.ok) process.exitCode = 1;
     } else {
       const autoRefresh = ["1","true","yes","on"].includes((conf.CONTEXT_AUTO_REFRESH||"").toLowerCase());
-      await runnerLoop({ projectRoot, seat: seat!, agent, model, contextAutoRefresh: autoRefresh });
+      // Runner-deaths fix (FLAWS 2026-08-11): a supervisor-spawned runner is
+      // told its supervisor's pid up front (env, set before we existed) so the
+      // orphan watchdog can't mistake a mid-boot reparent for its real parent.
+      // Standalone `crate runner` (no env) keeps the captured-ppid behavior.
+      const supPid = Number(process.env.CRATE_SUPERVISOR_PID);
+      await runnerLoop({
+        projectRoot,
+        seat: seat!,
+        agent,
+        model,
+        contextAutoRefresh: autoRefresh,
+        ...(Number.isInteger(supPid) && supPid > 0 ? { supervisorPid: supPid } : {}),
+      });
     }
     break;
   }
   case "team": {
     // crate team [--project <path>] — PHASE-8 T3: host ALL seats headless in
     // one supervisor process (the pane-less rig). Each seat gets its own
-    // runnerLoop; the GUI is the window. Staffing from rig.conf.
+    // runnerLoop; the GUI is the window.
     const pIdx = rest.indexOf("--project");
     const projectRoot = resolve(pIdx !== -1 ? (rest[pIdx + 1] ?? ".") : ".");
     const confFile = join(projectRoot, ".agents", "rig.conf");
@@ -570,23 +613,34 @@ switch (command) {
     process.on("SIGINT", () => { console.log("\ncrate team: stopping seats…"); ac.abort(); });
     const autoRefresh = ["1","true","yes","on"].includes((conf.CONTEXT_AUTO_REFRESH||"").toLowerCase());
     if (autoRefresh) console.log("  context auto-refresh: ON (ceiling)");
+    // team-defaults fix (FLAWS "crate team ignores ~/.crate/defaults.yaml"):
+    // per-seat staffing goes through the ONE canonical chain (rig.conf →
+    // ~/.crate/defaults.yaml → loadout floor) instead of the old hand-rolled
+    // `conf[key] || "pi"` — a fresh rig.conf now boots the user's default
+    // roster, exactly what `crate print` and the GUI staffing screen promise.
+    let resolvedSeats: ResolvedRigSeat[];
+    try {
+      resolvedSeats = resolveRigSeats(projectRoot, HOME);
+    } catch (e) {
+      fail(e instanceof Error ? e.message : String(e));
+    }
     // T6: resolve + cache every seat's wall at boot — one unwallable
     // walled-required seat refuses the whole boot, in plain words, before any
     // turn runs; each first turn reuses its boot render.
-    const staffing = (SEATS as readonly string[]).map((seat) => {
-      const agentKey = `${RIG_PREFIX[seat as Seat]}_AGENT`;
-      const agent = conf[agentKey] || "pi";
-      const model = conf[agentKey.replace("_AGENT", "_MODEL")] || undefined;
+    const staffing = resolvedSeats.map((s) => {
       let wallNote = "unwalled";
       try {
-        wallNote = bootWall(projectRoot, seat, agent);
+        wallNote = bootWall(projectRoot, s.seat, s.agent);
       } catch (e) {
         fail(e instanceof Error ? e.message : String(e));
       }
-      return { seat, agent, model, wallNote };
+      return { ...s, wallNote };
     });
-    const loops = staffing.map(({ seat, agent, model, wallNote }) => {
-      console.log(`  ${seat.padEnd(13)} ${agent}${model ? `/${model}` : ""}  [${wallNote}]`);
+    const loops = staffing.map(({ seat, agent, model, agentSource, modelSource, wallNote }) => {
+      console.log(
+        `  ${seat.padEnd(13)} ${agent}${model ? `/${model}` : ""} ` +
+          `[agent: ${agentSource}, model: ${modelSource}]  [${wallNote}]`,
+      );
       return runnerLoop({ projectRoot, seat, agent, model, signal: ac.signal, contextAutoRefresh: autoRefresh });
     });
     await Promise.all(loops);

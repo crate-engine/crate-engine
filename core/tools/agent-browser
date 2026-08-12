@@ -9,4 +9,91 @@ while [ -L "$self" ]; do t="$(readlink "$self")"; case "$t" in /*) self="$t";; *
 CORE="$(cd "$(dirname "$self")/.." && pwd)"
 BIN="$CORE/node_modules/.bin/agent-browser"
 [ -x "$BIN" ] || { echo "agent-browser: not installed in-box — run: (cd $CORE && npm install)" >&2; exit 127; }
+
+# --- Walled-seat launch plumbing (FLAWS "browser-tooling" umbrella, 2026-08-11) ---
+# WHY: inside a seat's wall, chromium cannot initialize its OWN sandbox — a
+# nested sandbox_init inside sandbox-exec (and likewise inside bwrap) is
+# refused by the OS — so agent-browser's default auto-launch aborted before
+# CDP came up ("Auto-launch failed: CDP response channel closed", the tiering
+# proof). Proven NOT a write denial: the launch fails identically under a pure
+# (allow default) profile. Two gaps, both fixed here at the one choke point
+# every seat uses:
+#   1. the pinned binary launches chromium WITHOUT --no-sandbox;
+#   2. its auto-discovery never scans ~/Library/Caches/ms-playwright (macOS),
+#      so it cannot find the wall-safe headless shell the engine installs.
+# Fix: when the seat is walled, export the binary's own documented env
+# contract — AGENT_BROWSER_EXECUTABLE_PATH (the cached playwright chromium)
+# and AGENT_BROWSER_ARGS (--no-sandbox,--disable-crashpad). The OUTER wall is
+# the containment then; in-wall there is no working alternative because the
+# nested sandbox init is exactly what fails. An UNWALLED operator run injects
+# NOTHING — chromium keeps its internal sandbox.
+in_wall() {
+  [ "${CRATE_WALLED:-}" = "1" ] && return 0
+  # macOS fallback for hand-run in-wall repros (no CRATE_WALLED exported):
+  # Seatbelt does not nest, so this trivial allow-all probe fails ONLY when we
+  # are already inside a sandbox.
+  if [ "$(uname)" = "Darwin" ]; then
+    sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null || return 0
+  fi
+  return 1
+}
+
+find_shell() {
+  # KEEP IN SYNC with CHROMIUM_CANDIDATES in core/src/tools/qa-sweep.ts (the
+  # canonical list; same recipe as core/tools/qa-chrome). Linux fix
+  # 2026-07-12: the real layout is chrome-headless-shell-linux64/ +
+  # chrome-linux64/ — the bare -linux/ patterns are the OLD layout.
+  local roots=("$HOME/Library/Caches/ms-playwright" "$HOME/.cache/ms-playwright")
+  local pats=(
+    "chromium_headless_shell-*/chrome-headless-shell-mac-arm64/chrome-headless-shell"
+    "chromium_headless_shell-*/chrome-headless-shell-mac-x64/chrome-headless-shell"
+    "chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell"
+    "chromium_headless_shell-*/chrome-headless-shell-linux/chrome-headless-shell"
+    "chromium-*/chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium"
+    "chromium-*/chrome-mac/Chromium.app/Contents/MacOS/Chromium"
+    "chromium-*/chrome-linux64/chrome"
+    "chromium-*/chrome-linux/chrome"
+  )
+  for root in "${roots[@]}"; do
+    for pat in "${pats[@]}"; do
+      # shellcheck disable=SC2086
+      local hit; hit=$(ls -d $root/$pat 2>/dev/null | sort | tail -1) || true
+      [ -n "${hit:-}" ] && [ -x "$hit" ] && { echo "$hit"; return 0; }
+    done
+  done
+  return 1
+}
+
+if in_wall; then
+  # Respect a caller-pinned executable; otherwise aim at the cached playwright
+  # chromium. A cache miss is NOT fatal here — --no-sandbox below still fixes
+  # any browser auto-discovery does find, and the binary's own "no browser"
+  # error stays the honest failure mode.
+  if [ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ]; then
+    if shell_bin="$(find_shell)"; then
+      export AGENT_BROWSER_EXECUTABLE_PATH="$shell_bin"
+    fi
+  fi
+  # Linux (found on the Superman bwrap proof, 2026-08-11): the daemon's socket
+  # dir defaults to XDG_RUNTIME_DIR (/run/user/<uid>) — read-only inside the
+  # wall ("Socket directory ... is not writable"). The binary's documented
+  # fallback order is AGENT_BROWSER_SOCKET_DIR > XDG_RUNTIME_DIR >
+  # ~/.agent-browser, and ~/.agent-browser is exactly the loadout's door
+  # (macOS already lands there because XDG_RUNTIME_DIR is unset) — pin it.
+  if [ -z "${AGENT_BROWSER_SOCKET_DIR:-}" ]; then
+    mkdir -p "$HOME/.agent-browser" 2>/dev/null || true
+    export AGENT_BROWSER_SOCKET_DIR="$HOME/.agent-browser"
+  fi
+  # Merge (append-if-absent, comma-separated) so caller-provided args survive
+  # and a caller who already passed --no-sandbox is not doubled.
+  merged="${AGENT_BROWSER_ARGS:-}"
+  for flag in --no-sandbox --disable-crashpad; do
+    case ",$merged," in
+      *",$flag,"*) ;;
+      *) merged="${merged:+$merged,}$flag" ;;
+    esac
+  done
+  export AGENT_BROWSER_ARGS="$merged"
+fi
+
 exec "$BIN" "$@"

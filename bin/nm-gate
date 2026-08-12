@@ -27,8 +27,14 @@ QUICK=0
 REF="${1:-}"
 [ -z "$REF" ] && { echo "usage: nm-gate [--quick] <branch|ref>" >&2; exit 2; }
 
+# SCRIPT_DIR stays LOGICAL / REPO_ROOT goes PHYSICAL — same law as precheck.sh
+# (nmgate-ro-mount): a `pwd -P` at the SCRIPT_DIR step would resolve the
+# .agents/bin symlink into the shared engine brain and derive the wrong root;
+# the `pwd -P` at the repo-root step canonicalizes only the project, keeping
+# this script's derivations (and precheck's `../.nmgate-wt` worktree parent)
+# on the REAL path — the same spelling the wall's door expansion binds.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 cd "$REPO_ROOT" || { echo "nm-gate: cannot cd to repo root" >&2; exit 2; }
 
 # PHASE-B #3: when origin is the LOCAL MIRROR (attach creates .agents/mirror.git

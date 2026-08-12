@@ -1,5 +1,5 @@
 import { type Loadout, type Seat } from "./manifest.js";
-import { type Staffed } from "./staffing.js";
+import { type Staffed, type StaffingSource } from "./staffing.js";
 /**
  * The runtime half of the security coupling (belt-and-suspenders with the
  * schema): "bypassPermissions" is applied ONLY when a Seatbelt profile was
@@ -42,6 +42,28 @@ export declare function isUnwalledSeat(staffedAgent: string, loadout: {
  * instead of letting the seat silently fall back (the Phase-2 raw-CDP lesson).
  */
 export declare function preflightCliDeps(loadout: Loadout, title: string, env: NodeJS.ProcessEnv): Promise<void>;
+/** One seat's fully resolved headless staffing, with provenance. */
+export interface ResolvedRigSeat {
+    seat: Seat;
+    agent: string;
+    /** undefined = no model flag — the harness's login/account default picks
+     * (the runner semantics for both "nothing resolved" and an explicit ""). */
+    model: string | undefined;
+    agentSource: StaffingSource;
+    modelSource: StaffingSource;
+}
+/**
+ * Resolve headless staffing for EVERY seat through the ONE canonical chain
+ * (rig.conf → ~/.crate/defaults.yaml → loadout floor), with provenance.
+ *
+ * This exists because `crate runner` and `crate team` used to hand-roll
+ * `rig.conf[key] || "pi"` — so a fresh rig.conf silently staffed bare pi on
+ * the ACCOUNT default model while `crate print`, doctor, and the GUI staffing
+ * screen all displayed the defaults-aware roster (FLAWS "crate team ignores
+ * ~/.crate/defaults.yaml"). The GUI's team boot spawns `crate runner` per
+ * seat, so this helper is the runtime truth for GUI-booted teams too.
+ */
+export declare function resolveRigSeats(projectRoot: string, home: string): ResolvedRigSeat[];
 export declare function deriveBrainRoot(projectRoot: string): string;
 /**
  * Plan every seat's launch. Manifest path when the staffed agent is "pi" AND

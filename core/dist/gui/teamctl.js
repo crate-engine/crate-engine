@@ -189,15 +189,15 @@ export function releaseGate(projectRoot, task, phrase) {
         args.push(`branch=${task}`);
     try {
         const out = execFileSync("python3", args, { cwd: projectRoot, encoding: "utf8" });
-        // SPEED LAW (2026-07-14): the go routes STRAIGHT to the coder — the
-        // orchestrator's [MERGE] relay added no judgment (the gate is physics:
-        // agentctl refuses `deployed` without this armed+released gate) and cost
-        // two full turns at the most human-visible moment. The orchestrator
-        // learns via the mechanical [DEPLOYED] handoff and closes the loop.
-        execFileSync("python3", [
-            agentctl(projectRoot), "deliver", "coder", "--from", "operator",
-            `[MERGE]${branchNote} — the operator typed "merge go"; the gate is released. Merge into main now and emit deployed.`,
-        ], { cwd: projectRoot, encoding: "utf8" });
+        // SPEED LAW (2026-07-14) + ONE ROUTE (2026-08-11): the go routes STRAIGHT
+        // to the coder INSIDE the emit — agentctl's gate_release now queues the
+        // [MERGE] mail itself (coder.md mirror + maildir wake), the identical
+        // route every surface shares. The hand-rolled second deliver that used to
+        // live here was exactly why "did the mechanical route act?" depended on
+        // which surface the operator released from (FLAWS: [MERGE] routing is
+        // nondeterministic across loops) — deleted, never re-add it. The
+        // orchestrator learns via the mechanical [DEPLOYED] handoff and closes
+        // the loop.
         // 2d mechanical ack (zero model turns — the speed-law mail doctrine):
         // an irreversible action gets an instant, honest, ENGINE-voiced receipt.
         mirrorNote(projectRoot, "operator", "engine", `Merge released — the coder is merging${branchNote}; DEPLOYED will confirm.`);

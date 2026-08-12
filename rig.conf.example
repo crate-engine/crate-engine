@@ -75,6 +75,16 @@ SMOKE_READY_SECS="60"     # server ready-deadline before an honest advisory skip
                           # prod-serve override (SINGLE-quoted; default: detected by shape —
                           # next start / preview / start / in-box static server / dev fallback)
 
+# --- Hot-doc budget tripwire (backlog #9, 2026-08-11) -----------------------
+# Hot records (the docs agents read EVERY task) must stay small — every line
+# taxes every future turn. At loop close agentctl MEASURES them; any doc over
+# budget mails the orchestrator ONE dedup'd distillation chore (nags once per
+# breach, re-arms when the doc drops back under). The trigger is code; the
+# compaction stays agent judgment. Defaults: AGENTS.md 300 lines, CLAUDE.md /
+# PROGRESS.md / ISSUES.md / LESSONS.md 150 each. Override per doc by stem:
+# HOTDOC_BUDGET_AGENTS="400"
+# HOTDOC_BUDGET_CLAUDE="200"
+
 # --- Review/QA JOIN physics (2026-07-24) ------------------------------------
 # In a parallel review+QA loop each verifier RECORDS its verdict
 # (`agentctl emit verdict --actor reviewer|tester result=approve|reject`).

@@ -175,6 +175,22 @@ export function engineVersion(home: string): { version: string; updateAvailable:
   }
 }
 
+/** The fresh server's argv for POST /api/restart (runner-deaths fix, FLAWS
+ * 2026-08-11). --boot rides along IFF the team was running when restart was
+ * pressed — so the relaunched cockpit comes back over a LIVE rig instead of
+ * five booted:false seats, while a plain `crate gui` (no flag) never
+ * auto-boots anything. Exported pure so the iff is unit-provable. */
+export function restartArgv(state: Pick<GuiState, "cliPath" | "project">, urlFile: string, wasBooted: boolean): string[] {
+  return [
+    state.cliPath,
+    "gui",
+    "--url-file",
+    urlFile,
+    ...(state.project ? ["--project", state.project] : []),
+    ...(wasBooted ? ["--boot"] : []),
+  ];
+}
+
 // Flaw 4 (Adam's battle test, 2026-08-10): a leftover ~/.claude.json from an
 // OLD install carries real-looking markers, so the shallow check false-READYs
 // a machine whose credential is gone. The staffing page now consults the DEEP
@@ -752,15 +768,25 @@ export async function startGuiServer(
           return json(res, 200, engineVersion(state.home));
         case "POST /api/restart": {
           // W3 (audit K2): "Update now" ends with the app BACK, not homework.
-          // Spawn a fresh detached server on the same project, hand its
-          // tokened URL to the client, then exit — the seat runners die with
-          // us (T7-3, the GUI is the supervisor) and the new server's Start
-          // press brings the team back from its state files.
+          // Runner-deaths fix (FLAWS 2026-08-11): it also ends with the TEAM
+          // back. The old flow spawned the fresh server and process.exit(0)'d —
+          // a plain exit fires NONE of installGuiCrashLog's handlers, so the
+          // runner children were abandoned to their ppid watchdogs: silent
+          // code-0 deaths with no EXIT stamps (the parent that writes them was
+          // already gone), and any seat still mid-boot missed the reparent and
+          // ran forever for a dead cockpit. Now we stop the team FIRST — the
+          // runners die by parent-delivered SIGTERM while we are alive to
+          // stamp their exits — and pass --boot so the fresh server brings
+          // the team back by itself instead of waiting for a Start press.
           const { spawn } = await import("node:child_process");
           const { mkdtempSync } = await import("node:fs");
           const { tmpdir } = await import("node:os");
+          const { handoffStop } = await import("./teamproc.js");
+          const { guiLog } = await import("./guilog.js");
+          const handoff = handoffStop();
+          if (handoff.stopped > 0) guiLog(state.home, `restart: stopped ${handoff.stopped} seats for handoff`);
           const urlFile = join(mkdtempSync(join(tmpdir(), "crate-restart-")), "url");
-          const args = [state.cliPath, "gui", "--url-file", urlFile, ...(state.project ? ["--project", state.project] : [])];
+          const args = restartArgv(state, urlFile, handoff.wasBooted);
           const child = spawn(process.execPath, args, { detached: true, stdio: "ignore" });
           child.unref();
           const t0 = Date.now();

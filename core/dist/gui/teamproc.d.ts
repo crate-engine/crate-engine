@@ -47,3 +47,13 @@ export declare class TeamProcess {
 export declare function teamProcessFor(projectRoot: string, spawner: SeatSpawner): TeamProcess;
 /** Test/shutdown helper: drop all supervised teams (kills their seats). */
 export declare function stopAllTeams(): void;
+/** The /api/restart handoff (runner-deaths fix, FLAWS 2026-08-11): stop every
+ * team while THIS process is still alive — so the runners die by
+ * parent-delivered SIGTERM and the parent's EXIT handlers actually get to
+ * write their stamps (the old restart just process.exit(0)'d, orphaning the
+ * children to silent code-0 watchdog deaths with no forensic trail). Returns
+ * what was running so the caller can tell the fresh server to boot it back. */
+export declare function handoffStop(): {
+    wasBooted: boolean;
+    stopped: number;
+};

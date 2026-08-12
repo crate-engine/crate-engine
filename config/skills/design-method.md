@@ -17,18 +17,35 @@ Read the project's design system FIRST (`DESIGN-SPEC.md` if present, else the
 AGENTS.md design section). Every choice you make cites a rule from it; never invent
 rules. Work on a feature branch, never main.
 
-## 1. BEFORE shot (once, before any edit)
+## 1. Reach a LIVE preview (never fight a dead or shared server)
+
+Probe the rig's own dev URL first (`rig.conf` DEV_URL — the same law qa-sweep
+uses): `curl -sf -o /dev/null <dev-url>` and confirm it serves the CURRENT
+branch (a shared server another seat owns may be serving stale code). If it is
+absent or stale, do NOT wrestle the shared port — start the project's dev
+command yourself on a free ephemeral port INSIDE your wall (ports bind fine
+in-wall; the fresh-account run's "fought its own preview server" pain was a
+port collision, not a wall denial), e.g.:
+
+    (npm run dev -- --port 4173 &) && sleep 3 && curl -sf http://localhost:4173/
+
+Use that URL for every step below, and tear the server down when you finish.
+`agent-browser open <dev-url>` works inside your wall — the in-box shim
+launches the cached wall-safe chromium for you (browser-tooling fix,
+2026-08-11); end sessions with `agent-browser close`.
+
+## 2. BEFORE shot (once, before any edit)
 
     agent-browser open <dev-url>
     agent-browser viewport 390 844
     agent-browser screenshot <evidence-dir>/before-mobile.png
 
-## 2. Edit the real page
+## 3. Edit the real page
 
 Small, token-compliant changes (colors/spacing/type from the spec only). Mobile-first:
 design for 390px, then confirm desktop.
 
-## 3. Preview + AFTER shot + SELF-CHECK (the non-negotiable step)
+## 4. AFTER shot + SELF-CHECK (the non-negotiable step)
 
     agent-browser screenshot <evidence-dir>/after-mobile.png   (reload first if needed)
 
@@ -42,12 +59,12 @@ your report and verify what you can via DOM instead:
 
 Never claim a visual property you did not verify by one of those two paths.
 
-## 4. Desktop pass
+## 5. Desktop pass
 
     agent-browser viewport 1280 800  → screenshot after-desktop.png → check again.
 
-## 5. Iterate, then report
+## 6. Iterate, then report
 
-Repeat 2–4 until spec-clean. Deliver per the report skill (state file first — `.agents/state/designer.md`, full prefix): branch,
+Repeat 3–5 until spec-clean. Deliver per the report skill (state file first — `.agents/state/designer.md`, full prefix): branch,
 what changed + which spec rules drove it, before/after screenshot paths, anything
 NOT verified and why. The human locks the design — you never declare it locked.

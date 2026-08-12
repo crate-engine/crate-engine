@@ -18,6 +18,10 @@ handoffs:
   changes_needed: changes_needed | orchestrator | coder | [CHANGES_NEEDED] | branch
   # approved is the JOIN: the orchestrator emits it only after BOTH verdicts are on record and green, then holds for the human's go before [MERGE]. Non-signaling.
   approved: approved | orchestrator |  | [APPROVED] | branch
+  # [MERGE] is deliberately NOT an entry here (2026-08-11): agentctl HARDCODES
+  # the gate_release → coder mail, so the merge order goes out on EVERY release
+  # surface (GUI card or CLI emit) regardless of this file's per-rig vintage —
+  # a stale rig copy of handoffs.yaml must never be able to disarm the route.
   deployed: deployed | coder | orchestrator | [DEPLOYED] | branch
   bugs_found: bugs_found | tester | orchestrator | [BUGS_FOUND] | page
   fix_ready: code_ready | coder | reviewer,tester | [FIX_READY] | branch

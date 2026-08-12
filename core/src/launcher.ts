@@ -12,7 +12,15 @@ import { loadLoadout, loadoutPath, SEATS, type Loadout, type Seat } from "./mani
 import { buildInvocation, toShellCommand } from "./invocation.js";
 import { composedBrainRoot, overlayDirFor } from "./overlay.js";
 import { specFromLoadout, stateDoorsFor, writeProfile } from "./sandbox.js";
-import { loadUserDefaults, parseRigConf, resolveSeat, RIG_PREFIX, type Staffed } from "./staffing.js";
+import {
+  loadUserDefaults,
+  parseRigConf,
+  resolveSeat,
+  resolveSeatDetailed,
+  RIG_PREFIX,
+  type Staffed,
+  type StaffingSource,
+} from "./staffing.js";
 
 const execFileP = promisify(execFile);
 
@@ -117,6 +125,60 @@ export async function preflightCliDeps(
   }
 }
 
+/** One seat's fully resolved headless staffing, with provenance. */
+export interface ResolvedRigSeat {
+  seat: Seat;
+  agent: string;
+  /** undefined = no model flag — the harness's login/account default picks
+   * (the runner semantics for both "nothing resolved" and an explicit ""). */
+  model: string | undefined;
+  agentSource: StaffingSource;
+  modelSource: StaffingSource;
+}
+
+/**
+ * Resolve headless staffing for EVERY seat through the ONE canonical chain
+ * (rig.conf → ~/.crate/defaults.yaml → loadout floor), with provenance.
+ *
+ * This exists because `crate runner` and `crate team` used to hand-roll
+ * `rig.conf[key] || "pi"` — so a fresh rig.conf silently staffed bare pi on
+ * the ACCOUNT default model while `crate print`, doctor, and the GUI staffing
+ * screen all displayed the defaults-aware roster (FLAWS "crate team ignores
+ * ~/.crate/defaults.yaml"). The GUI's team boot spawns `crate runner` per
+ * seat, so this helper is the runtime truth for GUI-booted teams too.
+ */
+export function resolveRigSeats(projectRoot: string, home: string): ResolvedRigSeat[] {
+  const confFile = join(projectRoot, ".agents", "rig.conf");
+  const conf = existsSync(confFile) ? parseRigConf(readFileSync(confFile, "utf8")) : {};
+  // An invalid defaults.yaml THROWS in plain words (same posture as planSeats):
+  // silently ignoring it would staff a roster the user explicitly overrode.
+  const userDefaults = loadUserDefaults(home);
+  // Loadout floor comes from the PRISTINE brain (mirrors `crate print`). A rig
+  // without .agents/bin cannot derive one — proceed with loadout=undefined so
+  // runner/team keep their historical failure modes (rig.conf + defaults still
+  // resolve; any missing-brain error surfaces later exactly where it used to).
+  let brainRoot: string | undefined;
+  try {
+    brainRoot = deriveBrainRoot(projectRoot);
+  } catch {
+    brainRoot = undefined;
+  }
+  return SEATS.map((seat) => {
+    const loadout =
+      brainRoot !== undefined && existsSync(loadoutPath(brainRoot, seat))
+        ? loadLoadout(brainRoot, seat)
+        : undefined;
+    const d = resolveSeatDetailed(seat, loadout, { rigConf: conf, userDefaults });
+    return {
+      seat,
+      agent: d.agent.value,
+      model: d.model.value === "" ? undefined : d.model.value,
+      agentSource: d.agent.source,
+      modelSource: d.model.source,
+    };
+  });
+}
+
 export function deriveBrainRoot(projectRoot: string): string {
   // .agents/bin is a symlink into the brain; its target's parent IS the brain.
   const binLink = join(projectRoot, ".agents", "bin");
@@ -217,10 +279,16 @@ export async function planSeats(
       // The script exports the seat PATH, then wraps the harness in its wall.
       const q = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
       const wrap = profilePath ? `sandbox-exec -f ${q(profilePath)} ` : "";
+      // CRATE_WALLED (FLAWS "browser-tooling"): tell in-box tools they run
+      // inside a wall — the agent-browser shim keys chromium's --no-sandbox
+      // injection off it (nested sandbox init is refused by the OS, so the
+      // outer wall must BE the containment). Only exported when a profile was
+      // actually rendered; an unwalled seat keeps chromium's own sandbox.
+      const walledEnv = profilePath ? `export CRATE_WALLED=1\n` : "";
       const script = join(scriptDir, `${seat}.sh`);
       writeFileSync(
         script,
-        `#!/usr/bin/env bash\n# crate2 launch: ${seat} (manifest-driven ${loadout.agent}; sandbox: ${sandbox})\nexport PATH=${q(coreTools)}:"$PATH"\ncd ${q(projectRoot)}\nexec ${wrap}${inner}\n`,
+        `#!/usr/bin/env bash\n# crate2 launch: ${seat} (manifest-driven ${loadout.agent}; sandbox: ${sandbox})\nexport PATH=${q(coreTools)}:"$PATH"\n${walledEnv}cd ${q(projectRoot)}\nexec ${wrap}${inner}\n`,
       );
       chmodSync(script, 0o755);
       launchCommand = `bash ${script}`;
@@ -269,7 +337,7 @@ export async function planSeats(
       const script = join(scriptDir, `${seat}.sh`);
       writeFileSync(
         script,
-        `#!/usr/bin/env bash\n# crate2 launch: ${seat} (v1-adapter ${staffed.agent}, WALLED — P5-0a; sandbox: ${sandbox})\nexport PATH=${q(coreTools)}:"$PATH"\ncd ${q(projectRoot)}\nexec sandbox-exec -f ${q(profilePath)} ${inner}\n`,
+        `#!/usr/bin/env bash\n# crate2 launch: ${seat} (v1-adapter ${staffed.agent}, WALLED — P5-0a; sandbox: ${sandbox})\nexport PATH=${q(coreTools)}:"$PATH"\nexport CRATE_WALLED=1\ncd ${q(projectRoot)}\nexec sandbox-exec -f ${q(profilePath)} ${inner}\n`,
       );
       chmodSync(script, 0o755);
       launchCommand = `bash ${script}`;

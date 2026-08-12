@@ -21,8 +21,18 @@ if [ -z "$REF" ]; then
 fi
 
 # Repo root, derived from this script's location: .agents/bin/precheck.sh -> root.
+# WHY the split resolution (nmgate-ro-mount): SCRIPT_DIR must stay LOGICAL —
+# the `..`-walk below steps OUT of the .agents/bin symlink without resolving it
+# (a `pwd -P` HERE would resolve .agents/bin into the shared engine brain and
+# derive the brain's root, not this rig's). The single `pwd -P` at the
+# repo-root step then canonicalizes only the PROJECT path itself. That matters
+# because the coder wall realpaths the project before expanding the
+# `../.nmgate-wt` door (wall.ts/launcher.ts -> expandDoor), so only the REAL
+# project's sibling is bound writable; on a rig reached through a symlinked
+# parent (~/Repos/<rig> -> /mnt/data/projects/<rig>) the logical sibling
+# (~/Repos/.nmgate-wt) has no door and is read-only inside the wall.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 cd "$REPO_ROOT" || { echo "precheck: cannot cd to repo root" >&2; exit 2; }
 
 git fetch -q origin || true
@@ -47,7 +57,22 @@ fi
 # a bind mount on bwrap) — a regex door is un-expressible as a bind (T7-0).
 SAFE_REF="$(printf '%s' "$REF" | tr '/' '-')"
 NMGATE_PARENT="$(dirname "$REPO_ROOT")/.nmgate-wt"
-mkdir -p "$NMGATE_PARENT"
+# Fail-LOUD writability probe (nmgate-ro-mount): because REPO_ROOT is physical
+# (pwd -P above), this parent is BY CONSTRUCTION the exact real-path sibling
+# the coder wall binds as the `../.nmgate-wt` door. If it still isn't writable
+# the wall and the host genuinely disagree — refuse in plain words instead of
+# letting `git worktree add` hit EROFS mid-gate and tempting an improvised
+# gate somewhere unwalled.
+if ! mkdir -p "$NMGATE_PARENT" 2>/dev/null \
+   || ! ( : >"$NMGATE_PARENT/.probe.$$" && rm -f "$NMGATE_PARENT/.probe.$$" ) 2>/dev/null; then
+  echo "precheck: REFUSING — worktree parent is not writable: $NMGATE_PARENT" >&2
+  echo "precheck: the coder wall binds exactly this real-path sibling as the '../.nmgate-wt' door," >&2
+  echo "precheck: so an unwritable parent means the wall/rig shape is broken — an engine flaw." >&2
+  echo "precheck: report the engine flaw — do NOT replicate the gate in /tmp." >&2
+  exit 2
+fi
+# Say the resolved parent out loud so gate logs carry the truth (and tests pin it).
+echo "precheck: worktree parent -> $NMGATE_PARENT"
 WT="$NMGATE_PARENT/${SAFE_REF}-$$"
 LOGDIR="$(mktemp -d)"
 LINT_LOG="$LOGDIR/lint.log"

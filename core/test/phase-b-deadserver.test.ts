@@ -34,10 +34,12 @@ test("runnerLoop exits when its supervisor dies (ppid watchdog) and leaves an ho
   // (the OS reparented us = supervisor is gone) — the loop must return, never
   // reaching a turn.
   let calls = 0;
+  const home = mkdtempSync(join(tmpdir(), "crate-orphan-home-")); // injected: the self-stamp must not hit the dev's real ~/.crate
   await runnerLoop({
     projectRoot,
     seat: "coder",
     agent: "pi",
+    home,
     getParentPid: () => (calls++ === 0 ? 4242 : 1),
   });
   const log = readFileSync(join(projectRoot, ".agents", "state", "turns", "coder", "turns.log"), "utf8");

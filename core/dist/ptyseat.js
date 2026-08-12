@@ -212,12 +212,19 @@ export async function startSeatTty(opts) {
     if (isTurnActive(projectRoot, seat))
         return { ok: false, busy: true };
     let argv;
+    // CRATE_WALLED (FLAWS "browser-tooling"): same stamp the runner puts on a
+    // walled headless turn — in-box tools (the agent-browser shim) key
+    // chromium's --no-sandbox injection off it, because a nested sandbox init
+    // inside the wall is refused by the OS. The TTY door is the same session
+    // behind the same wall, so it carries the same marker.
+    let walled = false;
     try {
         // The SAME wall the runner renders — cwd = project root, same doors,
         // same refusal physics. Interactivity and containment are independent.
         const wall = resolveHeadlessWall(projectRoot, seat, agent);
+        walled = wall !== undefined;
         const sessionId = ttySessionId(projectRoot, seat, agent);
-        const inner = buildInteractiveInvocation(agent, { sessionId, model: opts.model, walled: wall !== undefined, seat });
+        const inner = buildInteractiveInvocation(agent, { sessionId, model: opts.model, walled, seat });
         argv = wall ? [...wall.argvPrefix, ...inner] : inner;
     }
     catch (e) {
@@ -244,7 +251,7 @@ export async function startSeatTty(opts) {
             cols,
             rows,
             cwd: projectRoot,
-            env: { ...seatEnv(projectRoot), TERM: "xterm-256color" },
+            env: { ...seatEnv(projectRoot, seat), TERM: "xterm-256color", ...(walled ? { CRATE_WALLED: "1" } : {}) },
         });
     }
     catch (e) {

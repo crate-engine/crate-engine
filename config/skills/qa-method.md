@@ -43,9 +43,11 @@ click / navigation, run BOTH commands and read their output before moving on:
     agent-browser console
     agent-browser errors
 
-**Inside your wall, never let agent-browser auto-launch** — it drives the system
-Chrome, which cannot start there (run #12). Connect it to the wall-safe cached
-chromium instead:
+Plain `agent-browser open <dev-url>` WORKS inside your wall — the in-box shim
+detects the wall and launches the cached wall-safe chromium with the right
+flags for you (the browser-tooling fix, 2026-08-11). End your session with
+`agent-browser close`. If open/navigate still fails (e.g. no cached playwright
+chromium), fall back to the proven connect ladder:
 
     qa-chrome start
     agent-browser connect 9223

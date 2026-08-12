@@ -52,6 +52,16 @@ test("releaseGate rejects a wrong phrase, accepts 'merge go', and the merge then
   emit(rig, "approved", "--actor", "orchestrator");
   assert.equal(releaseGate(rig, "(single loop)", "merge it").ok, false);
   assert.equal(releaseGate(rig, "(single loop)", "merge go").ok, true);
+  // ONE ROUTE (2026-08-11): the emit itself queued EXACTLY ONE [MERGE] to the
+  // coder — teamctl no longer hand-delivers a second copy on the GUI surface.
+  const mail = readNew(join(rig, ".agents", "state", "inbox"), "coder");
+  assert.equal(mail.length, 1, "exactly one mechanical merge order");
+  assert.match(mail[0]!.body, /\[MERGE\] the approved branch/);
+  // a repeat "merge go" is absorbed (GUI precheck) — still one order on file
+  const again = releaseGate(rig, "(single loop)", "merge go");
+  assert.equal(again.ok, true);
+  assert.equal(again.absorbed, true);
+  assert.equal(readNew(join(rig, ".agents", "state", "inbox"), "coder").length, 1);
   // now the machine allows the merge (deployed) — full-loop gate proven headless
   emit(rig, "deployed", "--actor", "orchestrator");
   assert.equal(pendingGates(rig).length, 0); // gate cleared after merge

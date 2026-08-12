@@ -7,6 +7,9 @@ Usage:
   agentctl.py state                 print current session state
   agentctl.py tail [N]              show last N events (default 15)
   agentctl.py check <event>         exit 0 if legal from current state, else 1
+  agentctl.py hotdoc [sweep]        hot-doc budget report; `sweep` runs the close
+                                    duty by hand (measure + dedup'd distillation
+                                    mail to the orchestrator on any breach)
   agentctl.py deliver <role> [--from R] <message...>
       Durable delivery: appends to the role's inbox mirror AND queues a
       maildir message (state/inbox/<role>/new/) that the seat's runner wakes
@@ -94,6 +97,9 @@ def rig_conf():
                 if mt: m[mt.group(1)] = mt.group(2).strip()
     return m
 
+# Maildir filename seq (parity with core/src/mailbox.ts `let seq = 0`).
+_MSG_SEQ = 0
+
 # The seat roles a message can target (rig.conf `<ROLE>_TITLE` still names
 # them for display; delivery is by role key, not title — T8: panes are gone).
 ROLES = ("orchestrator", "coder", "reviewer", "designer", "tester")
@@ -120,7 +126,12 @@ def queue_message(role, sender, msg):
     new_dir = os.path.join(inbox_dir, role, "new")
     os.makedirs(new_dir, exist_ok=True)
     iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + ".%03dZ" % (int(time.time() * 1000) % 1000)
-    name = "%d-%06d-%d.msg" % (int(time.time() * 1000), 0, os.getpid())
+    # In-process seq mirrors mailbox.ts exactly — a hardcoded 0 collides (and
+    # silently OVERWRITES on rename) when one process queues two mails to the
+    # same role within a millisecond (e.g. the hot-doc sweep, several breaches).
+    global _MSG_SEQ
+    name = "%d-%06d-%d.msg" % (int(time.time() * 1000), _MSG_SEQ, os.getpid())
+    _MSG_SEQ += 1
     tmp_p = os.path.join(new_dir, ".tmp-" + name)
     with open(tmp_p, "w", encoding="utf-8") as fh:
         fh.write("%s | %s | %s\n" % (iso, sender, msg.replace("\n", "\\n")))
@@ -289,6 +300,16 @@ def pin_path_for(task):
     safe = re.sub(r"[^A-Za-z0-9._-]", "-", task)
     return os.path.join(A, "state", "pins", safe)
 
+def seat_identity():
+    """SEAT-IDENTITY (emit-identity fix, 2026-08-11; FLAWS 'emit identity is
+    self-declared'): the engine runner stamps CRATE_SEAT=<seat> into every
+    child env it spawns (core/src/runner.ts seatEnv — headless turns AND the
+    wheel/TTY door). `--actor` alone is self-declaration; this is the caller's
+    TRUE identity where the runner controls the env. Empty string means the
+    call runs OUTSIDE any seat (the operator's own terminal, the GUI server) —
+    those paths stay trusted exactly as before."""
+    return os.environ.get("CRATE_SEAT", "").strip()
+
 def operator_released(task):
     """PHASE-8 T3: True iff the operator emitted a valid gate_release for THIS
     task AFTER it most recently reached `approved` (a stale release from a
@@ -325,6 +346,48 @@ def operator_released(task):
                 armed, released = False, False  # merged or reopened
     return armed and released
 
+def last_release_iso(task):
+    """Timestamp of the NEWEST operator GATE_RELEASE for <task> (None when no
+    release is on file). The duplicate-[MERGE] absorb uses it to answer 'is a
+    merge order already on file SINCE this release?' — event lines and the
+    inbox mirror share agentctl's now() stamp shape, so a string compare is a
+    time compare."""
+    if not os.path.exists(LOG):
+        return None
+    iso = None
+    with open(LOG, encoding="utf-8") as fh:
+        for raw in fh:
+            toks = raw.split()
+            if len(toks) < 2 or toks[1] != "GATE_RELEASE" or "actor=operator" not in toks:
+                continue
+            row_task = None
+            for t in toks:
+                if t.startswith("task="): row_task = t.split("=", 1)[1]
+                elif t.startswith("branch=") and row_task is None: row_task = t.split("=", 1)[1]
+            if task and row_task is not None and row_task != task:
+                continue
+            iso = toks[0].strip("[]")
+    return iso
+
+def merge_order_on_file(task, since_iso):
+    """True iff the coder's audit mirror (state/inbox/coder.md) already carries
+    a [MERGE] line for <task> stamped at/after <since_iso>. The mechanical
+    release→merge route mirrors every mail it queues (queue_message), so the
+    mirror is the CHECKABLE record that a merge order went out — the exact
+    check the old FLAWS entry said was impossible."""
+    p = os.path.join(A, "state", "inbox", "coder.md")
+    if not since_iso or not os.path.exists(p):
+        return False
+    with open(p, encoding="utf-8") as fh:
+        for line in fh:
+            m = re.match(r"\[([^\]]+)\]\s+\([^)]*\)\s+(.*)", line)
+            if not m:
+                continue
+            at, text = m.group(1), m.group(2)
+            if "[MERGE]" in text and at >= since_iso and (not task or task in text):
+                return True
+    return False
+
 # ── the review/QA JOIN as PHYSICS (2026-07-24; FLAWS "the JOIN is manners, not
 #    physics", live-proven race in dev/plan/proofs/speed-law/): in a parallel
 #    review+QA loop the verifiers RECORD verdicts (`emit verdict`) and the
@@ -332,6 +395,80 @@ def operator_released(task):
 #    alone — a solo verifier emit closed the loop while the other verifier was
 #    still mid-turn. Binder text alone does not hold against a weak/fast model.
 VERIFIER_ROLES = ("reviewer", "tester")
+
+# ── FRESH EYES at verify dispatch (2026-08-11; FLAWS "the reviewer graded its
+#    own homework"; PDR dev/pdr/blended-pane.md "auto-refresh-verifiers at
+#    verify dispatch"): verifier seats keep ONE persistent session across
+#    loops, so a reviewer/tester session that earlier AUTHORED branch code
+#    would verify its own work. Dropping session.json is the runner's
+#    sanctioned fresh-start lever (core/src/runner.ts sessionAlive: a removed
+#    file is NOT resumed — the next turn re-orients fully from the state
+#    files, and pi pre-mints a new uuid, so the drop works for every CLI).
+#    Verdicts/notes persist in events.log + state/<seat>.md, so the worst a
+#    drop costs is cached context, never work — which is why the D12
+#    stateIsFresh refusal is deliberately NOT ported here; only its "never
+#    refresh under a running turn" half is (the mid-turn skip below).
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+def seat_mid_turn(seat):
+    """True iff the seat's active.lock names a LIVE pid. READ-ONLY on the
+    lock — the TS runner owns stale-lock cleanup (isTurnActive); here we only
+    decide whether a refresh is safe right now, so a dead-pid or unreadable
+    lock counts as not-busy without touching the file."""
+    lock = os.path.join(A, "state", "turns", seat, "active.lock")
+    try:
+        import json
+        with open(lock, encoding="utf-8") as fh:
+            pid = json.load(fh).get("pid")
+        return bool(pid) and _pid_alive(int(pid))
+    except Exception:
+        return False  # absent / unparseable / dead pid = not mid-turn
+
+def refresh_verifier_session(seat, task):
+    """Drop <seat>'s persisted session so its verify turn starts with fresh
+    eyes. NEVER die()s — this runs AFTER the code_ready event already landed,
+    so any failure here is a skip-with-note on the record, not a wedge."""
+    tdir = os.path.join(A, "state", "turns", seat)
+    sess = os.path.join(tdir, "session.json")
+    tkv = (" task=%s" % task) if task else ""
+    if seat_mid_turn(seat):
+        # Dropping session.json mid-turn is both unsafe AND futile: the
+        # runner re-writes the file after a successful turn (runner.ts), so
+        # the drop would silently un-happen. Honor the freshness law's
+        # "never refresh under a running turn" half and say so on record.
+        append("[%s] SESSION_REFRESH_SKIPPED actor=agentctl seat=%s reason=mid_turn%s" % (now(), seat, tkv))
+        print("verify dispatch: %s is mid-turn — session NOT refreshed (it keeps its "
+              "current context this round; the skip is on record)." % seat)
+        return
+    if not os.path.exists(sess):
+        # Already fresh (never ran, restaffed, or D12-refreshed) — nothing to
+        # drop; the log line keeps the audit trail honest without noise.
+        append("[%s] SESSION_REFRESH_SKIPPED actor=agentctl seat=%s reason=no_session%s" % (now(), seat, tkv))
+        return
+    try:
+        os.remove(sess)
+    except OSError as e:
+        append("[%s] SESSION_REFRESH_SKIPPED actor=agentctl seat=%s reason=unremovable%s" % (now(), seat, tkv))
+        print("verify dispatch: could not drop %s's session (%s) — it verifies "
+              "with its old context this round." % (seat, e))
+        return
+    append("[%s] SESSION_REFRESH actor=agentctl seat=%s%s reason=fresh_eyes" % (now(), seat, tkv))
+    try:
+        # Same turns.log convention as D12 refreshSeat (core/src/refresh.ts)
+        # so the seat's history reads as one story regardless of which lever
+        # dropped the session.
+        os.makedirs(tdir, exist_ok=True)
+        iso = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        with open(os.path.join(tdir, "turns.log"), "a", encoding="utf-8") as fh:
+            fh.write("%s | refreshed (verify dispatch) | session dropped — fresh eyes\n" % iso)
+    except OSError:
+        pass  # the events.log line above already tells the story
+    print("verify dispatch: %s session refreshed — fresh eyes" % seat)
 
 def parallel_verifiers():
     """The verifier seats the code_ready handoff mechanically summons
@@ -699,6 +836,119 @@ def commit_loop_docs(task):
     print("DOCS COMMITTED: %s — the loop's AGENTS/PROGRESS/ISSUES accruals landed on %s%s (flywheel banked)."
           % (sha, branch, pushed))
 
+# ── the HOT-DOC BUDGET TRIPWIRE (backlog #9, 2026-08-11): hot records — the
+#    docs agents read EVERY task — must stay small and curated, because every
+#    line taxes every future turn. "Distill every few months" rots on human
+#    memory, so the TRIGGER is demoted to code: at loop close (this duty
+#    already runs) the engine MEASURES the hot docs; any doc over its budget
+#    files the distillation chore MECHANICALLY — one dedup'd mail to the
+#    orchestrator, which routes it as a normal chore-tier ticket. The alarm is
+#    physics; the compaction stays agent judgment (an agent compacts laws,
+#    prunes stale ones, dedupes — code never edits a doc).
+#    Budgets locked by Adam (2026-08-10): AGENTS.md 300 lines, the rest 150.
+#    Per-doc override in rig.conf: HOTDOC_BUDGET_<STEM>=N (HOTDOC_BUDGET_AGENTS=400).
+HOTDOC_DEFAULTS = {
+    "AGENTS.md": 300,
+    "CLAUDE.md": 150,
+    "PROGRESS.md": 150,
+    "ISSUES.md": 150,
+    "LESSONS.md": 150,
+}
+# Dedup marker: state/hotdoc-nags records the last-NAGGED line count per doc,
+# so a standing breach nags ONCE PER BREACH, not once per loop. The marker
+# clears when the doc drops back within budget (the breach is over), which
+# re-arms the tripwire for the next breach.
+NAGS = os.path.join(A, "state", "hotdoc-nags")
+
+def hotdoc_budgets():
+    """doc -> budget (lines). rig.conf overrides per doc by stem
+    (HOTDOC_BUDGET_AGENTS=400); a non-numeric or non-positive override falls
+    back to the default — a typo must never disarm the tripwire."""
+    conf = rig_conf()
+    out = {}
+    for doc, dflt in HOTDOC_DEFAULTS.items():
+        raw = conf.get("HOTDOC_BUDGET_" + doc.split(".")[0].upper(), "").strip()
+        try:
+            n = int(raw)
+        except ValueError:
+            n = 0
+        out[doc] = n if n > 0 else dflt
+    return out
+
+def hotdoc_lines(path):
+    """Physical line count of <path> in the project root; 0 when absent or
+    unreadable (an absent doc cannot breach — nothing to distill)."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return sum(1 for _ in fh)
+    except OSError:
+        return 0
+
+def read_nags():
+    """{doc: last_nagged_lines} from the marker; {} when absent/garbled."""
+    m = {}
+    try:
+        with open(NAGS, encoding="utf-8") as fh:
+            for raw in fh:
+                if "=" in raw:
+                    doc, val = raw.strip().split("=", 1)
+                    try:
+                        m[doc] = int(val)
+                    except ValueError:
+                        pass
+    except OSError:
+        pass
+    return m
+
+def write_nags(m):
+    os.makedirs(os.path.dirname(NAGS), exist_ok=True)
+    with open(NAGS, "w", encoding="utf-8") as fh:
+        for doc in sorted(m):
+            fh.write("%s=%d\n" % (doc, m[doc]))
+
+def hotdoc_measure():
+    """Pure measurement: [(doc, lines, budget, over)] for every hot doc, in
+    HOTDOC_DEFAULTS order. `over` is the breach verdict (lines > budget —
+    a doc AT its budget is legal; the budget is a ceiling, not a fuse)."""
+    budgets = hotdoc_budgets()
+    out = []
+    for doc in HOTDOC_DEFAULTS:
+        lines = hotdoc_lines(doc)
+        out.append((doc, lines, budgets[doc], lines > budgets[doc]))
+    return out
+
+def hotdoc_sweep():
+    """The tripwire duty (runs at every close; `hotdoc sweep` runs it by
+    hand). Measures, dedupes against the marker, and mails the orchestrator
+    ONE distillation chore per NEWLY-breaching doc. Loud, never a wedge —
+    a close that cannot mail still closes."""
+    try:
+        nags = read_nags()
+        changed = False
+        for doc, lines, budget, over in hotdoc_measure():
+            if not over:
+                if doc in nags:  # breach over — clear the marker, re-arm
+                    del nags[doc]
+                    changed = True
+                continue
+            if doc in nags:  # standing breach: already nagged, stay quiet
+                print("HOTDOC: %s still at %d/%d lines — distillation chore already "
+                      "filed (nags once per breach)." % (doc, lines, budget))
+                continue
+            msg = ("%s at %d/%d lines — dispatch a distillation chore: compact "
+                   "accumulated laws, prune stale ones, dedupe" % (doc, lines, budget))
+            queue_message("orchestrator", "engine", msg)
+            append("[%s] HOTDOC_NAG doc=%s lines=%d budget=%d" % (now(), doc, lines, budget))
+            print("HOTDOC: %s over budget (%d/%d lines) — distillation chore mailed "
+                  "to the orchestrator." % (doc, lines, budget))
+            nags[doc] = lines
+            changed = True
+        if changed:
+            write_nags(nags)
+    except Exception as e:
+        print("HOTDOC: WARNING — tripwire sweep failed (%s); the close still lands. "
+              "Measure by hand: agentctl.py hotdoc" % e)
+
 def gate_ok_for_head():
     """True iff events.log holds a GATE_PASS tied to the current HEAD SHA. The SHA
     uniquely identifies the code state, so an older pass for the same SHA is still
@@ -751,6 +1001,19 @@ def main():
             _json.dump(items, fh)
         print("PREVIEW: queued %s%s for the human (GUI Preview tab)." % (url, route))
         return
+    if cmd == "hotdoc":
+        # The tripwire's manual door. `hotdoc` = measure-only report (no mail,
+        # no marker writes — safe to run any time); `hotdoc sweep` = the exact
+        # duty the close runs (measure + dedup'd mail to the orchestrator).
+        if len(args) > 1 and args[1] == "sweep":
+            hotdoc_sweep()
+            return
+        nags = read_nags()
+        for doc, lines, budget, over in hotdoc_measure():
+            status = "OVER" if over else ("absent" if lines == 0 and not os.path.exists(doc) else "ok")
+            nagged = " (nagged at %d)" % nags[doc] if doc in nags else ""
+            print("%-12s %4d/%-4d %s%s" % (doc, lines, budget, status, nagged))
+        return
     if cmd == "state":
         # `state --task <branch>` = that task's derived state (P7-T6).
         if len(args) > 2 and args[1] == "--task":
@@ -800,6 +1063,44 @@ def main():
             sender, rest = rest[1], rest[2:]
         msg = " ".join(rest).strip()
         if not msg: die("deliver: empty message")
+        # ── duplicate-[MERGE] absorb (2026-08-11; FLAWS "[MERGE] routing is
+        # nondeterministic across loops"): the engine now mails [MERGE] on
+        # gate_release itself, but an orchestrator following older doctrine —
+        # or an older GUI teamctl paired with this newer agentctl (the
+        # partial-update window) — may STILL hand-send one. Absorb it ONLY
+        # when we are SURE it duplicates the mechanical order: the named
+        # task's gate is released-unconsumed AND the coder mirror already
+        # shows a [MERGE] line stamped since that release. Anything less
+        # certain DELIVERS (at-least-once law: a merge order is never
+        # swallowed on a guess).
+        if role == "coder" and msg.lstrip().startswith("[MERGE]"):
+            task_key, parseable = None, True
+            if concurrent_mode():
+                # the merge order is freeform prose — the task, when named,
+                # is the first word after the tag ("[MERGE] feat/x — ...")
+                mt = re.match(r"\s*\[MERGE\]\s+(\S+)", msg)
+                cand = mt.group(1).strip(".,;:!?") if mt else ""
+                _, dup_tasks = task_states(initial)
+                if cand in dup_tasks:
+                    task_key = cand
+                else:
+                    parseable = False  # names no known task — cannot check
+            if parseable and operator_released(task_key):
+                rel_iso = last_release_iso(task_key)
+                if rel_iso and merge_order_on_file(task_key, rel_iso):
+                    note = ("duplicate [MERGE] absorbed — the merge order is already on file "
+                            "(state/inbox/coder.md since the gate's release); nothing was re-queued.")
+                    inbox_dir = os.path.join(A, "state", "inbox")
+                    os.makedirs(inbox_dir, exist_ok=True)
+                    # engine-voiced honest note in the mirror: the absorb must
+                    # be visible in the same audit trail as the order it dedupes
+                    with open(os.path.join(inbox_dir, "coder.md"), "a", encoding="utf-8") as fh:
+                        fh.write("[%s] (engine) %s\n" % (now(), note))
+                    print(note)
+                    return
+            elif not parseable:
+                print("WARNING: this [MERGE] names no known task — cannot check for a duplicate; "
+                      "delivering anyway (at-least-once: a merge order is never swallowed).")
         name = queue_message(role, sender, msg)
         print("INBOX: recorded for %s (state/inbox/%s.md) — the durable copy." % (role, role))
         if name:
@@ -856,6 +1157,17 @@ def main():
                 die("REJECTED: '%s' is not legal from %sstate '%s'. Legal from: %s. Nothing was sent."
                     % (transition, ("task %s's " % cur_task) if cur_task else "", cur, ", ".join(froms)))
             new = to
+        # SEAT-IDENTITY: NMGATE_OVERRIDE is an EMERGENCY HUMAN bypass — a seat
+        # prefixing it is the same forgeable-identity class as a forged
+        # gate_release (the runner stamps CRATE_SEAT; a human terminal has none).
+        if (transition == "code_ready" and enforce_gate()
+                and os.environ.get("NMGATE_OVERRIDE") == "1"
+                and seat_identity() not in ("", "operator")):
+            append("[%s] REJECTED event=code_ready actor=%s reason=seat_identity override=NMGATE_OVERRIDE seat=%s"
+                   % (now(), actor, seat_identity()))
+            die("REJECTED: NMGATE_OVERRIDE=1 is the HUMAN's emergency bypass, but this command is "
+                "running inside the %s seat (CRATE_SEAT) — a seat cannot claim it. Run the real "
+                "gate instead: bash .agents/bin/nm-gate <branch>. Nothing was emitted." % seat_identity())
         if transition == "code_ready" and enforce_gate() and os.environ.get("NMGATE_OVERRIDE") != "1":
             okg, detail = gate_ok_for_head()
             if not okg:
@@ -899,6 +1211,14 @@ def main():
         # close, and (JOIN_ENFORCE=1) only with BOTH verdicts on record.
         if transition in ("approved", "changes_needed") and len(parallel_verifiers()) >= 2:
             if os.environ.get("JOIN_OVERRIDE") == "1":
+                # SEAT-IDENTITY: same class as NMGATE_OVERRIDE — the join
+                # bypass belongs to the HUMAN; a seat's env carries CRATE_SEAT.
+                if seat_identity() not in ("", "operator"):
+                    append("[%s] REJECTED event=%s actor=%s reason=seat_identity override=JOIN_OVERRIDE seat=%s"
+                           % (now(), transition, actor, seat_identity()))
+                    die("REJECTED: JOIN_OVERRIDE=1 is the HUMAN's emergency bypass, but this command "
+                        "is running inside the %s seat (CRATE_SEAT) — a seat cannot claim it. Wait for "
+                        "both verdicts (or ask the operator). Nothing was emitted." % seat_identity())
                 kv.append("join_override=1")
                 print("JOIN OVERRIDE: join checks skipped by the human -- recorded in the log.")
             elif effective_tier_at_join(cur_task) == "chore":
@@ -985,11 +1305,39 @@ def main():
         if transition == "gate_release":
             kvmap = dict(p.split("=", 1) for p in kv if "=" in p)
             phrase = kvmap.get("phrase", "").strip().strip('"').lower()
+            # SEAT-IDENTITY: refuse a FORGED operator release before even
+            # looking at the actor flag. A seat's env carries CRATE_SEAT (the
+            # runner stamps it); `--actor operator` from inside one is the
+            # live-caught forgery (a coder released its own merge gate). The
+            # refusal is LOGGED — a forgery attempt must be visible in the
+            # audit trail, not silently swallowed.
+            caller = seat_identity()
+            if caller and caller != "operator":
+                append("[%s] REJECTED event=gate_release actor=%s reason=seat_identity seat=%s"
+                       % (now(), actor, caller))
+                die("REJECTED: this command is running inside the %s seat (CRATE_SEAT) — gate_release "
+                    "belongs to the HUMAN OPERATOR alone, and a seat cannot claim the operator's "
+                    "identity. Ask the operator to release the gate (GUI gate card, or agentctl from "
+                    "their own terminal). Nothing was released." % caller)
             if actor != "operator":
+                # Log the wrong-actor refusal too (it used to die silently —
+                # the one refusal here that left NO trace in events.log).
+                append("[%s] REJECTED event=gate_release actor=%s reason=wrong_actor" % (now(), actor))
                 die("REJECTED: gate_release is the OPERATOR's alone (actor=operator). Nothing was released.")
             if phrase != "merge go":
                 append("[%s] REJECTED event=gate_release actor=%s reason=wrong_phrase" % (now(), actor))
                 die("REJECTED: the release phrase must be exactly 'merge go'. Nothing was released.")
+            # ── absorb a REPEAT release (2026-08-11): this moves the 07-25
+            # GUI-only absorb (teamctl gateAlreadyReleased) into the ENGINE so
+            # a CLI re-emit is absorbed too — first release wins on EVERY
+            # surface. A released-unconsumed gate means the merge order is
+            # already on file; record the repeat honestly (ABSORBED, not a
+            # second GATE_RELEASE a scanner would read as fresh), mail nobody.
+            if operator_released(cur_task):
+                append("[%s] GATE_RELEASE_ABSORBED actor=%s%s reason=already_released"
+                       % (now(), actor, (" task=%s" % cur_task) if cur_task else ""))
+                print("already released — repeat absorbed (no duplicate merge order)")
+                return
         # Pin the reviewed sha the moment the Coder declares done. From here to
         # a verdict the branch is FROZEN (coder.md law); `approved` verifies it.
         post_append = []
@@ -1041,10 +1389,38 @@ def main():
         # (scope: the three working docs only; mainline-only; loud, never a wedge).
         if transition == "close":
             commit_loop_docs(cur_task)
+            # HOT-DOC TRIPWIRE (backlog #9): measure the hot docs and file the
+            # distillation chore mechanically when one is over budget.
+            hotdoc_sweep()
         print("OK: %s -> state=%s" % (transition, new))
         fw = flywheel_warning(transition)
         if fw:
             print(fw)
+        # ── the ONE deterministic [MERGE] route (2026-08-11; FLAWS "[MERGE]
+        # routing is nondeterministic across loops"): the RELEASE ITSELF mails
+        # the coder — the same route from every surface (GUI gate card or CLI
+        # emit), so whether the mechanical order went out can never depend on
+        # WHICH surface the operator released from. HARDCODED here on purpose,
+        # NOT a handoffs.yaml entry: a per-rig config copy can be stale while
+        # .agents/bin symlinks to the engine, and "release → coder mail,
+        # always" must not depend on rig-config vintage. queue_message writes
+        # BOTH the state/inbox/coder.md audit mirror and the maildir wake
+        # file, so the order is durable, checkable, and acted on.
+        if transition == "gate_release":
+            if cur == "approved":
+                relmap = dict(p.split("=", 1) for p in kv if "=" in p)
+                target = cur_task or relmap.get("task") or relmap.get("branch") or "the approved branch"
+                qname = queue_message("coder", "operator",
+                                      "[MERGE] %s — the operator typed \"merge go\"; the gate is "
+                                      "released. Merge into main now and emit deployed." % target)
+                print("SIGNAL QUEUED for coder (state/inbox/coder/new/%s) — its runner wakes on it." % qname)
+            else:
+                # honest no-op: the release is ON RECORD but ordered no merge —
+                # the gate was never armed (no approved on file), and a
+                # pre-approval release is consumed by the approval anyway
+                # (operator_released: a fresh approval needs a fresh release).
+                print("RELEASE RECORDED but NO merge order was sent — the gate is not armed "
+                      "(state=%s, not approved). Approve first, then release again." % cur)
         if signal and to_role:
             # T8 (headless-only): the handoff signal is QUEUED mechanically —
             # no printed delivery commands for the emitter to forget. The
@@ -1055,8 +1431,22 @@ def main():
             # with no orchestrator relay turn; every mail costs a full turn-
             # spawn at its recipient, so mechanical mail never routes through
             # a model).
+            targets = [r.strip() for r in to_role.split(",") if r.strip()]
+            # FRESH EYES: refresh verifier sessions BEFORE queueing the mail.
+            # ORDER IS LOAD-BEARING — the runner wakes on fs.watch of the
+            # maildir new/ dir (runner.ts), so mail-first would let the woken
+            # verifier resume its old (possibly self-authored) session in the
+            # gap. Keying on transition=="code_ready" covers fix_ready too
+            # (same transition, same targets); sitting AFTER the tier router
+            # means a chore loop (to_role rewritten to "orchestrator")
+            # refreshes nobody, and the designer-floor add-on is untouched
+            # (designer is not a verifier).
+            if transition == "code_ready":
+                for tr in targets:
+                    if tr in VERIFIER_ROLES:
+                        refresh_verifier_session(tr, cur_task)
             msg = signal + ((" " + " ".join(kv)) if kv else "")
-            for tr in [r.strip() for r in to_role.split(",") if r.strip()]:
+            for tr in targets:
                 if tr in ROLES or tr == "operator":
                     qname = queue_message(tr, actor, msg)
                     if qname:

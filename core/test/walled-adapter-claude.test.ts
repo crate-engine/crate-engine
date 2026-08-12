@@ -87,6 +87,10 @@ test("adapter-claude on a walled loadout: profile rendered + sandbox-exec wrap +
   // is INSIDE sandbox-exec, never a substitute for the wall.
   assert.match(script, /sandbox-exec -f '.*reviewer\.sb' claude --model opus --permission-mode bypassPermissions/);
   assert.match(script, /WALLED — P5-0a/);
+  // FLAWS "browser-tooling": a walled launch script exports CRATE_WALLED so
+  // in-box tools (the agent-browser shim) know chromium needs --no-sandbox —
+  // a nested sandbox init inside the wall is refused by the OS.
+  assert.match(script, /^export CRATE_WALLED=1$/m);
 });
 
 test("claude on a seat with NO loadout REFUSES loudly (never unwalled)", async () => {
@@ -106,5 +110,8 @@ test("non-claude adapter seats stay UNWALLED (script carries only the cwd pin)",
   const script = readFileSync(coder.launchCommand.replace(/^bash /, ""), "utf8");
   assert.match(script, /exec hermes-tui/);
   assert.doesNotMatch(script, /sandbox-exec/);
+  // no wall → no CRATE_WALLED marker: an unwalled operator/agent keeps
+  // chromium's own internal sandbox (the shim injects nothing).
+  assert.doesNotMatch(script, /CRATE_WALLED/);
   assert.equal(coder.profilePath, undefined);
 });

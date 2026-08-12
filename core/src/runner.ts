@@ -211,11 +211,20 @@ export async function runTurn(opts: RunTurnOpts): Promise<TurnResult> {
   // here — the refusal is a boot/turn failure, never a silent unwalled run.
   // An invocationOverride (tests) replaces the harness itself, so no wall.
   let inv: HeadlessInvocation;
+  // CRATE_WALLED (FLAWS "browser-tooling"): a walled turn stamps the child
+  // env so in-box tools KNOW they run inside a wall — the agent-browser shim
+  // keys chromium's --no-sandbox injection off it (the OS refuses a nested
+  // sandbox init, so the outer wall must be the containment). The launcher's
+  // cmux scripts export the same marker; this covers the headless door on
+  // BOTH backends (Seatbelt and bwrap — bwrap passes env through, no
+  // --clearenv in renderBwrapArgs).
+  let walled = false;
   if (opts.invocationOverride) {
     inv = opts.invocationOverride(prompt, sessionId);
   } else {
     const wall = cachedWall(projectRoot, seat, agent);
-    inv = buildHeadlessInvocation(agent, { prompt, sessionId, model: opts.model, walled: wall !== undefined });
+    walled = wall !== undefined;
+    inv = buildHeadlessInvocation(agent, { prompt, sessionId, model: opts.model, walled });
     if (wall) inv.argv = [...wall.argvPrefix, ...inv.argv];
   }
 
@@ -231,7 +240,8 @@ export async function runTurn(opts: RunTurnOpts): Promise<TurnResult> {
   writeFileSync(activeTurnFile(projectRoot, seat), JSON.stringify({ pid: process.pid, startedAt: startedAt.toISOString() }));
   let result: { ok: boolean; sessionId?: string; usage?: TurnUsage; error?: string };
   try {
-    result = await execTurn(inv, projectRoot, logPath, agent, opts.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS, seatEnv(projectRoot));
+    result = await execTurn(inv, projectRoot, logPath, agent, opts.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS,
+      { ...seatEnv(projectRoot, seat), ...(walled ? { CRATE_WALLED: "1" } : {}) });
   } finally {
     try { rmSync(activeTurnFile(projectRoot, seat)); } catch { /* stale-lock cleanup covers a miss */ }
   }
@@ -263,17 +273,29 @@ export async function runTurn(opts: RunTurnOpts): Promise<TurnResult> {
  * tools "not installed" and self-graded partial. Composed per turn (cheap,
  * and correct across engine updates). A rig without .agents/bin (test
  * fixtures) falls back to the plain env — the tools shim needs a brain. */
-export function seatEnv(projectRoot: string): NodeJS.ProcessEnv {
+export function seatEnv(projectRoot: string, seat: string): NodeJS.ProcessEnv {
   // DISABLE_AUTOUPDATER (Adam, 2026-08-11): claude's self-update writes its
   // own binaries in $HOME — the wall correctly DENIES that, so every wheeled
   // session nagged "Auto-update failed · run claude doctor". Updating the
   // harness is a deliberate outside-the-wall act; inside a seat the updater
   // stays off and the nag disappears.
+  //
+  // CRATE_SEAT (emit-identity fix, 2026-08-11; FLAWS "emit identity is
+  // self-declared"): stamp the seat's TRUE identity into every child the
+  // runner spawns. agentctl's `--actor` was pure self-declaration — a live
+  // coder re-emitted `gate_release --actor operator` and passed. agentctl now
+  // refuses operator-only claims when CRATE_SEAT names a seat. The stamp
+  // rides BOTH doors deliberately: the headless turn AND the wheel/TTY
+  // (ptyseat) — a TTY session IS the seat's session, so even an operator
+  // driving the wheel cannot release the gate from inside it (the release
+  // paths are the GUI gate card or the operator's own terminal, both
+  // CRATE_SEAT-free). Set AFTER the process.env spread so an inherited
+  // CRATE_SEAT (engine-nested-in-a-seat) is OVERWRITTEN, never leaked.
   try {
     const tools = join(deriveBrainRoot(projectRoot), "core", "tools");
-    return { ...process.env, PATH: `${tools}:${process.env.PATH ?? ""}`, DISABLE_AUTOUPDATER: "1" };
+    return { ...process.env, PATH: `${tools}:${process.env.PATH ?? ""}`, DISABLE_AUTOUPDATER: "1", CRATE_SEAT: seat };
   } catch {
-    return { ...process.env, DISABLE_AUTOUPDATER: "1" };
+    return { ...process.env, DISABLE_AUTOUPDATER: "1", CRATE_SEAT: seat };
   }
 }
 
@@ -323,6 +345,15 @@ export interface RunnerLoopOpts extends RunTurnOpts {
   signal?: AbortSignal;
   /** Injectable for tests; defaults to reading process.ppid. */
   getParentPid?: () => number;
+  /** The supervisor's pid as the SPAWNER knew it (env CRATE_SUPERVISOR_PID) —
+   * fixed before the child even starts, so the watchdog catches a supervisor
+   * that died during our boot window (runner-deaths fix, FLAWS 2026-08-11).
+   * Absent (standalone `crate runner`): fall back to capturing ppid at loop
+   * start, today's behavior. */
+  supervisorPid?: number;
+  /** Where the orphan self-stamp lands (~/.crate/logs); defaults to $HOME.
+   * Injectable so tests never write the developer's real ~/.crate. */
+  home?: string;
 }
 
 /** The seat's standing loop: watch → turn → ack/retry → watch. */
@@ -337,7 +368,14 @@ export async function runnerLoop(opts: RunnerLoopOpts): Promise<void> {
   // for a dead cockpit (testuser8 run: the server crashed silently and every
   // seat kept working, invisible, until a sudo pkill).
   const getPpid = opts.getParentPid ?? (() => process.ppid);
-  const ppid0 = getPpid();
+  // Runner-deaths fix (FLAWS 2026-08-11): prefer the pid the SPAWNER handed us
+  // over a self-captured ppid. We only reach this line ~1-3s after spawn (node
+  // startup + bootWall's wall render + bwrap probe run first); a supervisor
+  // dying inside that window meant ppid0 captured the REPARENTED parent (init)
+  // and the `!==` below could never fire — the immortal orphan that survived
+  // the battle-test relaunch. With supervisorPid fixed before we even started,
+  // a mid-boot reparent is caught on the very first loop iteration.
+  const ppid0 = opts.supervisorPid ?? getPpid();
   // Event-driven wake (speed law, 2026-07-14): fs.watch on the seat's maildir
   // new/ fires the INSTANT a .msg lands (the tmp+rename enqueue is atomic, so
   // a watcher never sees a half-written file). The pollMs sleep stays as the
@@ -389,6 +427,23 @@ export async function runnerLoop(opts: RunnerLoopOpts): Promise<void> {
           `${new Date().toISOString()} | orphaned — supervisor (pid ${ppid0}) is gone; runner exiting\n`,
         );
       } catch { /* the exit matters more than the note */ }
+      // Runner-deaths fix (FLAWS 2026-08-11): SELF-stamp the forensic trail.
+      // The parent-side EXIT handler (teamproc) lives in the supervisor — and
+      // on this path the supervisor is DEAD, so nobody else is left to write
+      // the record; that's exactly how five watchdog deaths left zero EXIT
+      // lines and zero gui.log lines during the battle-test relaunch.
+      const home = opts.home ?? process.env.HOME;
+      if (home) {
+        const stamp = `[${new Date().toISOString()}] runner ${opts.seat} orphan-exit — supervisor ${ppid0} gone\n`;
+        try {
+          const p = join(home, ".crate", "logs", "runners", `${opts.seat}.log`);
+          mkdirSync(join(home, ".crate", "logs", "runners"), { recursive: true });
+          appendFileSync(p, stamp);
+        } catch { /* forensics only */ }
+        try {
+          appendFileSync(join(home, ".crate", "logs", "gui.log"), stamp);
+        } catch { /* forensics only */ }
+      }
       return;
     }
     const r = await runTurn(opts);

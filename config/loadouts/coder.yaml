@@ -36,5 +36,10 @@ policy:
     # one FIXED `.nmgate-wt/` parent. A plain path door opens exactly that dir
     # and nothing else — expressible on BOTH backends (Seatbelt subpath / bwrap
     # bind); a regex door has no bind-mount equivalent (T7-0, supersedes the
-    # P3-9 `<ref>-<pid>` regex door).
+    # P3-9 `<ref>-<pid>` regex door). The door is guaranteed to exist on both
+    # backends (bwrap mkdirs missing dir-doors at wall render; Seatbelt subpath
+    # matches not-yet-existing paths, so precheck's own mkdir creates it), and
+    # the shell gate resolves its worktree parent PHYSICALLY (precheck.sh
+    # `pwd -P`) so it lands on this exact door even when the rig is reached
+    # through a symlinked parent dir (nmgate-ro-mount).
     - "../.nmgate-wt"

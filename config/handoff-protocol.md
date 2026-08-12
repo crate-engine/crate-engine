@@ -29,7 +29,7 @@ Deliver the printed signal through **your adapter's reporting channel**:
 
 Always also update your own `state/<you>.md` after a handoff (status, Now, Next).
 
-## Handoff reference (mirrors `config/handoffs.yaml` — except [MERGE], which is hand-sent by the orchestrator and is not an agentctl handoff)
+## Handoff reference (mirrors `config/handoffs.yaml` — plus [MERGE], which the ENGINE routes mechanically on `gate_release`; it is hardcoded in agentctl, never hand-sent)
 
 | handoff        | from -> to               | signal           | when                          |
 |----------------|--------------------------|------------------|-------------------------------|
@@ -38,7 +38,7 @@ Always also update your own `state/<you>.md` after a handoff (status, Now, Next)
 | verdict        | reviewer/QA -> orchestrator | [VERDICT]     | a verifier's recorded verdict (`result=approve\|reject report="..."`) — records AND mails in one emit |
 | changes_needed | orchestrator -> coder    | [CHANGES_NEEDED] | review or QA failed; orchestrator emits ONE consolidated list |
 | approved       | orchestrator (the JOIN)  | [APPROVED]       | BOTH verdicts on record + green -- orchestrator emits the join, then holds for the human's go |
-| merge          | orchestrator -> coder    | [MERGE]          | the human's go -- orchestrator releases the merge (sent by hand, NOT an agentctl emit) |
+| merge          | engine -> coder          | [MERGE]          | the human's go -- the operator's `gate_release` emit mails the coder mechanically (hardcoded in agentctl; NEVER hand-sent) |
 | deployed       | coder -> orchestrator    | [DEPLOYED]       | merged to main, auto-deployed |
 | bugs_found     | tester -> orchestrator   | [BUGS_FOUND]     | functional bug found          |
 | fix_ready      | coder -> reviewer        | [FIX_READY]      | fix pushed to branch          |
@@ -63,9 +63,14 @@ joined transition (`approved` if both green, else ONE consolidated
 refuses them until BOTH verdicts are on record since the last `code_ready`.
 In a TEST-LED loop QA emits `bugs_found`/`verified` itself.
 
-[MERGE] is sent directly by the orchestrator into the coder's pane after the
-human's go -- it is not an agentctl handoff (it advances no state; the coder's
-subsequent `deployed` emit does). `approved` prints no delivery line.
+[MERGE] is a MECHANICAL gate_release→coder route (2026-08-11), never hand-sent:
+when the operator emits `gate_release` (GUI gate card or CLI, same route) on an
+armed gate, agentctl itself queues the merge order to the coder — maildir wake
+plus the `state/inbox/coder.md` mirror. It advances no state (the coder's
+subsequent `deployed` emit does); a repeat release is absorbed
+(`GATE_RELEASE_ABSORBED`), and a hand-sent duplicate `[MERGE]` via `deliver` is
+absorbed when the order is provably already on file. Orchestrator: do NOT relay
+`[MERGE]`. `approved` prints no delivery line.
 
 ## State sequence (enforced by agentctl)
 

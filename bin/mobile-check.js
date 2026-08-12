@@ -13,13 +13,24 @@ const os = require('os');
 
 // P4-11: resolve a browser stack without requiring the TARGET repo to ship
 // playwright. Prefer the repo's own `playwright`; fall back to `playwright-core`
-// (in-box via the engine core's node_modules on NODE_PATH) plus a chromium
-// executable found in the playwright browser cache (macOS + Linux roots).
+// (in-box, from the engine core's node_modules) plus a chromium executable
+// found in the playwright browser cache (macOS + Linux roots).
+//
+// FLAWS "browser-tooling" (tiering proof 2026-07-25): the old fallback was a
+// bare require('playwright-core') that only resolved when NODE_PATH carried
+// core/node_modules — a seat invoking this via a rig's .agents/bin symlink
+// has no NODE_PATH and died MODULE_NOT_FOUND. createRequire against the
+// engine core (found from THIS file's realpath: <brain>/bin/ → ../core/)
+// makes resolution deterministic wherever the symlink lives.
+const { createRequire } = require('module');
 let chromium, devices, execPath;
 try {
   ({ chromium, devices } = require('playwright'));
 } catch {
-  ({ chromium, devices } = require('playwright-core'));
+  const coreRequire = createRequire(
+    path.join(path.dirname(fs.realpathSync(__filename)), '..', 'core', 'package.json')
+  );
+  ({ chromium, devices } = coreRequire('playwright-core'));
   const roots = [
     path.join(os.homedir(), 'Library', 'Caches', 'ms-playwright'), // macOS
     path.join(os.homedir(), '.cache', 'ms-playwright'), // Linux

@@ -50,6 +50,12 @@ export function regexEscapePath(p: string): string {
  *   rig is macOS-only, because the bwrap backend cannot express a regex as a
  *   bind mount (it SKIPS + reports them). No shipped manifest uses one — the
  *   nm-gate worktrees moved to a fixed `../.nmgate-wt` subpath door (T7-0).
+ *
+ * Project-relative doors expand against the REAL projectRoot (both launchers
+ * realpath it first — Seatbelt matches resolved paths, bwrap binds host
+ * paths), so the shell side must derive matching paths physically too:
+ * precheck.sh/nm-gate `pwd -P` their repo root so the `../.nmgate-wt` parent
+ * is the same real-path sibling this expansion opens (nmgate-ro-mount).
  */
 export function renderDoor(door: string, paths: SandboxPaths): string {
   if (door.startsWith("regex:")) {
