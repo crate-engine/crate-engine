@@ -170,3 +170,33 @@ test("runTurn holds active.lock while the harness runs, clears it after", async 
     rmSync(p, { recursive: true, force: true });
   }
 });
+
+// ── eviction (blend relaunch lesson, live proof 2026-08-12) ──
+
+test("evictSeatTty: a relaunch can never reattach a dying pane, and its late exit never unregisters the successor", async () => {
+  const p = tmpProject();
+  try {
+    const { startSeatTty, evictSeatTty, liveTty } = await import("../src/ptyseat.js");
+    const a = await startSeatTty({ projectRoot: p, seat: "coder", agent: "pi", blended: true, argvOverride: ["sleep", "5"] });
+    assert.ok(a.ok && !a.reattached, "first spawn is fresh");
+    // Evict: gone from the registry NOW, while the process is still dying —
+    // the exact window where the D12-refresh successor spawns.
+    assert.equal(evictSeatTty(p, "coder"), true);
+    assert.equal(liveTty(p, "coder"), undefined, "evicted: a successor must not find the dying pane");
+    const b = await startSeatTty({ projectRoot: p, seat: "coder", agent: "pi", blended: true, argvOverride: ["sleep", "5"] });
+    assert.ok(b.ok && !b.reattached, "the successor spawns FRESH — the refresh restart is visible immediately");
+    // The evicted pane's LATE exit must not unregister the successor (guarded delete).
+    if (a.ok) {
+      await new Promise<void>((res) => {
+        if (a.tty.exited) return res();
+        a.tty.subscribe((ev) => {
+          if (ev.exit) res();
+        });
+      });
+    }
+    assert.ok(b.ok && liveTty(p, "coder") === b.tty, "late exit of the evicted pane left the successor registered");
+    evictSeatTty(p, "coder"); // cleanup: kill the successor's stub process too
+  } finally {
+    rmSync(p, { recursive: true, force: true });
+  }
+});

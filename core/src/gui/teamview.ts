@@ -3,9 +3,12 @@
 // the /team page renders. READ-ONLY (the viewer is glass, never a control
 // surface at T2). Two lenses come from ONE capture: the raw jsonl stream
 // (Engineer) and a narrated digest derived from it (Narrated).
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
-import { isAttended } from "../runner.js";
+import { blendEligible, isBlended, sessionUsage, type BlendCli } from "../blend.js";
+import { claudeProjectDir, liveTty } from "../ptyseat.js";
+import { isAttended, sessionFile } from "../runner.js";
 import { parseRigConf, RIG_PREFIX } from "../staffing.js";
 import { SEATS } from "../manifest.js";
 import { gaugeFrom, type ContextGauge } from "./context.js";
@@ -124,6 +127,17 @@ export interface SeatView {
   unread: number;
   /** a human holds this seat's wheel — deliveries are paused. */
   attended: boolean;
+  /** Blended pane (PDR S2): this seat is flagged BLEND_<PREFIX>=1 with an
+   * eligible agent — the pane IS its live session; no wheel, no hold. */
+  blended?: boolean;
+  /** blended only: the live session file grew in the last few seconds. */
+  responding?: boolean;
+  /** blended only: ISO of the session file's last growth (the idle chip). */
+  lastOutputAt?: string;
+  /** blended only: the live PTY's spawn epoch — the client reopens its
+   * multiplexed stream when this changes (a respawn is a NEW PTY the
+   * connect-time-enumerated SSE does not carry). */
+  ptyStartedAt?: number;
 }
 
 export interface TeamView {
@@ -331,6 +345,43 @@ function readTurn(path: string): TurnView {
   };
 }
 
+/** A blended seat's live-session lens: gauge + responding + last output,
+ * read from the session file the delivery loop verified against (there are
+ * NO headless turn files to read). Claude's path is exactly derivable from
+ * the persisted sessionFile; pi/codex gauges degrade honestly to none here
+ * (the pane still shows the live TUI) until their discovery is wired in.
+ * Everything is best-effort — a missing/foreign session file yields {}. */
+function blendedSeatView(
+  projectRoot: string,
+  seat: string,
+  cli: BlendCli | undefined,
+  model: string | undefined,
+  home: string,
+): { gauge?: ContextGauge; responding?: boolean; lastOutputAt?: string } {
+  if (cli !== "claude") return {};
+  try {
+    const j = JSON.parse(readFileSync(sessionFile(projectRoot, seat), "utf8")) as { agent?: string; sessionId?: string };
+    if (j.agent !== "claude" || !j.sessionId) return {};
+    let root = projectRoot;
+    try {
+      root = realpathSync(projectRoot);
+    } catch {
+      /* keep as given */
+    }
+    const p = join(claudeProjectDir(root, home), `${j.sessionId}.jsonl`);
+    const mtimeMs = statSync(p).mtimeMs;
+    const usage = sessionUsage(readFileSync(p, "utf8"));
+    const gauge = gaugeFrom(usage?.inputTokens, model); // absent usage → no gauge, never a fake 0%
+    return {
+      ...(gauge ? { gauge } : {}),
+      responding: Date.now() - mtimeMs < 3000,
+      lastOutputAt: new Date(mtimeMs).toISOString(),
+    };
+  } catch {
+    return {};
+  }
+}
+
 function stateStatus(projectRoot: string, seat: string): { status?: string; when?: string } {
   const f = join(projectRoot, ".agents", "state", `${seat}.md`);
   if (!existsSync(f)) return {};
@@ -340,7 +391,7 @@ function stateStatus(projectRoot: string, seat: string): { status?: string; when
   return { ...(status ? { status } : {}), ...(now ? { when: now } : {}) };
 }
 
-export function readTeamView(projectRoot: string, maxTurnsPerSeat = 5): TeamView {
+export function readTeamView(projectRoot: string, maxTurnsPerSeat = 5, home: string = homedir()): TeamView {
   const confFile = join(projectRoot, ".agents", "rig.conf");
   const conf = existsSync(confFile) ? parseRigConf(readFileSync(confFile, "utf8")) : {};
   const titles: Record<string, string> = {
@@ -372,15 +423,31 @@ export function readTeamView(projectRoot: string, maxTurnsPerSeat = 5): TeamView
       /* no inbox yet */
     }
     const attended = isAttended(projectRoot, seat);
+    // Blended pane (PDR S2): flagged + eligible = the pane is a live session.
+    // The flag alone is not enough — an ineligible agent fell back to the
+    // headless path at boot, and the page must not render a phantom pane.
+    const agentRaw = conf[agentKey] || "pi";
+    const el = blendEligible(agentRaw);
+    const blended = isBlended(conf, seat) && el.ok;
+    const bv = blended ? blendedSeatView(projectRoot, seat, el.ok ? el.cli : undefined, model, home) : {};
+    const pty = blended ? liveTty(projectRoot, seat) : undefined;
     return {
-      seat, title: titles[seat]!, agent: conf[agentKey] || "pi",
+      seat, title: titles[seat]!, agent: agentRaw,
       ...(model ? { model } : {}),
       unread,
       attended,
+      ...(blended
+        ? {
+            blended: true,
+            responding: bv.responding ?? false,
+            ...(bv.lastOutputAt ? { lastOutputAt: bv.lastOutputAt } : {}),
+            ...(pty ? { ptyStartedAt: pty.startedAtMs } : {}),
+          }
+        : {}),
       turns,
       ...(st.status ? { status: st.status } : {}),
       ...(st.when ? { lastActivity: st.when } : {}),
-      ...(gauge ? { gauge } : {}),
+      ...(blended ? (bv.gauge ? { gauge: bv.gauge } : {}) : gauge ? { gauge } : {}),
     };
   });
   return { project: conf.PROJECT || projectRoot.split("/").pop()!, seats };

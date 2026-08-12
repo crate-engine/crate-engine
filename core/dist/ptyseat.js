@@ -182,6 +182,58 @@ export function repointSessionAfterTty(projectRoot, seat, agentArg, sinceMs, hom
     writeFileSync(f, JSON.stringify({ agent, sessionId: sid }));
     return sid;
 }
+/** Blended-pane (PDR blended-pane, S1): the quiet-composer gate is pure
+ * keystroke-timestamp inference — write() is the ONE human chokepoint (web
+ * cockpit xterm → POST /api/tty/input → here), so no screen parsing is ever
+ * needed. composerDirty tracks a likely half-typed draft: printable bytes set
+ * it; CR/Ctrl+C/Esc clear it (submit/cancel empties the composer). CSI
+ * sequences (arrow keys etc.) are stripped first — cursor movement is not
+ * typing, and counting the 'A' of ESC[A as a draft would demand the long
+ * quiet for every arrow press. */
+export function updateComposerDirty(prev, data) {
+    const text = data.toString("latin1").replace(/\x1b\[[0-9;?]*[A-Za-z~]/g, "\x1b");
+    let dirty = prev;
+    for (let i = 0; i < text.length; i++) {
+        const c = text.charCodeAt(i);
+        if (c === 0x0d || c === 0x0a || c === 0x03 || c === 0x1b)
+            dirty = false;
+        else if (c >= 0x20 && c !== 0x7f)
+            dirty = true;
+    }
+    return dirty;
+}
+/** Blended pi seats crash under old system node (live probe, superman
+ * 2026-08-12: pi 0.84.1 + node v20 dies at import — undici
+ * markAsUncloneable TypeError; works under node >= 22). Pick the newest
+ * nvm-installed node >= 22 so the spawn env can prepend its bin. Pure over
+ * an injected version list. */
+export function pickPiNodeVersion(versions) {
+    let best;
+    let bestKey = [];
+    for (const v of versions) {
+        const m = v.match(/^v(\d+)\.(\d+)\.(\d+)$/);
+        if (!m)
+            continue;
+        const key = [Number(m[1]), Number(m[2]), Number(m[3])];
+        if (key[0] < 22)
+            continue;
+        if (!best || key[0] > bestKey[0] || (key[0] === bestKey[0] && (key[1] > bestKey[1] || (key[1] === bestKey[1] && key[2] > bestKey[2])))) {
+            best = v;
+            bestKey = key;
+        }
+    }
+    return best;
+}
+function piNodeBinDir(home) {
+    const base = join(home, ".nvm", "versions", "node");
+    try {
+        const v = pickPiNodeVersion(readdirSync(base));
+        return v ? join(base, v, "bin") : undefined;
+    }
+    catch {
+        return undefined; // no nvm — the system node carries it (or pi refuses honestly)
+    }
+}
 const REPLAY_CAP = 256 * 1024;
 const registry = new Map();
 const keyOf = (projectRoot, seat) => `${projectRoot}|${seat}`;
@@ -206,9 +258,12 @@ export function liveTtyList(projectRoot) {
 export async function startSeatTty(opts) {
     const { projectRoot, seat } = opts;
     const agent = normalizeAgent(opts.agent);
+    const blended = opts.blended === true;
     const existing = liveTty(projectRoot, seat);
     if (existing)
         return { ok: true, tty: existing, reattached: true };
+    // Kept for blended too: it protects the transition window while a headless
+    // turn is still mid-flight on a just-flagged seat.
     if (isTurnActive(projectRoot, seat))
         return { ok: false, busy: true };
     let argv;
@@ -218,17 +273,22 @@ export async function startSeatTty(opts) {
     // inside the wall is refused by the OS. The TTY door is the same session
     // behind the same wall, so it carries the same marker.
     let walled = false;
-    try {
-        // The SAME wall the runner renders — cwd = project root, same doors,
-        // same refusal physics. Interactivity and containment are independent.
-        const wall = resolveHeadlessWall(projectRoot, seat, agent);
-        walled = wall !== undefined;
-        const sessionId = ttySessionId(projectRoot, seat, agent);
-        const inner = buildInteractiveInvocation(agent, { sessionId, model: opts.model, walled, seat });
-        argv = wall ? [...wall.argvPrefix, ...inner] : inner;
+    if (opts.argvOverride) {
+        argv = opts.argvOverride; // tests: a spawnable stub, no wall to render
     }
-    catch (e) {
-        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    else {
+        try {
+            // The SAME wall the runner renders — cwd = project root, same doors,
+            // same refusal physics. Interactivity and containment are independent.
+            const wall = resolveHeadlessWall(projectRoot, seat, agent);
+            walled = wall !== undefined;
+            const sessionId = ttySessionId(projectRoot, seat, agent);
+            const inner = buildInteractiveInvocation(agent, { sessionId, model: opts.model, walled, seat });
+            argv = wall ? [...wall.argvPrefix, ...inner] : inner;
+        }
+        catch (e) {
+            return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
     }
     let ptyLib;
     try {
@@ -244,6 +304,21 @@ export async function startSeatTty(opts) {
     const cols = opts.cols ?? 120;
     const rows = opts.rows ?? 32;
     const startedAtMs = Date.now();
+    // Union of both doors' stamps: seatEnv carries CRATE_SEAT (emit-identity —
+    // a TTY session IS the seat's session) and CRATE_WALLED rides when the wall
+    // is up (agent-browser shim keys --no-sandbox off it inside the wall).
+    const env = {
+        ...seatEnv(projectRoot, seat),
+        TERM: "xterm-256color",
+        ...(walled ? { CRATE_WALLED: "1" } : {}),
+    };
+    if (blended && agent === "pi") {
+        // Live probe (superman, 2026-08-12): pi's TUI crashes at import under the
+        // system node v20; a blended pi seat must find node >= 22 first on PATH.
+        const nodeBin = piNodeBinDir(opts.home ?? homedir());
+        if (nodeBin)
+            env.PATH = `${nodeBin}:${env.PATH ?? ""}`;
+    }
     let proc;
     try {
         proc = ptyLib.spawn(argv[0], argv.slice(1), {
@@ -251,7 +326,7 @@ export async function startSeatTty(opts) {
             cols,
             rows,
             cwd: projectRoot,
-            env: { ...seatEnv(projectRoot, seat), TERM: "xterm-256color", ...(walled ? { CRATE_WALLED: "1" } : {}) },
+            env,
         });
     }
     catch (e) {
@@ -275,11 +350,25 @@ export async function startSeatTty(opts) {
         startedAtMs,
         cols,
         rows,
+        blended,
+        composerDirty: false,
         write: (d) => {
+            // The HUMAN chokepoint (cockpit xterm → /api/tty/input → here): stamp
+            // the quiet-composer clock before the bytes reach the PTY.
+            tty.lastHumanInputMs = Date.now();
+            tty.composerDirty = updateComposerDirty(tty.composerDirty, d);
             try {
                 proc.write(d.toString("utf8"));
             }
             catch { /* exited between checks */ }
+        },
+        inject: (d) => {
+            // The ENGINE door: never stamps the human clock — a delivery must not
+            // push its own quiet window away or read as a half-typed draft.
+            try {
+                proc.write(typeof d === "string" ? d : d.toString("utf8"));
+            }
+            catch { /* exited */ }
         },
         resize: (c, r) => {
             tty.cols = c;
@@ -314,21 +403,47 @@ export async function startSeatTty(opts) {
     });
     proc.onExit(({ exitCode }) => {
         tty.exited = { code: exitCode };
-        try {
-            rmSync(attendedFile(projectRoot, seat));
+        if (blended) {
+            // No hand-back seam: one door, nothing forked — the engine tracked the
+            // session id continuously, so no re-point. The blend supervisor reads
+            // this event (subscribe) and decides respawn; the stamp is the record.
+            stamp(`blended ${agent} session exited (exit ${exitCode}) — the blend supervisor decides respawn`);
         }
-        catch { /* stale-safe */ }
-        const sid = repointSessionAfterTty(projectRoot, seat, agent, startedAtMs - 2000, opts.home);
-        stamp(`operator left — native ${agent} TUI closed (exit ${exitCode}); deliveries resume` +
-            (sid ? `; session re-pointed to ${sid.slice(0, 8)}… (the human-driven fork)` : ""));
+        else {
+            try {
+                rmSync(attendedFile(projectRoot, seat));
+            }
+            catch { /* stale-safe */ }
+            const sid = repointSessionAfterTty(projectRoot, seat, agent, startedAtMs - 2000, opts.home);
+            stamp(`operator left — native ${agent} TUI closed (exit ${exitCode}); deliveries resume` +
+                (sid ? `; session re-pointed to ${sid.slice(0, 8)}… (the human-driven fork)` : ""));
+        }
         for (const cb of subs)
             cb({ exit: { code: exitCode } });
-        registry.delete(keyOf(projectRoot, seat));
+        // Guarded delete (blend relaunch lesson, live 2026-08-12): after an
+        // evictSeatTty a SUCCESSOR pane may already own this key — a late exit
+        // of the old process must never unregister the new session.
+        if (registry.get(keyOf(projectRoot, seat)) === tty)
+            registry.delete(keyOf(projectRoot, seat));
     });
-    // The hold + the honest record: the marker file is what the runner reads
-    // (filesystem-visible across the server/runner process boundary).
-    writeFileSync(attendedFile(projectRoot, seat), JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
-    stamp(`operator attended — native ${agent} TUI open (the real ${agent}, inside the seat's wall); deliveries hold`);
+    if (blended) {
+        // A blended seat is NEVER held — a stale attended marker (crashed wheel
+        // owner) would silently freeze its deliveries via runnerLoop's hold check.
+        if (existsSync(attendedFile(projectRoot, seat))) {
+            try {
+                rmSync(attendedFile(projectRoot, seat));
+                stamp(`stale attended marker cleared — blended seats are never held`);
+            }
+            catch { /* already gone */ }
+        }
+        stamp(`blended ${agent} session opened (engine-owned PTY; team mail is delivered into this live session)`);
+    }
+    else {
+        // The hold + the honest record: the marker file is what the runner reads
+        // (filesystem-visible across the server/runner process boundary).
+        writeFileSync(attendedFile(projectRoot, seat), JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+        stamp(`operator attended — native ${agent} TUI open (the real ${agent}, inside the seat's wall); deliveries hold`);
+    }
     registry.set(keyOf(projectRoot, seat), tty);
     return { ok: true, tty, reattached: false };
 }
@@ -338,6 +453,30 @@ export function stopSeatTty(projectRoot, seat) {
     if (!t)
         return false;
     t.kill();
+    return true;
+}
+/**
+ * Evict a seat's TTY NOW: kill it AND drop it from the registry immediately,
+ * not on the async exit event. The blend relaunch lesson (live proof,
+ * 2026-08-12): a D12 refresh stops the old supervisor and starts its
+ * successor in the SAME tick — the successor's eager spawn found the dying
+ * pane still registered, REATTACHED to it, and the promised visible fresh
+ * pane only appeared at the next delivery. Eviction closes that window; the
+ * old process still dies by kill(), and onExit's guarded delete keeps a late
+ * exit from unregistering the successor.
+ */
+export function evictSeatTty(projectRoot, seat) {
+    const k = keyOf(projectRoot, seat);
+    const t = registry.get(k);
+    if (!t)
+        return false;
+    registry.delete(k);
+    try {
+        t.kill();
+    }
+    catch {
+        /* already gone */
+    }
     return true;
 }
 //# sourceMappingURL=ptyseat.js.map

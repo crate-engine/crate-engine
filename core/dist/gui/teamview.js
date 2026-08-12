@@ -3,9 +3,12 @@
 // the /team page renders. READ-ONLY (the viewer is glass, never a control
 // surface at T2). Two lenses come from ONE capture: the raw jsonl stream
 // (Engineer) and a narrated digest derived from it (Narrated).
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
-import { isAttended } from "../runner.js";
+import { blendEligible, isBlended, sessionUsage } from "../blend.js";
+import { claudeProjectDir, liveTty } from "../ptyseat.js";
+import { isAttended, sessionFile } from "../runner.js";
 import { parseRigConf, RIG_PREFIX } from "../staffing.js";
 import { SEATS } from "../manifest.js";
 import { gaugeFrom } from "./context.js";
@@ -289,6 +292,40 @@ function readTurn(path) {
         live: liveTail(events),
     };
 }
+/** A blended seat's live-session lens: gauge + responding + last output,
+ * read from the session file the delivery loop verified against (there are
+ * NO headless turn files to read). Claude's path is exactly derivable from
+ * the persisted sessionFile; pi/codex gauges degrade honestly to none here
+ * (the pane still shows the live TUI) until their discovery is wired in.
+ * Everything is best-effort — a missing/foreign session file yields {}. */
+function blendedSeatView(projectRoot, seat, cli, model, home) {
+    if (cli !== "claude")
+        return {};
+    try {
+        const j = JSON.parse(readFileSync(sessionFile(projectRoot, seat), "utf8"));
+        if (j.agent !== "claude" || !j.sessionId)
+            return {};
+        let root = projectRoot;
+        try {
+            root = realpathSync(projectRoot);
+        }
+        catch {
+            /* keep as given */
+        }
+        const p = join(claudeProjectDir(root, home), `${j.sessionId}.jsonl`);
+        const mtimeMs = statSync(p).mtimeMs;
+        const usage = sessionUsage(readFileSync(p, "utf8"));
+        const gauge = gaugeFrom(usage?.inputTokens, model); // absent usage → no gauge, never a fake 0%
+        return {
+            ...(gauge ? { gauge } : {}),
+            responding: Date.now() - mtimeMs < 3000,
+            lastOutputAt: new Date(mtimeMs).toISOString(),
+        };
+    }
+    catch {
+        return {};
+    }
+}
 function stateStatus(projectRoot, seat) {
     const f = join(projectRoot, ".agents", "state", `${seat}.md`);
     if (!existsSync(f))
@@ -298,7 +335,7 @@ function stateStatus(projectRoot, seat) {
     const now = text.match(/^Now:\s*(.+)$/m)?.[1]?.trim();
     return { ...(status ? { status } : {}), ...(now ? { when: now } : {}) };
 }
-export function readTeamView(projectRoot, maxTurnsPerSeat = 5) {
+export function readTeamView(projectRoot, maxTurnsPerSeat = 5, home = homedir()) {
     const confFile = join(projectRoot, ".agents", "rig.conf");
     const conf = existsSync(confFile) ? parseRigConf(readFileSync(confFile, "utf8")) : {};
     const titles = {
@@ -331,15 +368,31 @@ export function readTeamView(projectRoot, maxTurnsPerSeat = 5) {
             /* no inbox yet */
         }
         const attended = isAttended(projectRoot, seat);
+        // Blended pane (PDR S2): flagged + eligible = the pane is a live session.
+        // The flag alone is not enough — an ineligible agent fell back to the
+        // headless path at boot, and the page must not render a phantom pane.
+        const agentRaw = conf[agentKey] || "pi";
+        const el = blendEligible(agentRaw);
+        const blended = isBlended(conf, seat) && el.ok;
+        const bv = blended ? blendedSeatView(projectRoot, seat, el.ok ? el.cli : undefined, model, home) : {};
+        const pty = blended ? liveTty(projectRoot, seat) : undefined;
         return {
-            seat, title: titles[seat], agent: conf[agentKey] || "pi",
+            seat, title: titles[seat], agent: agentRaw,
             ...(model ? { model } : {}),
             unread,
             attended,
+            ...(blended
+                ? {
+                    blended: true,
+                    responding: bv.responding ?? false,
+                    ...(bv.lastOutputAt ? { lastOutputAt: bv.lastOutputAt } : {}),
+                    ...(pty ? { ptyStartedAt: pty.startedAtMs } : {}),
+                }
+                : {}),
             turns,
             ...(st.status ? { status: st.status } : {}),
             ...(st.when ? { lastActivity: st.when } : {}),
-            ...(gauge ? { gauge } : {}),
+            ...(blended ? (bv.gauge ? { gauge: bv.gauge } : {}) : gauge ? { gauge } : {}),
         };
     });
     return { project: conf.PROJECT || projectRoot.split("/").pop(), seats };

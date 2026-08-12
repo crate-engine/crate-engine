@@ -54,6 +54,17 @@ export interface SeatView {
     unread: number;
     /** a human holds this seat's wheel — deliveries are paused. */
     attended: boolean;
+    /** Blended pane (PDR S2): this seat is flagged BLEND_<PREFIX>=1 with an
+     * eligible agent — the pane IS its live session; no wheel, no hold. */
+    blended?: boolean;
+    /** blended only: the live session file grew in the last few seconds. */
+    responding?: boolean;
+    /** blended only: ISO of the session file's last growth (the idle chip). */
+    lastOutputAt?: string;
+    /** blended only: the live PTY's spawn epoch — the client reopens its
+     * multiplexed stream when this changes (a respawn is a NEW PTY the
+     * connect-time-enumerated SSE does not carry). */
+    ptyStartedAt?: number;
 }
 export interface TeamView {
     project: string;
@@ -81,4 +92,4 @@ export declare function streamEvent(raw: string): StreamEvent | undefined;
 /** Reconstruct epoch ms from a turn file's name — shared with the tailer's
  * seam events (the filename IS the turn id). */
 export declare function turnStartMs(name: string): number | undefined;
-export declare function readTeamView(projectRoot: string, maxTurnsPerSeat?: number): TeamView;
+export declare function readTeamView(projectRoot: string, maxTurnsPerSeat?: number, home?: string): TeamView;

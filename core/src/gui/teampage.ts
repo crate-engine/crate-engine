@@ -190,6 +190,8 @@ grid-template-rows:var(--r1,1fr) 1px var(--r2,1fr)}
 /* held-wheel truth chip: quiet when nothing waits, amber when mail queues */
 .pausechip{font:600 9.5px/1 var(--mono);letter-spacing:.06em;color:var(--faint);white-space:nowrap}
 .pausechip.hot{color:var(--amber)}
+/* blended pane (PDR S2): the permanent live session's read-only tag */
+.blendtag{font:600 8.5px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ok);border:1px solid var(--ok);padding:3px 6px;white-space:nowrap}
 /* dead-runner distress: the masthead must never hide a partially-down team */
 .downchip{font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--bad);white-space:nowrap}
 /* D12 context gauge (fuel gauge per seat) */
@@ -478,7 +480,7 @@ async function tryStartTty(seat){
   if(r.error){delete TTYS[seat];refresh();await uiNotice(r.error);return;}
   attachTty(seat);
 }
-function attachTty(seat){
+function attachTty(seat,skipRefresh){
   const t=TTYS[seat];if(!t)return;
   t.waiting=false;
   const wrap=document.createElement("div");wrap.className="ttywrap";
@@ -507,7 +509,7 @@ function attachTty(seat){
     fetch(api("/api/tty/input"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat,data:b64enc(s)})}).catch(()=>{});
   },8);});
   syncTtyStream(); // ONE multiplexed stream for every wheel (the 6-connection browser cap)
-  refresh(); // repaint puts the host div in place; mountTtys attaches the terminal
+  if(!skipRefresh)refresh(); // repaint puts the host div in place; mountTtys attaches the terminal
 }
 // ── the shared wheel stream: browsers cap ~6 connections per host, and one
 // SSE per wheel + the main stream FROZE the whole cockpit at 5 wheels
@@ -523,7 +525,16 @@ function syncTtyStream(){
     const t=TTYS[d.seat];if(!t||!t.term)return; // server-side wheel we don't hold — ignore
     if(d.replay!==undefined){t.term.reset();t.term.write(b64dec(d.replay));return;} // (re)connect replaces, never duplicates
     if(d.d)t.term.write(b64dec(d.d));
-    if(d.exit!==undefined){teardownTty(d.seat);refresh();uiNotice("The "+d.seat+" agent session ended (exit "+d.exit+") — keys returned, deliveries resume.");}
+    if(d.exit!==undefined){
+      if(t.blended){
+        // Blended pane: the terminal STAYS — the engine respawns the session
+        // (lazily at the next delivery) and the same pane paints the respawn
+        // when its new PTY generation reopens the stream.
+        t.term.write("\\r\\n\\x1b[2m[session ended (exit "+d.exit+") — the engine respawns it on the next delivery]\\x1b[0m\\r\\n");
+        return;
+      }
+      teardownTty(d.seat);refresh();uiNotice("The "+d.seat+" agent session ended (exit "+d.exit+") — keys returned, deliveries resume.");
+    }
   };
 }
 function teardownTty(seat){
@@ -688,6 +699,20 @@ function idleChip(s){
   return '<span class="idlechip">idle since '+end.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",hour12:false})+'</span>';
 }
 function tileHead(s){
+  if(s.blended){
+    // Blended pane (PDR S2): no wheel button, no paused chip — nothing holds
+    // this seat, the pane IS its live session and typing is always allowed.
+    // Chips: queued mail (the engine yields to the human — it waits for a
+    // quiet composer), responding pulse / idle-since from the live session
+    // file, gauge (click = a VISIBLE restart), and the read-only tag.
+    const q=(s.unread||0)>0?'<span class="pausechip hot" title="Mail queued — the engine delivers when your composer goes quiet (it yields to you)">✉ '+s.unread+' queued</span>':'';
+    const act=s.responding?'<span class="working"><span class="wd"></span><span class="rtext">responding…</span></span>'
+      :(s.lastOutputAt?'<span class="idlechip">idle since '+new Date(s.lastOutputAt).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",hour12:false})+'</span>':'');
+    const agent='<span class="tagent" data-restaff="'+s.seat+'" title="Change this seat\\'s agent (applies to this project)">'+esc(s.agent)+(s.model?"/"+esc(s.model.split("/").pop()):"")+'</span>';
+    return '<div class="thead"><span class="tname"><span class="dot '+(s.responding?"run":(s.ptyStartedAt?"ok":"idle"))+'"></span>'+esc(s.title)+'</span>'
+      +'<span class="thead-r">'+q+gaugeHtml(s.gauge,s.seat)+act+agent
+      +'<span class="blendtag" title="Blended pane — one live session in an engine-owned PTY; team mail is delivered into it, and you can type any time">BLENDED</span></span></div>';
+  }
   const run=s.turns&&s.turns.find(t=>t.ok===null);
   const right=run?workingSpan(run)
     :idleChip(s)+'<span class="tagent" data-restaff="'+s.seat+'" title="Change this seat\\'s agent (applies to this project)">'+esc(s.agent)+(s.model?"/"+esc(s.model.split("/").pop()):"")+'</span>';
@@ -772,6 +797,12 @@ function renderTile(s,slot){
       +gatePanelHtml()
       +'<div class="chatin"><input id="chatbox" placeholder="'+ph+'" autocomplete="off"><button id="chatsend">Send</button></div></div></div>';
   }
+  if(s.blended){
+    // Flagged but no live PTY yet (team not booted): say so honestly instead
+    // of rendering a phantom feed — the pane goes live at boot.
+    return '<div class="tile'+cls+'" data-seat="'+s.seat+'">'+tileHead(s)
+      +'<div class="ttyhost"><div class="ttywait">blended pane — the live session opens when the team boots (Team menu → Boot / Resume)</div></div></div>';
+  }
   const status=s.status?'<div class="tstatus"><b>'+esc(s.status)+'</b> · '+esc(s.lastActivity||"")+'</div>':'';
   let feed;
   // 2c: with the stream live, the pane renders its buffer — continuous
@@ -819,6 +850,16 @@ async function refresh(){
       fetch(api("/api/team/status"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()).catch(()=>null),
     ]);
     CHAT=cr.messages||[];GATES=gr.gates||[];SEATSVIEW=tr.seats||[];PREVIEWS=pv.previews||[];
+    // Blended panes auto-attach (PDR S2): the SERVER owns the PTY lifecycle;
+    // the client is purely viewer + keyboard (stream-all + /api/tty/input —
+    // no /api/tty/start). Attach once the live PTY exists; when its spawn
+    // epoch changes (a respawn is a NEW PTY the connect-time-enumerated SSE
+    // does not carry), reopen the shared stream so the replay repaints.
+    (tr.seats||[]).forEach(s=>{
+      if(!s.blended||!s.ptyStartedAt)return;
+      if(!TTYS[s.seat]){TTYS[s.seat]={seat:s.seat,waiting:false,blended:true,gen:s.ptyStartedAt};attachTty(s.seat,true);}
+      else if(TTYS[s.seat].gen!==s.ptyStartedAt){TTYS[s.seat].gen=s.ptyStartedAt;syncTtyStream();}
+    });
     renderLoopChip(lp&&lp.narration);
     // dead-runner distress (FLAWS 2026-08-11: four runners died silently and
     // the cockpit showed no distress): booted team with dead seats = red chip.
@@ -1114,7 +1155,8 @@ async function renderTeamMenu(){
   let h='<h3>Team</h3><div class="csub">'+(ps.booted?alive+'/5 seat runners alive (GUI-owned)':'not booted — the GUI can boot it')+'</div>';
   // per-seat lifecycle rows (boot lights these up)
   h+=(ps.seats||[]).map(s=>'<div class="crow">'+(s.alive?'<span class="wsdot live"></span>':'<span class="wsdot gone"></span>')
-    +'<div style="flex:1;font:600 11px/1.2 var(--mono);letter-spacing:.08em;text-transform:uppercase">'+esc(s.seat)+'</div>'
+    +'<div style="flex:1;font:600 11px/1.2 var(--mono);letter-spacing:.08em;text-transform:uppercase">'+esc(s.seat)
+    +(s.mode==="blended"?' <span style="color:var(--ok);font-size:9px">· blended pane (engine-owned session)</span>':'')+'</div>'
     +'<button class="crefresh" data-relaunch="'+esc(s.seat)+'">Relaunch</button></div>').join("");
   h+='<div class="crow"><div style="flex:1"><div style="font:600 11px/1.3 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim)">Gates pending</div>'
     +'<div style="font:400 11px/1.4 var(--mono);color:var(--faint)">'+(tasks.length?tasks.map(esc).join(", "):"none")+'</div></div></div>';

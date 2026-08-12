@@ -76,6 +76,11 @@ export interface RunnerLoopOpts extends RunTurnOpts {
     /** Where the orphan self-stamp lands (~/.crate/logs); defaults to $HOME.
      * Injectable so tests never write the developer's real ~/.crate. */
     home?: string;
+    /** Blended-pane seam (PDR blended-pane, S1): replace the headless turn
+     * executor while inheriting this loop's machinery verbatim — fs.watch wake,
+     * attended hold, retry counting, dead-letter after maxRetries, backoff. A
+     * blended seat's "turn" is a verified delivery into its live PTY session. */
+    runTurnImpl?: (opts: RunTurnOpts) => Promise<TurnResult>;
 }
 /** The seat's standing loop: watch → turn → ack/retry → watch. */
 export declare function runnerLoop(opts: RunnerLoopOpts): Promise<void>;

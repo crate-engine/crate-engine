@@ -398,7 +398,7 @@ export async function runnerLoop(opts) {
                 }
                 return;
             }
-            const r = await runTurn(opts);
+            const r = await (opts.runTurnImpl ?? runTurn)(opts);
             // D12 auto-refresh: a completed turn just wrote fresh state, so dropping
             // the session here is lossless. Only when opted-in AND over the ceiling.
             if (opts.contextAutoRefresh && r.ok && !r.idle && r.usage) {

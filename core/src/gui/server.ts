@@ -10,6 +10,7 @@ import { stringify } from "yaml";
 import { executeAttach, listDirs, makeDir, planAttach, resolveTarget, type AttachPlan } from "../attach.js";
 import { agentLabel, agentProblem, agentStatus, binaryFor, whichBin } from "../detect.js";
 import { heavyDeps, installHeavyDeps, runDoctor } from "../doctor.js";
+import { isBlended } from "../blend.js";
 import { autoReviveEnabled, makeAutoReviver, type Liveness, type ReviveNote } from "../health.js";
 import { deriveBrainRoot } from "../launcher.js";
 import { loadLoadout, loadoutPath, SEATS, type Seat } from "../manifest.js";
@@ -236,6 +237,9 @@ function staffingCatalog(state: GuiState, detectPath?: string) {
     return {
       seat,
       title: titles[seat],
+      // Blended pane (PDR S2): read-only indication — the flag is hand-edited
+      // rig.conf (BLEND_<PREFIX>=1); flipping defaults is the operator's S4 gate.
+      blended: isBlended(conf, seat),
       current: {
         agent: d.agent.value,
         model: d.model.value,
@@ -428,37 +432,37 @@ export async function startGuiServer(
         }
         case "GET /api/team/status": {
           // T7-3: the GUI-owned team lifecycle — which seats' runners are alive.
-          const { teamProcessFor, defaultSeatSpawner } = await import("./teamproc.js");
+          const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
           const proj = url.searchParams.get("project") ?? state.project;
           if (!proj) return json(res, 200, { booted: false, seats: [] });
-          return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home)).status());
+          return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home)).status());
         }
         case "POST /api/team/boot": {
           // T7-3: boot the headless team (one supervised runner child per seat).
-          const { teamProcessFor, defaultSeatSpawner } = await import("./teamproc.js");
+          const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
           const proj = url.searchParams.get("project") ?? state.project;
           if (!proj) return json(res, 400, { error: "no project attached" });
           try {
-            return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home)).boot());
+            return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home)).boot());
           } catch (e) {
             return json(res, 400, { error: e instanceof Error ? e.message : String(e) });
           }
         }
         case "POST /api/team/stop": {
-          const { teamProcessFor, defaultSeatSpawner } = await import("./teamproc.js");
+          const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
           const proj = url.searchParams.get("project") ?? state.project;
           if (!proj) return json(res, 400, { error: "no project" });
-          return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home)).stop());
+          return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home)).stop());
         }
         case "POST /api/team/relaunch": {
           // T7-3: restart exactly one seat's runner (headless per-seat relaunch).
-          const { teamProcessFor, defaultSeatSpawner } = await import("./teamproc.js");
+          const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
           const proj = url.searchParams.get("project") ?? state.project;
           if (!proj) return json(res, 400, { error: "no project" });
           const body = await readBody(req);
           const seat = String(body.seat ?? "") as Seat;
           if (!(SEATS as readonly string[]).includes(seat)) return json(res, 400, { error: "unknown seat" });
-          return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home)).relaunch(seat));
+          return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home)).relaunch(seat));
         }
         case "POST /api/team/abandon": {
           // T7-2 Team menu: drop a mid-flight loop back to idle (agentctl emit
@@ -554,6 +558,13 @@ export async function startGuiServer(
           const body = await readBody(req);
           const seat = String(body.seat ?? "");
           if (!seat) return json(res, 400, { error: "seat required" });
+          // Blended pane (PDR S2): for a live blended seat, refresh IS a
+          // visible restart of the pane (refused mid-response). Falls through
+          // to the headless session-drop path for everything else.
+          const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
+          const rb = teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home))
+            .refreshBlended(seat as Seat, { force: Boolean(body.force) });
+          if (rb.handled) return json(res, rb.ok ? 200 : 409, { ok: Boolean(rb.ok), ...(rb.reason ? { reason: rb.reason } : {}) });
           const r = refreshSeat(proj, seat, { force: Boolean(body.force) });
           return json(res, r.ok ? 200 : 409, r);
         }
@@ -641,8 +652,8 @@ export async function startGuiServer(
           writeFileSync(confFile, updateRigStaffing(readFileSync(confFile, "utf8"), seat, agent, String(body.model ?? "").trim()));
           const { stopSeatTty } = await import("../ptyseat.js");
           stopSeatTty(proj, seat);
-          const { teamProcessFor, defaultSeatSpawner } = await import("./teamproc.js");
-          const tp = teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home));
+          const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
+          const tp = teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home));
           let relaunched = false;
           if (tp.booted) {
             tp.relaunch(seat);
@@ -898,8 +909,8 @@ export async function startGuiServer(
           // read-screen. A seat with a live runner child is "live"; a child
           // that exited is "dead" (auto-revive can act); a seat never booted is
           // "unknown" (not-booted ≠ provably dead).
-          const { teamProcessFor, defaultSeatSpawner } = await import("./teamproc.js");
-          const st = teamProcessFor(state.project, defaultSeatSpawner(state.cliPath, state.home)).status();
+          const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
+          const st = teamProcessFor(state.project, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home)).status();
           const seats = st.seats.map((s) => ({
             seat: s.seat,
             liveness: s.alive ? "live" : s.startedAt ? "dead" : "unknown",
@@ -974,15 +985,15 @@ export async function startGuiServer(
   // generic dead-seat monitor (backoff + ceiling); only its wiring changed.
   const reviver = makeAutoReviver({
     revive: async (seat) => {
-      const { teamProcessFor, defaultSeatSpawner } = await import("./teamproc.js");
-      teamProcessFor(state.project!, defaultSeatSpawner(state.cliPath, state.home)).relaunch(seat);
+      const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
+      teamProcessFor(state.project!, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home)).relaunch(seat);
     },
   });
   const reviveTimer = setInterval(async () => {
     try {
       if (!state.project || !autoReviveEnabled(state.project)) return;
-      const { teamProcessFor, defaultSeatSpawner } = await import("./teamproc.js");
-      const st = teamProcessFor(state.project, defaultSeatSpawner(state.cliPath, state.home)).status();
+      const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
+      const st = teamProcessFor(state.project, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home)).status();
       if (!st.booted) return; // team not booted — nothing to monitor
       // Map the lifecycle status to the reviver's SeatHealth shape.
       const seats = st.seats.map((s) => ({

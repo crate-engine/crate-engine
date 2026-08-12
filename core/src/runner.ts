@@ -354,6 +354,11 @@ export interface RunnerLoopOpts extends RunTurnOpts {
   /** Where the orphan self-stamp lands (~/.crate/logs); defaults to $HOME.
    * Injectable so tests never write the developer's real ~/.crate. */
   home?: string;
+  /** Blended-pane seam (PDR blended-pane, S1): replace the headless turn
+   * executor while inheriting this loop's machinery verbatim — fs.watch wake,
+   * attended hold, retry counting, dead-letter after maxRetries, backoff. A
+   * blended seat's "turn" is a verified delivery into its live PTY session. */
+  runTurnImpl?: (opts: RunTurnOpts) => Promise<TurnResult>;
 }
 
 /** The seat's standing loop: watch → turn → ack/retry → watch. */
@@ -446,7 +451,7 @@ export async function runnerLoop(opts: RunnerLoopOpts): Promise<void> {
       }
       return;
     }
-    const r = await runTurn(opts);
+    const r = await (opts.runTurnImpl ?? runTurn)(opts);
     // D12 auto-refresh: a completed turn just wrote fresh state, so dropping
     // the session here is lossless. Only when opted-in AND over the ceiling.
     if (opts.contextAutoRefresh && r.ok && !r.idle && r.usage) {

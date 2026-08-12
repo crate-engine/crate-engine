@@ -37,6 +37,21 @@ export interface TtyEvent {
         code: number;
     };
 }
+/** Blended-pane (PDR blended-pane, S1): the quiet-composer gate is pure
+ * keystroke-timestamp inference — write() is the ONE human chokepoint (web
+ * cockpit xterm → POST /api/tty/input → here), so no screen parsing is ever
+ * needed. composerDirty tracks a likely half-typed draft: printable bytes set
+ * it; CR/Ctrl+C/Esc clear it (submit/cancel empties the composer). CSI
+ * sequences (arrow keys etc.) are stripped first — cursor movement is not
+ * typing, and counting the 'A' of ESC[A as a draft would demand the long
+ * quiet for every arrow press. */
+export declare function updateComposerDirty(prev: boolean, data: Buffer): boolean;
+/** Blended pi seats crash under old system node (live probe, superman
+ * 2026-08-12: pi 0.84.1 + node v20 dies at import — undici
+ * markAsUncloneable TypeError; works under node >= 22). Pick the newest
+ * nvm-installed node >= 22 so the spawn env can prepend its bin. Pure over
+ * an injected version list. */
+export declare function pickPiNodeVersion(versions: string[]): string | undefined;
 export interface TtySeat {
     seat: string;
     projectRoot: string;
@@ -47,7 +62,21 @@ export interface TtySeat {
     exited?: {
         code: number;
     };
+    /** Blended-pane: this PTY is an engine-owned live session (no attended
+     * hold, no hand-back; the engine delivers team mail into it). */
+    blended?: boolean;
+    /** Last HUMAN keystroke (write()); inject() never bumps it — the quiet-
+     * composer gate must measure only the human. */
+    lastHumanInputMs?: number;
+    /** Likely half-typed human draft in the composer (see updateComposerDirty). */
+    composerDirty: boolean;
+    /** The live session id, once the blend supervisor discovers it. */
+    sessionId?: string;
+    /** The HUMAN door: stamps lastHumanInputMs + composerDirty. */
     write(data: Buffer): void;
+    /** The ENGINE door: writes to the PTY without touching the human
+     * timestamps (deliveries must not look like typing to the quiet gate). */
+    inject(data: Buffer | string): void;
     resize(cols: number, rows: number): void;
     kill(): void;
     subscribe(cb: (ev: TtyEvent) => void): () => void;
@@ -77,6 +106,14 @@ export interface StartTtyOpts {
     cols?: number;
     rows?: number;
     home?: string;
+    /** Blended-pane (PDR): spawn as an engine-owned live session — no attended
+     * hold (the seat is never held), no session re-point on exit (one door,
+     * nothing forks; the blend supervisor owns respawn). */
+    blended?: boolean;
+    /** Tests only: replace the real agent argv (and skip the wall) — the PTY
+     * lifecycle/registry seams need a spawnable stub where no agent CLI exists,
+     * the same reason runner.ts carries invocationOverride. */
+    argvOverride?: string[];
 }
 /**
  * Open (or reattach) the seat's interactive door. Refuses `busy` while a
@@ -86,3 +123,14 @@ export interface StartTtyOpts {
 export declare function startSeatTty(opts: StartTtyOpts): Promise<StartTtyResult>;
 /** Close a seat's TTY (the UI's give-back-the-keys). No-op when none. */
 export declare function stopSeatTty(projectRoot: string, seat: string): boolean;
+/**
+ * Evict a seat's TTY NOW: kill it AND drop it from the registry immediately,
+ * not on the async exit event. The blend relaunch lesson (live proof,
+ * 2026-08-12): a D12 refresh stops the old supervisor and starts its
+ * successor in the SAME tick — the successor's eager spawn found the dying
+ * pane still registered, REATTACHED to it, and the promised visible fresh
+ * pane only appeared at the next delivery. Eviction closes that window; the
+ * old process still dies by kill(), and onExit's guarded delete keeps a late
+ * exit from unregistering the successor.
+ */
+export declare function evictSeatTty(projectRoot: string, seat: string): boolean;

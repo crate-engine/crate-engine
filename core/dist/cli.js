@@ -7,7 +7,7 @@ import { loadLoadout, loadoutPath, SEATS } from "./manifest.js";
 import { buildInvocation, toShellCommand } from "./invocation.js";
 import { deriveBrainRoot, isUnwalledSeat, planSeats, resolveRigSeats } from "./launcher.js";
 import { listOverlayEntries, overlayDirFor } from "./overlay.js";
-import { loadUserDefaults, parseRigConf, resolveSeatDetailed } from "./staffing.js";
+import { loadUserDefaults, parseRigConf, resolveSeatDetailed, RIG_PREFIX } from "./staffing.js";
 import { setupTier, tierPaths, updateEngine } from "./usertier.js";
 function fail(msg) {
     console.error(`crate2: ${msg}`);
@@ -585,6 +585,18 @@ switch (command) {
         }
         const staffed = resolvedSeats.find((s) => s.seat === seat);
         const { agent, model } = staffed;
+        // Blended pane (PDR S2): a flagged seat's mail is delivered by the engine
+        // app straight into its live pane — a headless runner alongside it would
+        // DOUBLE-CONSUME the seat's inbox (two readers, one maildir). Refuse in
+        // plain words; the operator unsets the flag to run headless.
+        {
+            const { isBlended } = await import("./blend.js");
+            if (isBlended(conf, seat)) {
+                fail(`${seat} is flagged BLENDED (rig.conf BLEND_${RIG_PREFIX[seat]}=1) — the engine app (crate open) ` +
+                    `delivers its mail into the live pane, and a second headless runner would double-consume the seat's ` +
+                    `inbox. Unset the flag to run this seat headless.`);
+            }
+        }
         const { runTurn, runnerLoop, bootWall } = await import("./runner.js");
         // T6: resolve + cache the wall at boot — a walled-required seat that cannot
         // be walled refuses HERE, in plain words, not on its first turn; the first
@@ -664,6 +676,17 @@ switch (command) {
             }
             return { ...s, wallNote };
         });
+        // Blended flags are an engine-app feature (the pane lives in the GUI
+        // server's PTY registry) — a headless-only run keeps flagged seats on the
+        // runner path, and says so instead of silently ignoring the flag.
+        {
+            const { isBlended } = await import("./blend.js");
+            for (const seat of SEATS) {
+                if (isBlended(conf, seat)) {
+                    console.log(`  note: BLEND_${RIG_PREFIX[seat]}=1 is honored by the engine app (crate open) — this headless-only run keeps ${seat} on the runner path.`);
+                }
+            }
+        }
         const loops = staffing.map(({ seat, agent, model, agentSource, modelSource, wallNote }) => {
             console.log(`  ${seat.padEnd(13)} ${agent}${model ? `/${model}` : ""} ` +
                 `[agent: ${agentSource}, model: ${modelSource}]  [${wallNote}]`);
