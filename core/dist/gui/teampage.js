@@ -234,7 +234,6 @@ grid-template-rows:var(--r1,1fr) 1px var(--r2,1fr)}
 .ev.text{white-space:pre-wrap}
 .ev.fold{color:var(--faint);font-style:italic;font-size:.9em}
 .ev.errtail{color:var(--bad);font-family:var(--mono);font-size:.86em;white-space:pre-wrap;border-left:2px solid var(--bad);padding-left:8px}
-.idlechip{font:500 10px/1 var(--mono);letter-spacing:.04em;color:var(--faint);white-space:nowrap}
 .turnsep{font:500 9px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--faint);padding:6px 0 2px;border-top:1px solid var(--line)}
 .idle{color:var(--faint);font-style:italic;padding:4px 0}
 /* first-run starter chips (W0): prefill the input, never auto-send */
@@ -701,13 +700,6 @@ function gaugeHtml(g,seat){
     +'<span class="gbar"><span class="gfill" style="width:'+Math.max(3,pct)+'%"></span></span>'
     +'<span class="gpct">'+pct+'%</span></span>';
 }
-function idleChip(s){
-  // 2c: quiet must never read as dead — an idle seat says since when
-  const last=s.turns&&s.turns[0];
-  if(!last||last.ok===null||!last.startedAtMs)return"";
-  const end=new Date(last.startedAtMs+(last.durationMs||0));
-  return '<span class="idlechip">idle since '+end.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",hour12:false})+'</span>';
-}
 function tileHead(s){
   if(s.blended){
     // Blended pane (PDR S2): no wheel button, no paused chip — nothing holds
@@ -716,8 +708,9 @@ function tileHead(s){
     // quiet composer), responding pulse / idle-since from the live session
     // file, gauge (click = a VISIBLE restart), and the read-only tag.
     const q=(s.unread||0)>0?'<span class="pausechip hot" title="Mail queued — the engine delivers when your composer goes quiet (it yields to you)">✉ '+s.unread+' queued</span>':'';
-    const act=s.responding?'<span class="working"><span class="wd"></span><span class="rtext">responding…</span></span>'
-      :(s.lastOutputAt?'<span class="idlechip">idle since '+new Date(s.lastOutputAt).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",hour12:false})+'</span>':'');
+    // No idle-since chip (Adam, 2026-08-12): the dot + the live terminal
+    // already say the seat is alive; a timestamp is noise. Quiet = quiet.
+    const act=s.responding?'<span class="working"><span class="wd"></span><span class="rtext">responding…</span></span>':'';
     const agent='<span class="tagent" data-restaff="'+s.seat+'" title="Change this seat\\'s agent (applies to this project)">'+esc(s.agent)+(s.model?"/"+esc(s.model.split("/").pop()):"")+'<span class="tcaret">▾</span></span>';
     // No BLENDED tag (Adam, 2026-08-12): when the pane IS the agent,
     // announcing it is noise — the absence of a wheel button says it all.
@@ -726,7 +719,7 @@ function tileHead(s){
   }
   const run=s.turns&&s.turns.find(t=>t.ok===null);
   const right=run?workingSpan(run)
-    :idleChip(s)+'<span class="tagent" data-restaff="'+s.seat+'" title="Change this seat\\'s agent (applies to this project)">'+esc(s.agent)+(s.model?"/"+esc(s.model.split("/").pop()):"")+'<span class="tcaret">▾</span></span>';
+    :'<span class="tagent" data-restaff="'+s.seat+'" title="Change this seat\\'s agent (applies to this project)">'+esc(s.agent)+(s.model?"/"+esc(s.model.split("/").pop()):"")+'<span class="tcaret">▾</span></span>';
   // Native seat access: ⌨ takes the keys — the seat's REAL agent TUI, live
   // in this pane, inside the wall. Lit amber while the human holds them.
   // Racing language (Adam's pick, 2026-08-10) — matches the cockpit's
