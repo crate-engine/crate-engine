@@ -1550,6 +1550,14 @@ def main():
             # HOT-DOC TRIPWIRE (backlog #9): measure the hot docs and file the
             # distillation chore mechanically when one is over budget.
             hotdoc_sweep()
+        if transition in ("close", "abandon"):
+            # PREVIEW HYGIENE (Adam, 2026-08-13): a loop's registered previews
+            # die with the loop — a stale entry kept the cockpit's Preview
+            # chip lit ("needs attention") long after CLOSE.
+            try:
+                os.remove(os.path.join(A, "state", "preview.json"))
+            except OSError:
+                pass
         print("OK: %s -> state=%s" % (transition, new))
         fw = flywheel_warning(transition)
         if fw:

@@ -73,7 +73,8 @@ header{padding:12px 22px;border-bottom:1px solid var(--line);display:flex;align-
 .navbtn.open::after{transform:rotate(180deg)}
 .navbtn:hover{color:var(--fg)}
 .navbtn.pending{color:var(--amber)}
-.navbtn.pending::before{content:"";position:absolute;top:-1px;left:-12px;width:8px;height:8px;border-radius:50%;background:var(--amber);animation:pulse 1.2s infinite}
+/* static dot, NOT pulsing (Adam, 2026-08-13): a registered preview is an offer, not an alarm */
+.navbtn.pending::before{content:"";position:absolute;top:-1px;left:-12px;width:8px;height:8px;border-radius:50%;background:var(--amber)}
 .navbtn.hidden{display:none}
 /* Preview surface (T5) */
 .pvwrap{position:absolute;top:53px;left:50%;transform:translateX(-50%);width:min(1100px,calc(100vw - 32px));max-height:86vh;background:var(--panel);border:1px solid var(--line2);border-top:0;border-radius:0;box-shadow:0 12px 50px rgba(0,0,0,.6);display:flex;flex-direction:column;overflow:hidden}
@@ -503,13 +504,21 @@ function attachTty(seat,skipRefresh){
     theme:{background:"#0b0e14",foreground:"#f1f3f6",cursor:"#e2a33c",selectionBackground:"#32405a"}});
   const fit=new FitAddon.FitAddon();term.loadAddon(fit);
   term.open(wrap);
-  // Cmd+C copies the TERMINAL's selection (Adam, 2026-08-11): xterm draws on
-  // canvas, so the system Copy sees no document text and copied nothing.
-  // Plain Ctrl+C still passes through as SIGINT — only the Mac Cmd combo is
-  // intercepted, and only while a selection exists.
+  // Clipboard (Adam, 2026-08-11; REWIRED 2026-08-13 — "still not working" in
+  // the app shell): WKWebView's async clipboard SILENTLY REJECTS its promise
+  // (a sync try/catch never sees it), so copy now falls back to the
+  // execCommand textarea path; Cmd+V is wired explicitly via readText into
+  // term.paste (bracketed-safe) — the Edit menu's native Paste remains the
+  // belt if the async API is walled. Plain Ctrl+C still passes as SIGINT.
+  const execCopy=t=>{const ta=document.createElement("textarea");ta.value=t;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(err){}ta.remove();term.focus();};
   term.attachCustomKeyEventHandler(e=>{
     if(e.type==="keydown"&&e.metaKey&&!e.ctrlKey&&(e.key==="c"||e.key==="C")&&term.hasSelection()){
-      try{navigator.clipboard.writeText(term.getSelection());}catch(err){}
+      const sel=term.getSelection();
+      try{navigator.clipboard.writeText(sel).catch(()=>execCopy(sel));}catch(err){execCopy(sel);}
+      return false;
+    }
+    if(e.type==="keydown"&&e.metaKey&&!e.ctrlKey&&(e.key==="v"||e.key==="V")){
+      try{navigator.clipboard.readText().then(t=>{if(t)term.paste(t);}).catch(()=>{});}catch(err){}
       return false;
     }
     return true;
@@ -906,7 +915,16 @@ function renderTile(s,slot){
   return '<div class="tile'+cls+'" data-seat="'+s.seat+'" style="--tscale:'+(SCALES[s.seat]||1)+'">'+tileHead(s)+status+'<div class="feed '+(lens==="engineer"?"eng":"")+'">'+feed+'</div></div>';
 }
 let POLLFAILS=0;
+// Selection hold (Adam, 2026-08-13): the 2s repaint re-parents the live
+// terminal nodes, which kills a drag-selection mid-drag and yanks a fresh
+// one before Cmd+C can land. While the mouse is down in a pane — or within
+// 5s of a selection being made — the DOM repaint yields; the SSE streams
+// keep every pane painting live meanwhile, only the chrome pauses.
+let SELDRAG=false,SELHOLD=0;
+document.addEventListener("mousedown",e=>{if(e.target&&e.target.closest&&e.target.closest(".ttywrap"))SELDRAG=true;});
+document.addEventListener("mouseup",()=>{if(SELDRAG){SELDRAG=false;const any=Object.keys(TTYS).some(s=>TTYS[s].term&&TTYS[s].term.hasSelection());SELHOLD=any?Date.now():0;}});
 async function refresh(){
+  if(SELDRAG||Date.now()-SELHOLD<5000)return;
   try{
     const [tr,gr,cr,pv,ps]=await Promise.all([
       fetch(api("/api/team"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()),
