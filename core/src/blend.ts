@@ -451,7 +451,25 @@ export interface BlendTtyHandle {
   lastHumanInputMs?: number;
   composerDirty: boolean;
   exited?: { code: number };
+  /** Turn-boundary verify: recent pane-output bytes (busy/quiet probe).
+   * Absent (older handles, test fakes) = the fixed-window behavior. */
+  outputBytesSince?(windowMs: number): number;
 }
+
+// ── the turn-boundary law (2026-08-13; promoted from the ticket-#5 marathon
+// dead letter — six 120s windows lost to one browser-heavy QA turn) ──
+//
+// Past the BASE verify window, the fixed clock no longer judges the attempt —
+// the PANE does. Still streaming output = the seat is mid-turn and the queued
+// paste lands at the boundary, so judgment defers; settled-quiet with no
+// marker = the boundary passed without our mail, an honest miss. Strikes
+// therefore only ever burn on real losses, never on a long turn. The probe
+// threshold clears the idle prompt's cursor blink (~8 B/s live figure →
+// ~80 B per 10s window; a working spinner repaints hundreds per second), and
+// the absolute ceiling bounds a pathological pane so nothing waits forever.
+export const BOUNDARY_PROBE_MS = 10_000;
+export const BOUNDARY_BUSY_BYTES = 512;
+export const BOUNDARY_CEILING_MS = 30 * 60_000;
 
 export interface DeliverOpts {
   tty: BlendTtyHandle;
@@ -473,6 +491,9 @@ export interface DeliverOpts {
   submitDelayMs?: number;
   verifyTimeoutMs?: number;
   verifyPollMs?: number;
+  boundaryProbeMs?: number;
+  boundaryBusyBytes?: number;
+  boundaryCeilingMs?: number;
   signal?: AbortSignal;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -514,8 +535,12 @@ export async function deliverToBlendedSeat(o: DeliverOpts): Promise<DeliveryOutc
   const submitDelayMs = o.submitDelayMs ?? cliDef.submitDelayMs;
   const verifyTimeoutMs = o.verifyTimeoutMs ?? cliDef.verifyTimeoutMs;
   const verifyPollMs = o.verifyPollMs ?? cliDef.verifyPollMs;
+  const boundaryProbeMs = o.boundaryProbeMs ?? BOUNDARY_PROBE_MS;
+  const boundaryBusyBytes = o.boundaryBusyBytes ?? BOUNDARY_BUSY_BYTES;
+  const boundaryCeilingMs = o.boundaryCeilingMs ?? BOUNDARY_CEILING_MS;
   const id = o.id ?? newDeliveryId();
   const marker = `#${id}`;
+  const deliveryT0 = now(); // the absolute ceiling spans BOTH attempts
 
   const verified = () => {
     const text = o.readSession();
@@ -540,8 +565,18 @@ export async function deliverToBlendedSeat(o: DeliverOpts): Promise<DeliveryOutc
     await sleep(submitDelayMs);
     o.tty.inject("\r"); // a SEPARATE CR — an immediate one is swallowed into the paste (codex)
     const t0 = now();
-    while (now() - t0 < verifyTimeoutMs && !o.signal?.aborted) {
+    while (!o.signal?.aborted) {
       if (verified()) return { ok: true, id, attempts: attempt, verifyMs: now() - t0 };
+      if (now() - deliveryT0 >= boundaryCeilingMs) break; // pathological pane — honest failure, never forever
+      if (now() - t0 >= verifyTimeoutMs) {
+        // THE TURN-BOUNDARY LAW: past the base window, the pane judges, not
+        // the clock. Streaming = mid-turn (the queued paste lands at the
+        // boundary) — keep waiting. Settled-quiet (or no probe available:
+        // fakes/legacy handles keep the fixed-window contract) = this
+        // attempt honestly missed.
+        const recent = o.tty.outputBytesSince?.(boundaryProbeMs);
+        if (recent === undefined || recent < boundaryBusyBytes) break;
+      }
       await sleep(verifyPollMs);
     }
   }

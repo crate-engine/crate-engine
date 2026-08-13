@@ -125,7 +125,7 @@ def queue_message(role, sender, msg):
         return None  # the human reads the mirror in the GUI chat; no runner to wake
     new_dir = os.path.join(inbox_dir, role, "new")
     os.makedirs(new_dir, exist_ok=True)
-    iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + ".%03dZ" % (int(time.time() * 1000) % 1000)
+    iso = now()  # ONE CLOCK (Pack-5 law; this writer was missed in the first pass)
     # In-process seq mirrors mailbox.ts exactly — a hardcoded 0 collides (and
     # silently OVERWRITES on rename) when one process queues two mails to the
     # same role within a millisecond (e.g. the hot-doc sweep, several breaches).
@@ -606,7 +606,7 @@ def refresh_verifier_session(seat, task):
         # so the seat's history reads as one story regardless of which lever
         # dropped the session.
         os.makedirs(tdir, exist_ok=True)
-        iso = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        iso = now()  # ONE CLOCK (Pack-5 law; this writer was missed in the first pass)
         with open(os.path.join(tdir, "turns.log"), "a", encoding="utf-8") as fh:
             fh.write("%s | refreshed (verify dispatch) | session dropped — fresh eyes\n" % iso)
     except OSError:

@@ -83,6 +83,12 @@ export interface TtySeat {
     /** Everything the terminal has shown so far (ring-capped) — the replay a
      * (re)connecting viewer paints before going live. */
     replay(): Buffer;
+    /** Turn-boundary verify (2026-08-13): bytes this pane emitted in the last
+     * <windowMs> — the busy/quiet signal. A working TUI STREAMS (spinners,
+     * tool progress repaints); an idle prompt blinks ~8 B/s (live ledger
+     * figure). The delivery verifier reads this past its base window: still
+     * streaming = mid-turn, judgment defers to the boundary. */
+    outputBytesSince(windowMs: number): number;
 }
 export declare function liveTty(projectRoot: string, seat: string): TtySeat | undefined;
 /** Every live TTY of one project — the multiplexed stream's roster. */

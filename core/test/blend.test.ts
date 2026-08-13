@@ -1050,6 +1050,83 @@ test("blendedTurn + wdRef: a verified-but-unattended delivery gets the standing 
   assert.match(log, /early-stop watchdog \| #[0-9a-f]{8} delivered but no turn started/);
 });
 
+// ── the turn-boundary law (2026-08-13: the ticket-#5 marathon dead letter) ──
+
+test("boundary: a pane STREAMING past the base window defers judgment — the marker lands at the turn boundary, ONE paste", async () => {
+  const tty = fakeTty();
+  let nowMs = 0;
+  let session = "";
+  (tty as FakeTty & { outputBytesSince?: (w: number) => number }).outputBytesSince = () => 9999; // a working spinner
+  const r = await deliverToBlendedSeat({
+    tty,
+    msgs: [msg("orchestrator", "marathon turn")],
+    cli: "claude",
+    readSession: () => session,
+    verifyTimeoutMs: 100,
+    verifyPollMs: 10,
+    submitDelayMs: 1,
+    sleep: async (ms) => {
+      nowMs += ms;
+      // the "turn" ends at 5× the base window — FAR past where the old fixed
+      // window dead-lettered — and the queued paste lands then
+      if (nowMs >= 500 && tty.injected.includes("\r")) {
+        const m = tty.injected[0]!.match(/#([0-9a-f]{8})/);
+        if (m) session = claudeUser(`#${m[1]}`);
+      }
+    },
+    now: () => nowMs,
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.attempts, 1, "no redelivery — the busy pane deferred, never failed");
+  assert.equal(tty.injected.filter((s) => s.startsWith("\x1b[200~")).length, 1, "one paste, zero duplicates");
+});
+
+test("boundary: a SETTLED-QUIET pane with no marker fails at the base window (the honest miss, unchanged)", async () => {
+  const tty = fakeTty();
+  let nowMs = 0;
+  (tty as FakeTty & { outputBytesSince?: (w: number) => number }).outputBytesSince = () => 40; // idle cursor blink
+  const r = await deliverToBlendedSeat({
+    tty,
+    msgs: [msg("orchestrator", "eaten paste")],
+    cli: "claude",
+    readSession: () => "",
+    verifyTimeoutMs: 50,
+    verifyPollMs: 5,
+    submitDelayMs: 1,
+    sleep: async (ms) => {
+      nowMs += ms;
+    },
+    now: () => nowMs,
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.attempts, 2, "quiet + missing = the redelivery ladder, exactly as before");
+});
+
+test("boundary: the absolute ceiling bounds a pathologically-busy pane — honest failure, never forever", async () => {
+  const tty = fakeTty();
+  let nowMs = 0;
+  (tty as FakeTty & { outputBytesSince?: (w: number) => number }).outputBytesSince = () => 9999; // busy forever
+  const r = await deliverToBlendedSeat({
+    tty,
+    msgs: [msg("orchestrator", "the pane that never lands it")],
+    cli: "claude",
+    readSession: () => "",
+    verifyTimeoutMs: 50,
+    verifyPollMs: 5,
+    submitDelayMs: 1,
+    boundaryCeilingMs: 1000,
+    sleep: async (ms) => {
+      nowMs += ms;
+    },
+    now: () => nowMs,
+  });
+  assert.equal(r.ok, false, "the ceiling closes the wait honestly");
+  assert.ok(nowMs >= 1000, "…but only after the whole ceiling was spent deferring");
+});
+
+// (fakes WITHOUT outputBytesSince keep the fixed-window contract — every
+// deliverToBlendedSeat test above this section proves it byte-identical.)
+
 // ── pi node picker (the superman node-20 crash mitigation) ──
 
 test("pickPiNodeVersion: newest >= 22 wins; node 20 never picked; junk ignored", () => {

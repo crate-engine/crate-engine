@@ -142,7 +142,13 @@ export interface BlendTtyHandle {
     exited?: {
         code: number;
     };
+    /** Turn-boundary verify: recent pane-output bytes (busy/quiet probe).
+     * Absent (older handles, test fakes) = the fixed-window behavior. */
+    outputBytesSince?(windowMs: number): number;
 }
+export declare const BOUNDARY_PROBE_MS = 10000;
+export declare const BOUNDARY_BUSY_BYTES = 512;
+export declare const BOUNDARY_CEILING_MS: number;
 export interface DeliverOpts {
     tty: BlendTtyHandle;
     msgs: Message[];
@@ -163,6 +169,9 @@ export interface DeliverOpts {
     submitDelayMs?: number;
     verifyTimeoutMs?: number;
     verifyPollMs?: number;
+    boundaryProbeMs?: number;
+    boundaryBusyBytes?: number;
+    boundaryCeilingMs?: number;
     signal?: AbortSignal;
     sleep?: (ms: number) => Promise<void>;
     now?: () => number;

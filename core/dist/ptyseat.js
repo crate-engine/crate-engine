@@ -335,6 +335,9 @@ export async function startSeatTty(opts) {
     }
     const chunks = [];
     let chunkBytes = 0;
+    // Turn-boundary verify: a rolling (ts, bytes) log of pane output, pruned
+    // to the last minute — the verifier's busy/quiet probe reads it.
+    const outLog = [];
     const subs = new Set();
     const stamp = (line) => {
         try {
@@ -409,6 +412,13 @@ export async function startSeatTty(opts) {
             return () => subs.delete(cb);
         },
         replay: () => Buffer.concat(chunks),
+        outputBytesSince: (windowMs) => {
+            const cut = Date.now() - windowMs;
+            let sum = 0;
+            for (let i = outLog.length - 1; i >= 0 && outLog[i][0] >= cut; i--)
+                sum += outLog[i][1];
+            return sum;
+        },
     };
     proc.onData((d) => {
         const b = Buffer.from(d, "utf8");
@@ -418,6 +428,9 @@ export async function startSeatTty(opts) {
             chunkBytes -= chunks[0].length;
             chunks.shift();
         }
+        outLog.push([Date.now(), b.length]);
+        while (outLog.length > 0 && outLog[0][0] < Date.now() - 60_000)
+            outLog.shift();
         for (const cb of subs)
             cb({ data: b });
     });

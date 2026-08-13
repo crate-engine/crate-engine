@@ -208,6 +208,7 @@ function makeFakePty(seat: string, projectRoot: string, file: string): FakePty {
     projectRoot,
     agent: "claude",
     startedAtMs: Date.now(),
+    outputBytesSince: () => 0, // quiet fake — the fixed-window verify contract
     cols: 120,
     rows: 32,
     blended: true,

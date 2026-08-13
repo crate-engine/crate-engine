@@ -278,6 +278,12 @@ export interface TtySeat {
   /** Everything the terminal has shown so far (ring-capped) — the replay a
    * (re)connecting viewer paints before going live. */
   replay(): Buffer;
+  /** Turn-boundary verify (2026-08-13): bytes this pane emitted in the last
+   * <windowMs> — the busy/quiet signal. A working TUI STREAMS (spinners,
+   * tool progress repaints); an idle prompt blinks ~8 B/s (live ledger
+   * figure). The delivery verifier reads this past its base window: still
+   * streaming = mid-turn, judgment defers to the boundary. */
+  outputBytesSince(windowMs: number): number;
 }
 
 const REPLAY_CAP = 256 * 1024;
@@ -404,6 +410,9 @@ export async function startSeatTty(opts: StartTtyOpts): Promise<StartTtyResult> 
 
   const chunks: Buffer[] = [];
   let chunkBytes = 0;
+  // Turn-boundary verify: a rolling (ts, bytes) log of pane output, pruned
+  // to the last minute — the verifier's busy/quiet probe reads it.
+  const outLog: Array<[number, number]> = [];
   const subs = new Set<(ev: TtyEvent) => void>();
   const stamp = (line: string) => {
     try {
@@ -464,6 +473,12 @@ export async function startSeatTty(opts: StartTtyOpts): Promise<StartTtyResult> 
       return () => subs.delete(cb);
     },
     replay: () => Buffer.concat(chunks),
+    outputBytesSince: (windowMs) => {
+      const cut = Date.now() - windowMs;
+      let sum = 0;
+      for (let i = outLog.length - 1; i >= 0 && outLog[i]![0] >= cut; i--) sum += outLog[i]![1];
+      return sum;
+    },
   };
 
   proc.onData((d: string) => {
@@ -474,6 +489,8 @@ export async function startSeatTty(opts: StartTtyOpts): Promise<StartTtyResult> 
       chunkBytes -= chunks[0]!.length;
       chunks.shift();
     }
+    outLog.push([Date.now(), b.length]);
+    while (outLog.length > 0 && outLog[0]![0] < Date.now() - 60_000) outLog.shift();
     for (const cb of subs) cb({ data: b });
   });
   proc.onExit(({ exitCode }) => {

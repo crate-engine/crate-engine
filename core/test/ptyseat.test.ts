@@ -201,6 +201,28 @@ test("evictSeatTty: a relaunch can never reattach a dying pane, and its late exi
   }
 });
 
+// ── output-activity probe (turn-boundary verify, 2026-08-13) ──
+
+test("outputBytesSince: recent pane output counts; an old burst ages out of the window", async () => {
+  const p = tmpProject();
+  try {
+    const { startSeatTty, evictSeatTty } = await import("../src/ptyseat.js");
+    const r = await startSeatTty({
+      projectRoot: p, seat: "coder", agent: "pi", blended: true,
+      argvOverride: ["bash", "-c", "printf 'streaming-output-burst-%s ' 1 2 3 4 5; sleep 5"],
+    });
+    assert.ok(r.ok);
+    if (!r.ok) return;
+    await new Promise((res) => setTimeout(res, 400)); // let the burst land
+    assert.ok(r.tty.outputBytesSince(60_000) >= 50, "the burst is visible in a wide window");
+    await new Promise((res) => setTimeout(res, 700));
+    assert.equal(r.tty.outputBytesSince(300), 0, "…and invisible in a window newer than the burst");
+    evictSeatTty(p, "coder");
+  } finally {
+    rmSync(p, { recursive: true, force: true });
+  }
+});
+
 // ── pane-pid registry (Pack 2: badge absence ≠ humanity) ──
 
 test("the PTY door registers the pane's pid (pty.json) at spawn and clears it on exit", async () => {
