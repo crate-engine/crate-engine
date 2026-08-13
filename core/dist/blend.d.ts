@@ -3,7 +3,12 @@ import { type TurnResult } from "./runner.js";
 import type { Seat } from "./manifest.js";
 import type { TurnUsage } from "./turn.js";
 export type BlendCli = "claude" | "pi" | "codex";
-export declare function isBlended(conf: Record<string, string>, seat: Seat): boolean;
+/** S4 (blend = THE DEFAULT; grill 2026-08-12): a seat blends iff its staffed
+ * agent is blend-eligible AND the rig has not opted the seat out
+ * (`BLEND_<PREFIX>=0`). The flag INVERTED at S4 — before, `=1` opted in —
+ * so existing `=1` lines are redundant and harmless. An ineligible agent
+ * lands on the demoted headless fallback regardless of the flag. */
+export declare function isBlended(conf: Record<string, string>, seat: Seat, agentArg: string): boolean;
 /** Per-seat persistence override (locked Q1 safety valve): a worker seat
  * with BLEND_<PREFIX>_PERSIST=1 keeps its session across task boundaries so
  * quality claims can be tested empirically, never argued from theory. */

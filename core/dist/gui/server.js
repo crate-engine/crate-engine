@@ -246,9 +246,9 @@ function staffingCatalog(state, detectPath) {
         return {
             seat,
             title: titles[seat],
-            // Blended pane (PDR S2): read-only indication — the flag is hand-edited
-            // rig.conf (BLEND_<PREFIX>=1); flipping defaults is the operator's S4 gate.
-            blended: isBlended(conf, seat),
+            // S4: blend is the DEFAULT for an eligible agent; BLEND_<PREFIX>=0 is
+            // the hand-edited per-seat opt-out.
+            blended: isBlended(conf, seat, d.agent.value),
             current: {
                 agent: d.agent.value,
                 model: d.model.value,
@@ -649,6 +649,15 @@ export async function startGuiServer(opts = {}) {
                         return json(res, 400, { error: "no rig.conf — attach the project first" });
                     const conf = parseRigConf(readFileSync(confFile, "utf8"));
                     const agentKey = `${RIG_PREFIX[seat]}_AGENT`; // rig.conf keys use ORCH, not ORCHESTRATOR
+                    // S4 (wheel retired from blended seats): a blended seat's pane IS
+                    // its live session — a second interactive door would be two writers
+                    // on one session. The wheel survives only for the headless fallback.
+                    if (isBlended(conf, seat, conf[agentKey] || "pi")) {
+                        return json(res, 409, {
+                            error: `${seat} is blended — its pane IS the live session; type into the pane itself. ` +
+                                `(The wheel door exists only for headless-fallback seats; opt out with BLEND_${RIG_PREFIX[seat]}=0 if you truly need it.)`,
+                        });
+                    }
                     const { startSeatTty } = await import("../ptyseat.js");
                     const r = await startSeatTty({
                         projectRoot: proj,

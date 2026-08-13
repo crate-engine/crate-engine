@@ -18,8 +18,13 @@
 //             labeled — duplication is the accepted failure mode, loss is
 //             not, D11) → honest failure; mail stays queued
 //
-// Flag-gated per seat: rig.conf BLEND_<PREFIX>=1. Un-flagged seats keep the
-// headless runner path byte-identical. claude/pi/codex are all eligible —
+// THE DEFAULT since S4 (grill decisions with Adam, 2026-08-12): every seat
+// whose staffed agent is blend-eligible BLENDS unless the rig opts it out
+// (rig.conf BLEND_<PREFIX>=0 — the flag INVERTED at S4; old =1 lines are
+// harmless). Non-eligible agents take the demoted headless fallback —
+// invisible, undocumented, kept only so an unqualified CLI still runs
+// (docs/manual/blend-probe-recipe.md is the path INTO eligibility).
+// claude/pi/codex are all eligible —
 // each was live-probed (Mac claude 2.1.227; superman pi 0.84.1 + codex TUI
 // 0.145.0, 2026-08-12): mid-turn queueing safe, session-file shapes pinned.
 // Session lifecycle: the orchestrator PERSISTS; workers get a FRESH session
@@ -34,9 +39,14 @@ import { attendedFile, isAck, runnerLoop, sessionFile, turnsDir } from "./runner
 import { claudeProjectDir } from "./ptyseat.js";
 import { RIG_PREFIX } from "./staffing.js";
 import { normalizeAgent } from "./wall.js";
-// ── flags (rig.conf; AUTO_REVIVE=1 precedent: "1" means on, default OFF) ──
-export function isBlended(conf, seat) {
-    return conf[`BLEND_${RIG_PREFIX[seat]}`] === "1";
+// ── flags (rig.conf) ──────────────────────────────────────────────────────
+/** S4 (blend = THE DEFAULT; grill 2026-08-12): a seat blends iff its staffed
+ * agent is blend-eligible AND the rig has not opted the seat out
+ * (`BLEND_<PREFIX>=0`). The flag INVERTED at S4 — before, `=1` opted in —
+ * so existing `=1` lines are redundant and harmless. An ineligible agent
+ * lands on the demoted headless fallback regardless of the flag. */
+export function isBlended(conf, seat, agentArg) {
+    return blendEligible(agentArg).ok && conf[`BLEND_${RIG_PREFIX[seat]}`] !== "0";
 }
 /** Per-seat persistence override (locked Q1 safety valve): a worker seat
  * with BLEND_<PREFIX>_PERSIST=1 keeps its session across task boundaries so

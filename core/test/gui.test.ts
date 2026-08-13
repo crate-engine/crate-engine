@@ -317,6 +317,18 @@ test("projectAt: a folder with attached .agents IS the project anchor; anything 
   assert.equal(projectAt(scratch), undefined);
 });
 
+// ── S4: the wheel door refuses blended seats ──
+
+test("the wheel door REFUSES a blended seat — the pane IS the live session (no second writer)", async () => {
+  const proj = join(scratch, "wheel-rig");
+  mkdirSync(join(proj, ".agents"), { recursive: true });
+  writeFileSync(join(proj, ".agents", "rig.conf"), 'PROJECT="wheel"\nCODER_AGENT="claude"\n'); // S4: blended by default
+  const r = await call("POST", `/api/tty/start?project=${encodeURIComponent(proj)}`, { seat: "coder" });
+  assert.equal(r.status, 409);
+  assert.match(r.body.error, /pane IS the live session/);
+  assert.match(r.body.error, /BLEND_CODER=0/, "the refusal teaches the opt-out escape hatch");
+});
+
 // ── Pack 3: the stale-reattach probe ──
 
 test("/api/version reports the LOADED sha + pid — boot-captured, not disk-at-request-time", async () => {

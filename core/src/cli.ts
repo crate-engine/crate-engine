@@ -699,17 +699,17 @@ switch (command) {
     }
     const staffed = resolvedSeats.find((s) => s.seat === seat)!;
     const { agent, model } = staffed;
-    // Blended pane (PDR S2): a flagged seat's mail is delivered by the engine
-    // app straight into its live pane — a headless runner alongside it would
-    // DOUBLE-CONSUME the seat's inbox (two readers, one maildir). Refuse in
-    // plain words; the operator unsets the flag to run headless.
+    // S4 (blend = the default): a blended seat's mail is delivered by the
+    // engine app straight into its live pane — a headless runner alongside
+    // it would DOUBLE-CONSUME the seat's inbox (two readers, one maildir).
+    // Refuse in plain words; BLEND_<PREFIX>=0 is the per-seat opt-out.
     {
       const { isBlended } = await import("./blend.js");
-      if (isBlended(conf, seat as Seat)) {
+      if (isBlended(conf, seat as Seat, agent)) {
         fail(
-          `${seat} is flagged BLENDED (rig.conf BLEND_${RIG_PREFIX[seat as Seat]}=1) — the engine app (crate open) ` +
+          `${seat} is BLENDED (the default for ${agent}) — the engine app (crate open) ` +
             `delivers its mail into the live pane, and a second headless runner would double-consume the seat's ` +
-            `inbox. Unset the flag to run this seat headless.`,
+            `inbox. Set rig.conf BLEND_${RIG_PREFIX[seat as Seat]}=0 to opt this seat out and run it headless.`,
         );
       }
     }
@@ -787,15 +787,14 @@ switch (command) {
       }
       return { ...s, wallNote };
     });
-    // Blended flags are an engine-app feature (the pane lives in the GUI
-    // server's PTY registry) — a headless-only run keeps flagged seats on the
-    // runner path, and says so instead of silently ignoring the flag.
+    // S4: blending is an engine-app feature (the pane lives in the GUI
+    // server's PTY registry) and the DEFAULT there — a headless-only run
+    // keeps every seat on the runner path, and says so once instead of
+    // silently downgrading the experience.
     {
       const { isBlended } = await import("./blend.js");
-      for (const seat of SEATS) {
-        if (isBlended(conf, seat)) {
-          console.log(`  note: BLEND_${RIG_PREFIX[seat]}=1 is honored by the engine app (crate open) — this headless-only run keeps ${seat} on the runner path.`);
-        }
+      if (staffing.some((s) => isBlended(conf, s.seat, s.agent))) {
+        console.log(`  note: seats blend by default under the engine app (crate open) — this headless-only run keeps them on the runner path.`);
       }
     }
     const loops = staffing.map(({ seat, agent, model, agentSource, modelSource, wallNote }) => {

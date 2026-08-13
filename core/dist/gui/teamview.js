@@ -368,12 +368,12 @@ export function readTeamView(projectRoot, maxTurnsPerSeat = 5, home = homedir())
             /* no inbox yet */
         }
         const attended = isAttended(projectRoot, seat);
-        // Blended pane (PDR S2): flagged + eligible = the pane is a live session.
-        // The flag alone is not enough — an ineligible agent fell back to the
-        // headless path at boot, and the page must not render a phantom pane.
+        // S4: blend is the default — eligible + not opted out = the pane is a
+        // live session; an ineligible agent fell back to headless at boot, and
+        // the page must not render a phantom pane.
         const agentRaw = conf[agentKey] || "pi";
         const el = blendEligible(agentRaw);
-        const blended = isBlended(conf, seat) && el.ok;
+        const blended = isBlended(conf, seat, agentRaw);
         const bv = blended ? blendedSeatView(projectRoot, seat, el.ok ? el.cli : undefined, model, home) : {};
         const pty = blended ? liveTty(projectRoot, seat) : undefined;
         return {

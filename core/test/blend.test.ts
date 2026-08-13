@@ -62,12 +62,14 @@ const noSleep = async (_ms: number) => {};
 
 // ── flags ──
 
-test("isBlended: BLEND_<PREFIX>=1 via parseRigConf; default OFF", () => {
-  const conf = parseRigConf('BLEND_CODER=1\nBLEND_ORCH="1"\nBLEND_TESTER=0\n');
-  assert.equal(isBlended(conf, "coder"), true);
-  assert.equal(isBlended(conf, "orchestrator"), true, "quoted value parses to 1");
-  assert.equal(isBlended(conf, "tester"), false, "explicit 0 is off");
-  assert.equal(isBlended(conf, "reviewer"), false, "absent is off — defaults stay OFF tonight");
+test("isBlended (S4: blend is the DEFAULT): eligible agents blend unless BLEND_<PREFIX>=0", () => {
+  const conf = parseRigConf('BLEND_CODER=1\nBLEND_TESTER=0\n');
+  assert.equal(isBlended(conf, "coder", "claude"), true, "old =1 lines are redundant + harmless");
+  assert.equal(isBlended(conf, "orchestrator", "claude"), true, "ABSENT flag = the default = blended");
+  assert.equal(isBlended(conf, "reviewer", "pi"), true, "all three probed CLIs blend by default");
+  assert.equal(isBlended(conf, "designer", "codex"), true);
+  assert.equal(isBlended(conf, "tester", "claude"), false, "=0 is the per-seat opt-out");
+  assert.equal(isBlended(conf, "coder", "aider"), false, "an unqualified CLI takes the headless fallback whatever the flag says");
 });
 
 test("persistOverridden: BLEND_<PREFIX>_PERSIST=1 (the Q1 safety valve)", () => {

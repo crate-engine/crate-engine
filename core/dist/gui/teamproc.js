@@ -138,15 +138,19 @@ export class TeamProcess {
         catch {
             /* boot() already required rig.conf; a race falls back to headless */
         }
-        if (isBlended(conf, seat) && this.blendStarter) {
-            const agent = conf[`${RIG_PREFIX[seat]}_AGENT`] || "pi";
+        // S4 (blend = the default): an eligible, not-opted-out seat blends; the
+        // headless runner survives ONLY as the invisible fallback for agents
+        // without a live-probed TUI shape (and for explicit BLEND_<PREFIX>=0
+        // opt-outs). Fail open to the proven path, never a dead seat.
+        const agent = conf[`${RIG_PREFIX[seat]}_AGENT`] || "pi";
+        if (this.blendStarter && isBlended(conf, seat, agent)) {
+            this.blends.set(seat, this.blendStarter(seat, this.projectRoot));
+            return;
+        }
+        if (this.blendStarter && conf[`BLEND_${RIG_PREFIX[seat]}`] !== "0") {
             const el = blendEligible(agent);
-            if (el.ok) {
-                this.blends.set(seat, this.blendStarter(seat, this.projectRoot));
-                return;
-            }
-            // Fail open to the proven path, never a dead seat — and say so.
-            this.stamp(seat, `blend requested (BLEND_${RIG_PREFIX[seat]}=1) but ${el.reason} — seat stays headless`);
+            if (!el.ok)
+                this.stamp(seat, `${el.reason} — seat runs on the headless fallback`);
         }
         this.spawnSeat(seat);
     }

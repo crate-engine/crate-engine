@@ -102,3 +102,17 @@ PREVIEW_URL=""            # resolved (tailscale) or explicit (custom) HTTPS base
 PREVIEW_DEV_PORT=""       # which dev port to expose (default: parsed from DEV_URL)
 PREVIEW_HTTPS_PORT=""     # tailnet HTTPS port for the tunnel (default 443; use 8443/10000 for extra concurrent rigs)
 PREVIEW_DB_URL=""         # optional Neon READ-ONLY branch for dev/gate (defense-in-depth)
+
+# --- Blended panes (S4, 2026-08-12: THE DEFAULT) --------------------------
+# Every seat whose staffed agent is blend-eligible (claude/pi/codex) runs as
+# a LIVE terminal session in its cockpit pane — mail is delivered into the
+# session with on-disk verification. Opt a seat OUT (back to the invisible
+# headless fallback) with =0; agents without a live-probed TUI shape fall
+# back automatically (docs/manual/blend-probe-recipe.md qualifies new CLIs).
+# BLEND_ORCH="0"
+# BLEND_CODER="0"
+# BLEND_REVIEWER="0"
+# BLEND_DESIGNER="0"
+# BLEND_TESTER="0"
+# Per-seat persistence override (workers are fresh-per-task by default):
+# BLEND_CODER_PERSIST="1"

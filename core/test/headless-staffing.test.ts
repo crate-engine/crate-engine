@@ -181,8 +181,17 @@ function runCli(args: string[], home: string, until?: RegExp): Promise<{ out: st
   });
 }
 
+test("S4: a standalone `crate runner` on a blended-by-default seat REFUSES and teaches the opt-out", async () => {
+  const rig = makeRig('PROJECT="x"\n'); // no opt-out → the seat blends by default
+  const home = makeHome(DEFAULTS);
+  const { out, code } = await runCli(["runner", "coder", "--project", rig, "--once"], home);
+  assert.notEqual(code, 0, "a second consumer on a blended seat's inbox must refuse");
+  assert.match(out, /BLENDED \(the default/, out);
+  assert.match(out, /BLEND_CODER=0/, "the refusal teaches the per-seat opt-out");
+});
+
 test("e2e: `crate runner --once` boots the user-default staffing with provenance", async () => {
-  const rig = makeRig('PROJECT="x"\n');
+  const rig = makeRig('PROJECT="x"\nBLEND_CODER=0\n'); // S4: opted out = the sanctioned headless run
   const home = makeHome(DEFAULTS);
   const { out, code } = await runCli(["runner", "coder", "--project", rig, "--once"], home);
   assert.equal(code, 0, `runner exited ${code}:\n${out}`);

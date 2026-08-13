@@ -404,7 +404,10 @@ export function blendCrewFor(projectRoot: string): BlendCrew {
       } catch {
         return; // no conf = no blended seats to reset
       }
-      const blendedSeats = SEATS.filter((s) => isBlended(conf, s));
+      // S4: same conf-only agent resolution the blend starter uses — the
+      // stale mark is consumed only by blended delivery paths, so an
+      // over-mark on an actually-headless seat is inert.
+      const blendedSeats = SEATS.filter((s) => isBlended(conf, s, conf[`${RIG_PREFIX[s]}_AGENT`] || "pi"));
       for (const s of seatsToReset(blendedSeats, conf)) c.stale.markStale(s);
     });
   }

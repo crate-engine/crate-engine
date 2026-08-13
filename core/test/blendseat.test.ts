@@ -68,26 +68,32 @@ function fakeStarter() {
   return { calls, handles, starter };
 }
 
-test("teamproc: flagged+eligible seat boots BLENDED in-process; the other four stay runner children", () => {
-  const p = rig("tp-branch", 'CODER_AGENT="claude"\nBLEND_CODER=1\n');
+/** S4 fixture helper: opt every seat out EXCEPT the ones a test focuses on —
+ * blend is the default now, so a single-blend fixture needs explicit =0s. */
+const OPTOUT_ALL = "BLEND_ORCH=0\nBLEND_CODER=0\nBLEND_REVIEWER=0\nBLEND_DESIGNER=0\nBLEND_TESTER=0\n";
+const optOutExcept = (...keep: string[]): string =>
+  OPTOUT_ALL.split("\n").filter((l) => l && !keep.some((k) => l.startsWith(`BLEND_${k}=`))).join("\n") + "\n";
+
+test("teamproc S4: blend is the DEFAULT — every eligible seat boots BLENDED with NO flags at all; =0 opts out", () => {
+  const p = rig("tp-branch", 'CODER_AGENT="claude"\nBLEND_TESTER=0\n'); // others default (pi) — eligible
   const { calls, starter } = fakeStarter();
   const tp = new TeamProcess(p, stubSpawner, starter);
   try {
     const st = tp.boot();
-    assert.deepEqual(calls, ["coder"], "exactly the flagged seat routed to the blend starter");
+    assert.deepEqual([...calls].sort(), ["coder", "designer", "orchestrator", "reviewer"], "every non-opted-out seat routed to the blend starter — no flags needed");
     const coder = st.seats.find((s) => s.seat === "coder")!;
     assert.equal(coder.mode, "blended");
     assert.equal(coder.alive, true);
     assert.equal(coder.pid, null, "no runner pid — the loop lives in this process");
-    const others = st.seats.filter((s) => s.seat !== "coder");
-    assert.ok(others.every((s) => s.alive && s.pid !== null && s.mode === undefined), "un-flagged seats byte-identical: runner children");
+    const tester = st.seats.find((s) => s.seat === "tester")!;
+    assert.ok(tester.alive && tester.pid !== null && tester.mode === undefined, "BLEND_TESTER=0 = the per-seat opt-out → runner child");
   } finally {
     tp.stop();
   }
 });
 
 test("teamproc: boot is idempotent for a live blended seat; stop() stops the handle", () => {
-  const p = rig("tp-idem", 'CODER_AGENT="claude"\nBLEND_CODER=1\n');
+  const p = rig("tp-idem", 'CODER_AGENT="claude"\n' + optOutExcept("CODER"));
   const { calls, handles, starter } = fakeStarter();
   const tp = new TeamProcess(p, stubSpawner, starter);
   try {
@@ -102,8 +108,8 @@ test("teamproc: boot is idempotent for a live blended seat; stop() stops the han
   }
 });
 
-test("teamproc: relaunch stops the old blended handle, re-reads rig.conf (un-flagging falls back to a runner child)", () => {
-  const p = rig("tp-relaunch", 'CODER_AGENT="claude"\nBLEND_CODER=1\n');
+test("teamproc: relaunch stops the old blended handle, re-reads rig.conf (opting OUT falls back to a runner child)", () => {
+  const p = rig("tp-relaunch", 'CODER_AGENT="claude"\n' + optOutExcept("CODER"));
   const { calls, handles, starter } = fakeStarter();
   const tp = new TeamProcess(p, stubSpawner, starter);
   try {
@@ -111,9 +117,9 @@ test("teamproc: relaunch stops the old blended handle, re-reads rig.conf (un-fla
     tp.relaunch("coder");
     assert.equal(handles[0]!.stops, 1, "the old handle was stopped");
     assert.equal(calls.length, 2, "…and a fresh one started");
-    // Un-flag the seat: the next relaunch must land on the runner path — the
-    // branch is decided FRESH from rig.conf every launch.
-    writeFileSync(join(p, ".agents", "rig.conf"), 'CODER_AGENT="claude"\n');
+    // Opt the seat OUT (S4: =0 is the escape hatch): the next relaunch must
+    // land on the runner path — the branch is decided FRESH from rig.conf.
+    writeFileSync(join(p, ".agents", "rig.conf"), 'CODER_AGENT="claude"\nBLEND_CODER=0\n' + optOutExcept());
     const st = tp.relaunch("coder");
     assert.equal(handles[1]!.stops, 1, "the blended handle was stopped on the way out");
     const coder = st.seats.find((s) => s.seat === "coder")!;
@@ -124,8 +130,8 @@ test("teamproc: relaunch stops the old blended handle, re-reads rig.conf (un-fla
   }
 });
 
-test("teamproc: flagged but INELIGIBLE agent fails open to headless with an honest stamp — never a dead seat", () => {
-  const p = rig("tp-inelig", 'TESTER_AGENT="aider"\nBLEND_TESTER=1\n');
+test("teamproc: an INELIGIBLE agent takes the demoted headless FALLBACK with an honest stamp — never a dead seat", () => {
+  const p = rig("tp-inelig", 'TESTER_AGENT="aider"\n' + optOutExcept("TESTER"));
   const { calls, starter } = fakeStarter();
   const tp = new TeamProcess(p, stubSpawner, starter);
   try {
@@ -133,9 +139,9 @@ test("teamproc: flagged but INELIGIBLE agent fails open to headless with an hone
     assert.deepEqual(calls, [], "the starter never fires for an unverified agent");
     const tester = st.seats.find((s) => s.seat === "tester")!;
     assert.equal(tester.mode, undefined);
-    assert.ok(tester.alive && tester.pid !== null, "the seat runs headless instead");
+    assert.ok(tester.alive && tester.pid !== null, "the seat runs on the fallback instead");
     const log = readFileSync(join(p, ".agents", "state", "turns", "tester", "turns.log"), "utf8");
-    assert.match(log, /blend requested \(BLEND_TESTER=1\) but .*stays headless/);
+    assert.match(log, /no live-verified TUI queueing.*headless fallback/);
   } finally {
     tp.stop();
   }
@@ -155,7 +161,7 @@ test("teamproc: no blend starter injected → flagged seat stays headless (the b
 });
 
 test("teamproc refreshBlended: visible-restart semantics — refused mid-response, session dropped + relaunched when quiet", () => {
-  const p = rig("tp-refresh", 'CODER_AGENT="claude"\nBLEND_CODER=1\n');
+  const p = rig("tp-refresh", 'CODER_AGENT="claude"\n' + optOutExcept("CODER"));
   const { calls, handles, starter } = fakeStarter();
   const tp = new TeamProcess(p, stubSpawner, starter);
   try {
@@ -381,8 +387,8 @@ test("BlendedSeat: stop() kills the pane and ends the loop (alive → false); a 
 
 // ── teamview: the blended seat's live-session lens ──
 
-test("teamview: a flagged claude seat reports blended + gauge/responding from its live session file; un-flagged seats unchanged", () => {
-  const proj = rig("tv-blend", 'CODER_AGENT="claude"; CODER_MODEL="opus"\nBLEND_CODER=1\nREVIEWER_AGENT="pi"\n');
+test("teamview: a blended claude seat reports gauge/responding from its live session file; opted-out seats unchanged", () => {
+  const proj = rig("tv-blend", 'CODER_AGENT="claude"; CODER_MODEL="opus"\nREVIEWER_AGENT="pi"\n' + optOutExcept("CODER"));
   const home = join(scratch, "tv-blend-home");
   const claudeDir = join(home, ".claude", "projects", realpathSync(proj).replace(/[^a-zA-Z0-9]/g, "-"));
   mkdirSync(claudeDir, { recursive: true });
@@ -402,7 +408,7 @@ test("teamview: a flagged claude seat reports blended + gauge/responding from it
   assert.equal(coder.gauge!.tokens, 50_000, "context fullness = input + cache-read");
 
   const reviewer = view.seats.find((s) => s.seat === "reviewer")!;
-  assert.equal(reviewer.blended, undefined, "un-flagged seat carries no blended fields");
+  assert.equal(reviewer.blended, undefined, "an opted-out (BLEND_REVIEWER=0) seat carries no blended fields");
 
   // quiet session → responding false (the pane shows idle-since, honestly)
   const old = Date.now() / 1000 - 60;
@@ -411,8 +417,8 @@ test("teamview: a flagged claude seat reports blended + gauge/responding from it
   assert.equal(view2.seats.find((s) => s.seat === "coder")!.responding, false);
 });
 
-test("teamview: a flagged but INELIGIBLE agent renders NO blended pane (it fell back to headless at boot)", () => {
-  const proj = rig("tv-inelig", 'DESIGNER_AGENT="aider"\nBLEND_DESIGNER=1\n');
+test("teamview: an INELIGIBLE agent renders NO blended pane (it fell back to headless at boot)", () => {
+  const proj = rig("tv-inelig", 'DESIGNER_AGENT="aider"\n' + optOutExcept("DESIGNER"));
   const view = readTeamView(proj, 5, join(scratch, "tv-inelig-home"));
   assert.equal(view.seats.find((s) => s.seat === "designer")!.blended, undefined, "no phantom pane for a seat the boot refused to blend");
 });
