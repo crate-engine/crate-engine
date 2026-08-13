@@ -501,12 +501,22 @@ async function tryStartTty(seat){
   if(r.error){delete TTYS[seat];refresh();await uiNotice(r.error);return;}
   attachTty(seat);
 }
+// ── Backlog 12 (Adam's design gate, LOCKED 2026-08-13): the Crate terminal
+// theme — every pane renders its CLI through the cockpit's own 16 ANSI slots,
+// so claude/pi/codex read as Crate Engine with ZERO per-CLI config. Brand
+// tokens where they exist (amber=yellow, ok=green, bad=red, alu=white,
+// faint=brightBlack, fg=brightWhite, amber-hi=brightYellow); the slots the
+// brand never had (blue/magenta/cyan) are steel designs cut for carbon.
+// Truecolor a CLI hardcodes keeps its own color — accepted at the grill.
+const CRATE_TERM_THEME={background:"#0b0e14",foreground:"#f1f3f6",cursor:"#e2a33c",cursorAccent:"#0b0e14",selectionBackground:"#32405a",
+  black:"#1a202c",red:"#e4614d",green:"#57c489",yellow:"#e2a33c",blue:"#6ea3e0",magenta:"#b08ad0",cyan:"#5db8c2",white:"#c7cdd8",
+  brightBlack:"#6b7488",brightRed:"#f07f6e",brightGreen:"#7cd8a6",brightYellow:"#f0b654",brightBlue:"#93bfee",brightMagenta:"#c9a9e2",brightCyan:"#84cdd6",brightWhite:"#f1f3f6"};
 function attachTty(seat,skipRefresh){
   const t=TTYS[seat];if(!t)return;
   t.waiting=false;
   const wrap=document.createElement("div");wrap.className="ttywrap";
   const term=new Terminal({fontFamily:"'JetBrains Mono',ui-monospace,Menlo,monospace",fontSize:ttyFontFor(seat),cursorBlink:true,scrollback:5000,
-    theme:{background:"#0b0e14",foreground:"#f1f3f6",cursor:"#e2a33c",selectionBackground:"#32405a"}});
+    theme:CRATE_TERM_THEME});
   const fit=new FitAddon.FitAddon();term.loadAddon(fit);
   term.open(wrap);
   // Clipboard (Adam, 2026-08-11; REWIRED 2026-08-13 — "still not working" in
