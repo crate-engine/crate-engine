@@ -147,6 +147,23 @@ test("teamproc: an INELIGIBLE agent takes the demoted headless FALLBACK with an 
   }
 });
 
+test("teamProcessFor: a starter-less cached instance UPGRADES when a caller brings the starter (five-dead-seats fix)", async () => {
+  const p = rig("tp-latebind", 'CODER_AGENT="claude"\n' + optOutExcept("CODER"));
+  const { teamProcessFor, stopAllTeams } = await import("../src/gui/teamproc.js");
+  const { calls, starter } = fakeStarter();
+  try {
+    // the restart handoff's old shape: first touch WITHOUT a starter
+    const first = teamProcessFor(p, stubSpawner);
+    // the Team menu's shape: same project, WITH the starter — must not stick starter-less
+    const second = teamProcessFor(p, stubSpawner, starter);
+    assert.equal(first, second, "one instance per project (the registry)");
+    second.boot();
+    assert.deepEqual(calls, ["coder"], "the late-bound starter fires — the cached instance recovered");
+  } finally {
+    stopAllTeams();
+  }
+});
+
 test("teamproc: no blend starter injected → flagged seat stays headless (the branch is additive)", () => {
   const p = rig("tp-nostarter", 'CODER_AGENT="claude"\nBLEND_CODER=1\n');
   const tp = new TeamProcess(p, stubSpawner);

@@ -652,8 +652,12 @@ switch (command) {
       // crate-open boot POST landing on top of this is harmless.
       if (rest.includes("--boot") && gui.state.project && existsSync(join(gui.state.project, ".agents", "rig.conf"))) {
         try {
-          const { teamProcessFor, defaultSeatSpawner } = await import("./gui/teamproc.js");
-          const st = teamProcessFor(gui.state.project, defaultSeatSpawner(gui.state.cliPath, gui.state.home)).boot();
+          // The blend starter MUST ride this boot (five-dead-seats fix,
+          // 2026-08-13): a starter-less boot spawns runner children, and
+          // S4's double-consumer refusal kills them on sight — worse, the
+          // starter-less TeamProcess used to stick in the registry.
+          const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./gui/teamproc.js");
+          const st = teamProcessFor(gui.state.project, defaultSeatSpawner(gui.state.cliPath, gui.state.home), defaultBlendStarter(gui.state.home)).boot();
           guiLog(HOME, `restart handoff: team rebooted — ${st.seats.map((s) => `${s.seat}:${s.pid ?? "?"}`).join(" ")}`);
         } catch (e) {
           guiLog(HOME, `restart handoff: team reboot FAILED — ${e instanceof Error ? e.message : String(e)}`);

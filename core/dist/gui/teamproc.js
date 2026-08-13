@@ -89,6 +89,16 @@ export class TeamProcess {
         this.spawner = spawner;
         this.blendStarter = blendStarter;
     }
+    /** Late-bind the blend starter (the five-dead-seats fix, 2026-08-13): the
+     * registry memoizes the FIRST instance per project, and the restart
+     * handoff's --boot path once created it starter-less — every later boot
+     * through the cached instance then spawned runner children that S4's
+     * double-consumer refusal killed on sight: five dead seats, and the Team
+     * menu could not recover because it kept reaching the same cached
+     * instance. Any caller that HAS a starter now upgrades the instance. */
+    adoptBlendStarter(bs) {
+        this.blendStarter ??= bs;
+    }
     /** True once any seat has been booted and at least one child is alive. */
     get booted() {
         for (const p of this.procs.values())
@@ -236,6 +246,9 @@ export function teamProcessFor(projectRoot, spawner, blendStarter) {
     if (!tp) {
         tp = new TeamProcess(projectRoot, spawner, blendStarter);
         registry.set(projectRoot, tp);
+    }
+    else if (blendStarter) {
+        tp.adoptBlendStarter(blendStarter); // a starter-less cached instance upgrades, never sticks
     }
     return tp;
 }

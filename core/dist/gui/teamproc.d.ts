@@ -38,10 +38,18 @@ export interface TeamProcStatus {
 export declare class TeamProcess {
     readonly projectRoot: string;
     private readonly spawner;
-    private readonly blendStarter?;
+    private blendStarter?;
     private procs;
     private blends;
     constructor(projectRoot: string, spawner: SeatSpawner, blendStarter?: BlendStarter | undefined);
+    /** Late-bind the blend starter (the five-dead-seats fix, 2026-08-13): the
+     * registry memoizes the FIRST instance per project, and the restart
+     * handoff's --boot path once created it starter-less — every later boot
+     * through the cached instance then spawned runner children that S4's
+     * double-consumer refusal killed on sight: five dead seats, and the Team
+     * menu could not recover because it kept reaching the same cached
+     * instance. Any caller that HAS a starter now upgrades the instance. */
+    adoptBlendStarter(bs: BlendStarter): void;
     /** True once any seat has been booted and at least one child is alive. */
     get booted(): boolean;
     private stamp;
