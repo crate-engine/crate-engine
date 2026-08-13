@@ -96,6 +96,11 @@ header{padding:12px 22px;border-bottom:1px solid var(--line);display:flex;align-
 .crow{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line)}
 .crow.nogauge{opacity:.5}.crow.nogauge .cpc{color:var(--dim)}
 .crow .cname{font:500 10px/1.2 var(--mono);letter-spacing:.1em;text-transform:uppercase;flex:0 0 108px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Backlog 13: Servers panel — orphaned rows DIM (the label moved, nothing
+   died); kind tags are quiet chips, amber only for "safe to kill". */
+.crow.orphanrow{opacity:.55}
+.stag{font:600 8.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--faint);border:1px solid var(--line2);padding:3px 6px;white-space:nowrap}
+.stag.orph{color:var(--amber);border-color:var(--amber)}
 .crow .cbar{flex:1;height:7px;border-radius:0;background:var(--line2);overflow:hidden}
 .crow .cfill{display:block;height:100%;border-radius:0;background:var(--ok)}
 .crow.advisory .cfill{background:var(--amber)}.crow.high .cfill{background:var(--bad)}
@@ -1308,6 +1313,67 @@ async function renderTeamMenu(){
     await uiNotice(r.ok?"Loop abandoned — back to idle.":"Abandon: "+((r.out||"failed").split("\\n")[0]));refresh();
   };
 }
+// ── Backlog 13: the Servers panel — visible dev-server lifecycle. Rows are
+// registered previews (proven association) ∪ discovered project listeners;
+// system services show but can't be killed; NOTHING dies without the
+// operator's click. Own 10s poll — lsof is too heavy for the 2s heartbeat —
+// and the open panel is NOT auto-repainted (a repaint mid-confirm would
+// clobber the dialog; kills revalidate server-side anyway, stale rows 409).
+let SERVERS={servers:[],orphans:0,lsofAvailable:true};
+async function refreshServers(){
+  try{SERVERS=await fetch(api("/api/servers"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());}catch(e){return;}
+  syncServersChip();
+}
+function syncServersChip(){
+  const b=document.getElementById("svbtn");if(!b)return;
+  const n=SERVERS.orphans||0;
+  b.textContent=n?"Servers ("+n+")":"Servers";
+  b.classList.toggle("pending",n>0);
+}
+function fmtAge(s){if(s==null)return"—";if(s<90)return s+"s";if(s<5400)return Math.round(s/60)+"m";if(s<172800)return Math.round(s/3600)+"h";return Math.round(s/86400)+"d";}
+function renderServers(){
+  const panel=document.getElementById("svpanel");if(!panel)return;
+  const rows=SERVERS.servers||[];
+  let h='<h3>Servers</h3><div class="csub">'
+    +(rows.length?rows.length+' dev server'+(rows.length>1?'s':'')+' visible':'no dev servers visible')
+    +(SERVERS.lsofAvailable===false?' · lsof missing — discovery off, registered rows only':'')+'</div>';
+  h+=rows.map(function(s){
+    const orph=s.status==="orphaned"&&s.killable;
+    const tag=s.kind==="system-service"?'<span class="stag">system service</span>'
+      :orph?'<span class="stag orph">orphaned — safe to kill</span>':'';
+    return '<div class="crow'+(orph?' orphanrow':'')+'">'
+      +'<div style="flex:1;min-width:0"><div style="font:600 12px/1.3 var(--body);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(s.label)+' <span style="color:var(--faint);font:500 10.5px/1 var(--mono)">:'+s.port+'</span></div>'
+      +'<div style="font:400 10.5px/1.5 var(--mono);color:var(--faint)">'+(s.task?esc(s.task)+' · ':'')+'pid '+s.pid+' · '+(s.rssMb==null?'—':s.rssMb+' MB')+' · up '+fmtAge(s.ageSecs)
+      +(s.registeredAt?' · preview '+esc(String(s.registeredAt).replace("T"," ").slice(0,16)):'')+'</div></div>'
+      +tag
+      +(s.killable?'<button class="crefresh" data-skill="'+s.port+':'+s.pid+'">Kill</button>':'')
+      +'</div>';
+  }).join("");
+  const orphN=SERVERS.orphans||0;
+  if(orphN)h+='<div class="cactions"><button id="svsweep">Sweep orphans ('+orphN+')</button></div>';
+  h+='<div class="cpolicy">Registered previews + listeners born in this project. System services are visible, untouchable. Nothing dies without your click — Kill sends SIGTERM to the process group and verifies the port actually freed before reporting done.</div>';
+  panel.innerHTML=h;
+  panel.querySelectorAll("[data-skill]").forEach(function(b){b.onclick=async()=>{
+    const kp=b.getAttribute("data-skill").split(":");const port=Number(kp[0]),pid=Number(kp[1]);
+    if(!(await uiConfirm("Kill the dev server on :"+port+" (pid "+pid+")? SIGTERM to its process group; the port is verified freed before this reports done.","Kill",true)))return;
+    b.textContent="…";
+    const r=await fetch(api("/api/servers/kill"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({port,pid})}).then(r=>r.json()).catch(()=>null);
+    if(!r||r.error||!r.freed)await uiNotice("Kill: "+((r&&(r.error||r.note))||"failed"));
+    await refreshServers();renderServers();
+  };});
+  const sw=document.getElementById("svsweep");if(sw)sw.onclick=async()=>{
+    if(!(await uiConfirm("Sweep all orphaned servers? Each gets the same confirmed kill — SIGTERM to its group, port verified freed.","Sweep",true)))return;
+    sw.textContent="…";
+    const r=await fetch(api("/api/servers/sweep"),{method:"POST",headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()).catch(()=>null);
+    const bad=((r&&r.results)||[]).filter(x=>!x.freed);
+    if(bad.length)await uiNotice("Sweep: "+bad.length+" not freed — "+bad.map(x=>":"+x.port).join(", ")+" (investigate by hand)");
+    await refreshServers();renderServers();
+  };
+}
+const svOv=document.getElementById("svoverlay");
+document.getElementById("svbtn").onclick=()=>{svOv.classList.add("open");refreshServers().then(renderServers);renderServers();};
+svOv.onclick=e=>{if(e.target===svOv)svOv.classList.remove("open");};
+setInterval(refreshServers,10000);refreshServers();
 const healthOv=document.getElementById("healthoverlay");
 document.getElementById("healthbtn").onclick=()=>{healthOv.classList.add("open");renderHealth();};
 healthOv.onclick=e=>{if(e.target===healthOv)healthOv.classList.remove("open");};
@@ -1317,7 +1383,7 @@ teamOv.onclick=e=>{if(e.target===teamOv)teamOv.classList.remove("open");};
 window.addEventListener("keydown",e=>{if(e.key==="Escape")closeRail();});
 // PHASE-B #5: the nav chevrons spin while their panel is open — observed off
 // the overlay's class so every open/close path (click, outside, actions) syncs.
-[["pvbtn","pvoverlay"],["teambtn","teamoverlay"],["ctxbtn","ctxoverlay"],["healthbtn","healthoverlay"]].forEach(p=>{
+[["pvbtn","pvoverlay"],["teambtn","teamoverlay"],["svbtn","svoverlay"],["ctxbtn","ctxoverlay"],["healthbtn","healthoverlay"]].forEach(p=>{
   const bt=document.getElementById(p[0]),ov=document.getElementById(p[1]);if(!bt||!ov)return;
   new MutationObserver(()=>bt.classList.toggle("open",ov.classList.contains("open"))).observe(ov,{attributes:true,attributeFilter:["class"]});
 });
@@ -1353,6 +1419,7 @@ export function teamPage(view) {
     ${badge}
     <button class="navbtn hidden" id="pvbtn">Preview</button>
     <button class="navbtn" id="teambtn">Team</button>
+    <button class="navbtn" id="svbtn">Servers</button>
     <button class="navbtn" id="ctxbtn">Context</button>
     <button class="navbtn" id="healthbtn">Health</button>
   </div>
@@ -1360,6 +1427,7 @@ export function teamPage(view) {
 <div class="overlay" id="ctxoverlay"><div class="console" id="console"></div></div>
 <div class="overlay" id="healthoverlay"><div class="console" id="healthpanel"></div></div>
 <div class="overlay" id="teamoverlay"><div class="console" id="teampanel"></div></div>
+<div class="overlay" id="svoverlay"><div class="console" id="svpanel"></div></div>
 <div class="overlay" id="pvoverlay"><div class="pvwrap" id="pvwrap"></div></div>
 <main id="grid"></main>
 <script src="/assets/xterm.js"></script>

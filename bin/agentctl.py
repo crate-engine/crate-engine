@@ -1142,6 +1142,30 @@ def main():
         os.makedirs(os.path.dirname(pv_path), exist_ok=True)
         with open(pv_path, "w", encoding="utf-8") as fh:
             _json.dump(items, fh)
+        # Backlog 13 (Servers panel): the same registration feeds the SERVER
+        # registry — state/servers.json SURVIVES close (close re-TAGS rows
+        # "orphaned"; preview.json gets deleted), so the cockpit can show
+        # which dev server belongs to which work and label leftovers without
+        # ever killing anything. Upsert by url; task = the branch (D1).
+        sv_path = os.path.join(A, "state", "servers.json")
+        try:
+            from urllib.parse import urlparse
+            port = urlparse(url).port or (443 if url.startswith("https") else 80)
+        except Exception:
+            port = 0
+        branch = git_branch()
+        servers = []
+        try:
+            servers = _json.load(open(sv_path, encoding="utf-8"))
+        except Exception:
+            servers = []
+        if not isinstance(servers, list):
+            servers = []
+        servers = [s for s in servers if s.get("url") != url]
+        servers.append({"url": url, "port": port, "label": label or route,
+                        "from": frm, "task": branch, "at": now(), "status": "live"})
+        with open(sv_path, "w", encoding="utf-8") as fh:
+            _json.dump(servers, fh)
         print("PREVIEW: queued %s%s for the human (GUI Preview tab)." % (url, route))
         return
     if cmd == "hotdoc":
@@ -1557,6 +1581,26 @@ def main():
             try:
                 os.remove(os.path.join(A, "state", "preview.json"))
             except OSError:
+                pass
+            # SERVER RE-TAG (backlog 13; Adam's law: the ONE automation moves
+            # a LABEL, never a process): the closing loop's registered dev
+            # servers become "orphaned — safe to kill" — the Servers panel
+            # dims them and counts them on the chip. In concurrent mode only
+            # the closing task's rows; otherwise (one loop at a time) all.
+            try:
+                import json as _json
+                sv_path = os.path.join(A, "state", "servers.json")
+                servers = _json.load(open(sv_path, encoding="utf-8"))
+                changed = False
+                for s in servers if isinstance(servers, list) else []:
+                    if s.get("status") == "live" and (not cur_task or s.get("task") == cur_task):
+                        s["status"] = "orphaned"
+                        s["orphanedAt"] = now()
+                        changed = True
+                if changed:
+                    with open(sv_path, "w", encoding="utf-8") as fh:
+                        _json.dump(servers, fh)
+            except Exception:
                 pass
         print("OK: %s -> state=%s" % (transition, new))
         fw = flywheel_warning(transition)

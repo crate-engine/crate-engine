@@ -541,6 +541,43 @@ export async function startGuiServer(opts = {}) {
                     state.previewTarget = target;
                     return json(res, 200, { ok: true, proxyPort: state.previewProxyPort ?? 0 });
                 }
+                case "GET /api/servers": {
+                    // Backlog 13: the Servers panel — every visible dev server, honest.
+                    // Registered previews (state/servers.json) ∪ read-only discovery;
+                    // standing rig.conf infra tagged system-service, never killable.
+                    const { serversView } = await import("./servers.js");
+                    const proj = url.searchParams.get("project") ?? state.project;
+                    if (!proj)
+                        return json(res, 200, { servers: [], orphans: 0, lsofAvailable: false });
+                    return json(res, 200, serversView(proj));
+                }
+                case "POST /api/servers/kill": {
+                    // NOTHING DIES WITHOUT THE OPERATOR'S CLICK (the grill's law). Only
+                    // a row the CURRENT view marks killable can die: system services
+                    // 409, stale pids 409 — the payload can't reach arbitrary processes.
+                    const { serversView, confirmedKill } = await import("./servers.js");
+                    const proj = url.searchParams.get("project") ?? state.project;
+                    if (!proj)
+                        return json(res, 400, { error: "no project" });
+                    const body = await readBody(req);
+                    const port = Number(body.port);
+                    const pid = Number(body.pid);
+                    const row = serversView(proj).servers.find((s) => s.port === port && s.pid === pid);
+                    if (!row)
+                        return json(res, 409, { error: "stale row — no such listener now (the panel refreshes)" });
+                    if (!row.killable)
+                        return json(res, 409, { error: "system service — kill disabled (visible, untouchable)" });
+                    return json(res, 200, await confirmedKill(port, pid));
+                }
+                case "POST /api/servers/sweep": {
+                    // The optional one-click sweep — still the operator's click; each
+                    // orphan gets the same confirmed kill, results reported per row.
+                    const { sweepOrphans } = await import("./servers.js");
+                    const proj = url.searchParams.get("project") ?? state.project;
+                    if (!proj)
+                        return json(res, 400, { error: "no project" });
+                    return json(res, 200, { results: await sweepOrphans(proj) });
+                }
                 case "POST /api/preview/resolve": {
                     const { resolvePreview } = await import("./teamctl.js");
                     const proj = url.searchParams.get("project") ?? state.project;
