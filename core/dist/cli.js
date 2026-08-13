@@ -483,8 +483,16 @@ switch (command) {
                 // door, never a browser window.
                 const printOnly = rest.includes("--print-url");
                 const win = !printOnly && hasDisplay() ? openAppWindow(teamUrl, { home }) : undefined;
-                // boot the team (GUI-owned lifecycle) so the operator lands on a live rig
-                if (project) {
+                // boot the team (GUI-owned lifecycle) so the operator lands on a live
+                // rig. S4 battle-test find (Adam, 2026-08-12): the REMOTE daily drive
+                // runs this command from $HOME on the host, so the cwd-resolved
+                // `project` was empty and the boot was silently SKIPPED — the app
+                // opened to five "opens when the team boots" panes every time, and
+                // the operator had to press Boot/Resume by hand. The server already
+                // falls back to its last attached project (the page showed the right
+                // rig all along) — gate the boot on that same truth, not the cwd.
+                const { readLastProject } = await import("./usertier.js");
+                if (project ?? readLastProject(home)) {
                     try {
                         await fetch(`${u.origin}/api/team/boot`, {
                             method: "POST",
