@@ -5,7 +5,8 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { connect as netConnect } from "node:net";
 import { stringify } from "yaml";
 import { executeAttach, listDirs, makeDir, planAttach, resolveTarget, type AttachPlan } from "../attach.js";
 import { agentLabel, agentProblem, agentStatus, binaryFor, whichBin } from "../detect.js";
@@ -28,6 +29,11 @@ export interface GuiState {
   reviveNotes?: ReviveNote[];
   /** T7-3: the dist cli.js this server runs from — used to spawn seat runners. */
   cliPath: string;
+  /** Preview proxy (satellites + Launch in Chrome, 2026-08-13): the target
+   * origin the proxy currently forwards to, pointed by the tokened cockpit
+   * call — and the proxy listener's port. */
+  previewTarget?: string;
+  previewProxyPort?: number;
   /** Pack 3 (stale-reattach): the engine sha THIS process loaded at boot.
    * /api/version reports it so a reattaching `crate open` can tell a stale
    * survivor from a fresh server — engineVersion()'s own sha is DISK truth
@@ -352,6 +358,9 @@ export interface GuiServer {
   token: string;
   url: string;
   state: GuiState;
+  /** The preview proxy listener (unref'd; loopback-only). */
+  previewProxy?: Server;
+  previewProxyPort?: number;
 }
 
 /** Pack 4: per-pane typed-line buffers for the pane-phrase honor (keyed
@@ -550,8 +559,20 @@ export async function startGuiServer(
           // PHASE-8 T5: pending previews (pages flagged for review).
           const { pendingPreviews } = await import("./teamctl.js");
           const proj = url.searchParams.get("project") ?? state.project;
-          if (!proj) return json(res, 200, { previews: [] });
-          return json(res, 200, { previews: pendingPreviews(proj) });
+          if (!proj) return json(res, 200, { previews: [], proxyPort: state.previewProxyPort ?? null });
+          return json(res, 200, { previews: pendingPreviews(proj), proxyPort: state.previewProxyPort ?? null, target: state.previewTarget ?? null });
+        }
+        case "POST /api/preview/point": {
+          // Satellites + Launch in Chrome (2026-08-13): aim the preview proxy
+          // at a registered target. Pointing requires the token (this call);
+          // the proxy itself then forwards for any window that can reach the
+          // tunneled port. http-only: an https target (a real tunnel URL) is
+          // already reachable and opens direct.
+          const body = await readBody(req);
+          const target = String(body.url ?? "").replace(/\/+$/, "");
+          if (!/^http:\/\//.test(target)) return json(res, 400, { error: "only http:// targets proxy — https targets open direct" });
+          state.previewTarget = target;
+          return json(res, 200, { ok: true, proxyPort: state.previewProxyPort ?? 0 });
         }
         case "POST /api/preview/resolve": {
           const { resolvePreview } = await import("./teamctl.js");
@@ -1115,5 +1136,70 @@ export async function startGuiServer(
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 0;
-  return { server, port, token, url: `http://127.0.0.1:${port}/?token=${token}`, state };
+
+  // ── the preview proxy (satellite windows + Launch in Chrome, 2026-08-13):
+  // previews live on THIS host's loopback (a rig dev server) — an address the
+  // operator's machine cannot reach (the loose-URL theme, third recurrence).
+  // This second listener forwards EVERYTHING at root paths to the currently
+  // POINTED target — so a dev site's absolute /_next assets and its own /api
+  // calls survive — and rides the same ssh tunnel the app already has
+  // (crate open forwards both ports; &pv= in the app-url handshake).
+  // Loopback-only and token-free BY POSTURE (the fonts precedent): pointing
+  // the target requires the tokened cockpit call; the proxy only forwards to
+  // the operator's own dev server. WS upgrades pipe through so HMR stays
+  // quiet inside satellites. unref'd: it serves while the process lives and
+  // never holds it open (tests close only the main server).
+  const proxy = createServer((req, res) => {
+    const target = state.previewTarget;
+    if (!target) {
+      res.writeHead(503, { "Content-Type": "text/plain" });
+      return res.end("no preview pointed — open one from the cockpit's Preview tab first");
+    }
+    let t: URL;
+    try {
+      t = new URL(target);
+    } catch {
+      res.writeHead(502, { "Content-Type": "text/plain" });
+      return res.end("bad preview target");
+    }
+    const preq = httpRequest(
+      { hostname: t.hostname, port: t.port || 80, path: req.url, method: req.method, headers: { ...req.headers, host: t.host } },
+      (pres) => {
+        res.writeHead(pres.statusCode ?? 502, pres.headers);
+        pres.pipe(res);
+      },
+    );
+    preq.on("error", () => {
+      if (!res.headersSent) res.writeHead(502, { "Content-Type": "text/plain" });
+      res.end("preview target unreachable — is that dev server still up? Re-register or re-point the preview.");
+    });
+    req.pipe(preq);
+  });
+  proxy.on("upgrade", (req, socket, head) => {
+    const target = state.previewTarget;
+    if (!target) return socket.destroy();
+    let t: URL;
+    try {
+      t = new URL(target);
+    } catch {
+      return socket.destroy();
+    }
+    const up = netConnect(Number(t.port || 80), t.hostname, () => {
+      const headerLines = Object.entries({ ...req.headers, host: t.host })
+        .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
+        .join("\r\n");
+      up.write(`${req.method} ${req.url} HTTP/1.1\r\n${headerLines}\r\n\r\n`);
+      if (head && head.length > 0) up.write(head);
+      socket.pipe(up);
+      up.pipe(socket);
+    });
+    up.on("error", () => socket.destroy());
+    socket.on("error", () => up.destroy());
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  proxy.unref();
+  const paddr = proxy.address();
+  const previewProxyPort = typeof paddr === "object" && paddr ? paddr.port : 0;
+  state.previewProxyPort = previewProxyPort;
+  return { server, port, token, url: `http://127.0.0.1:${port}/?token=${token}`, state, previewProxy: proxy, previewProxyPort };
 }

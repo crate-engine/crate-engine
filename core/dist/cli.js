@@ -644,7 +644,10 @@ switch (command) {
             guiLog(HOME, `serving on port ${gui.port} (pid ${process.pid}${gui.state.project ? `, project ${gui.state.project}` : ""})`);
             // With a project attached, land on the Start-engine preflight (W1 — the
             // /health boot screen retired); with none, the welcome/attach flow.
-            const landing = gui.state.project ? gui.url.replace("/?token=", "/start?token=") : gui.url;
+            const landing0 = gui.state.project ? gui.url.replace("/?token=", "/start?token=") : gui.url;
+            // &pv= rides the handshake (satellite previews, 2026-08-13): the remote
+            // open tunnels the preview-proxy port alongside the app port.
+            const landing = gui.previewProxyPort ? `${landing0}&pv=${gui.previewProxyPort}` : landing0;
             console.log(`crate gui — serving on ${landing}`);
             const { writeFileSync: wf, mkdirSync: mkd } = await import("node:fs");
             const ufIdx = rest.indexOf("--url-file");

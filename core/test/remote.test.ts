@@ -30,6 +30,26 @@ test("tunnelPlan: same port both ends, BatchMode + ExitOnForwardFailure, tokened
   assert.equal(plan.teamUrl, "http://127.0.0.1:58582/team?token=abc");
 });
 
+test("parseAppUrl + tunnelPlan: &pv= (the preview proxy) rides the handshake and gets its own forward", () => {
+  const app = parseAppUrl("http://127.0.0.1:58582/start?token=abc&pv=58600\n");
+  assert.deepEqual(app, { port: "58582", token: "abc", previewPort: "58600" });
+  const plan = tunnelPlan(app!, "superman");
+  assert.deepEqual(plan.tunnelArgv, [
+    "-o", "BatchMode=yes",
+    "-o", "ExitOnForwardFailure=yes",
+    "-N",
+    "-L", "58582:127.0.0.1:58582",
+    "-L", "58600:127.0.0.1:58600",
+    "superman",
+  ]);
+  // a pre-preview server (no pv) keeps the single-forward plan byte-identical
+  const old = parseAppUrl("http://127.0.0.1:58582/team?token=abc");
+  assert.deepEqual(old, { port: "58582", token: "abc" });
+  assert.ok(!tunnelPlan(old!, "superman").tunnelArgv.includes("-L 58600:127.0.0.1:58600"));
+  // junk pv never produces a forward
+  assert.deepEqual(parseAppUrl("http://127.0.0.1:58582/team?token=abc&pv=nope"), { port: "58582", token: "abc" });
+});
+
 test("hasDisplay: darwin always; linux only with DISPLAY or WAYLAND_DISPLAY", () => {
   assert.equal(hasDisplay("darwin", {}), true);
   assert.equal(hasDisplay("linux", {}), false);

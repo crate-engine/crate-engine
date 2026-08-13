@@ -41,9 +41,12 @@ func looksAsleep(_ msg: String) -> Bool {
   return needles.contains { low.contains($0) }
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate {
   var window: NSWindow!
   var webView: WKWebView!
+  /// Satellite preview windows (Adam, 2026-08-13): retained here — a closed
+  /// window is pruned by the willClose observer, never left dangling.
+  var satellites: [NSWindow] = []
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     let frame = NSRect(x: 0, y: 0, width: 1440, height: 900)
@@ -58,9 +61,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
 
     let conf = WKWebViewConfiguration()
     conf.preferences.setValue(true, forKey: "developerExtrasEnabled")
+    // The page detects the shell via window.crateShell (satellite windows +
+    // Launch in Chrome take the shell-native paths; a plain browser falls
+    // back to window.open). Injected at document start, inherited by
+    // satellites (same configuration).
+    conf.userContentController.addUserScript(
+      WKUserScript(source: "window.crateShell=true", injectionTime: .atDocumentStart, forMainFrameOnly: false))
     webView = WKWebView(frame: frame, configuration: conf)
     webView.autoresizingMask = [.width, .height]
     webView.navigationDelegate = self // the Retry link routes back into the launch flow
+    webView.uiDelegate = self // window.open → real satellite windows
     window.contentView = webView
     window.makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
@@ -110,7 +120,60 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
       startLaunch()
       return
     }
+    // Launch in Chrome (Adam, 2026-08-13): the page hands the proxied
+    // preview URL out via crate-ext:// — real Chrome when installed, the
+    // default browser otherwise. The URL is the tunneled loopback proxy, so
+    // it works from this machine by construction.
+    if let u = navigationAction.request.url, u.scheme == "crate-ext" {
+      decisionHandler(.cancel)
+      if let comps = URLComponents(url: u, resolvingAgainstBaseURL: false),
+        let target = comps.queryItems?.first(where: { $0.name == "url" })?.value,
+        let real = URL(string: target)
+      {
+        let chrome = URL(fileURLWithPath: "/Applications/Google Chrome.app")
+        if FileManager.default.fileExists(atPath: chrome.path) {
+          NSWorkspace.shared.open([real], withApplicationAt: chrome, configuration: NSWorkspace.OpenConfiguration())
+        } else {
+          NSWorkspace.shared.open(real)
+        }
+      }
+      return
+    }
     decisionHandler(.allow)
+  }
+
+  /// Satellite windows (Adam, 2026-08-13): the cockpit's window.open becomes
+  /// a REAL macOS window — phone-shaped or desktop per the requested
+  /// features — instead of being silently ignored (WKWebView drops
+  /// window.open without a UIDelegate; the old "Open in a window" button
+  /// did nothing in the app). WebKit loads the request into the returned
+  /// view itself.
+  func webView(
+    _ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+    for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures
+  ) -> WKWebView? {
+    let w = CGFloat(truncating: windowFeatures.width ?? 1280)
+    let h = CGFloat(truncating: windowFeatures.height ?? 860)
+    let win = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: max(320, w), height: max(400, h)),
+      styleMask: [.titled, .closable, .miniaturizable, .resizable],
+      backing: .buffered, defer: false)
+    win.title = "Crate Preview"
+    win.isReleasedWhenClosed = false
+    let wv = WKWebView(frame: win.contentView!.bounds, configuration: configuration)
+    wv.autoresizingMask = [.width, .height]
+    wv.navigationDelegate = self
+    wv.uiDelegate = self
+    win.contentView = wv
+    win.center()
+    win.makeKeyAndOrderFront(nil)
+    satellites.append(win)
+    NotificationCenter.default.addObserver(
+      forName: NSWindow.willCloseNotification, object: win, queue: .main
+    ) { [weak self] _ in
+      self?.satellites.removeAll { $0 == win }
+    }
+    return wv
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

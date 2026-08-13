@@ -5,7 +5,7 @@
 // PURE plans (unit-tested); cli.ts owns the ssh/spawn side effects.
 
 /** Parse a ~/.crate/app-url payload (one tokened 127.0.0.1 URL). */
-export function parseAppUrl(text: string): { port: string; token: string } | undefined {
+export function parseAppUrl(text: string): { port: string; token: string; previewPort?: string } | undefined {
   const line = text.trim().split("\n")[0]?.trim() ?? "";
   let u: URL;
   try {
@@ -17,19 +17,30 @@ export function parseAppUrl(text: string): { port: string; token: string } | und
   // The server binds loopback only (that IS the security posture — the ssh
   // tunnel is the transport); anything else in the file is not our server.
   if (u.hostname !== "127.0.0.1" || !u.port || token === "") return undefined;
-  return { port: u.port, token };
+  // pv = the preview-proxy port (satellites, 2026-08-13) — absent on servers
+  // that predate it; the tunnel plan simply forwards one port then.
+  const pv = u.searchParams.get("pv") ?? "";
+  return { port: u.port, token, ...(/^\d+$/.test(pv) ? { previewPort: pv } : {}) };
 }
 
 /** The tunnel + window plan for a parsed remote app. Same port locally —
  * deterministic, and the token in the URL keeps a collision honest (a
  * different local app on that port won't answer with our token). */
 export function tunnelPlan(
-  app: { port: string; token: string },
+  app: { port: string; token: string; previewPort?: string },
   host: string,
 ): { tunnelArgv: string[]; probeUrl: string; teamUrl: string } {
   const p = app.port;
+  const pv = app.previewPort;
   return {
-    tunnelArgv: ["-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-N", "-L", `${p}:127.0.0.1:${p}`, host],
+    tunnelArgv: [
+      "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-N",
+      "-L", `${p}:127.0.0.1:${p}`,
+      // the preview proxy rides the same tunnel (satellites + Launch in
+      // Chrome reach every preview through the connection the app has)
+      ...(pv ? ["-L", `${pv}:127.0.0.1:${pv}`] : []),
+      host,
+    ],
     probeUrl: `http://127.0.0.1:${p}/health?token=${app.token}`,
     teamUrl: `http://127.0.0.1:${p}/team?token=${app.token}`,
   };

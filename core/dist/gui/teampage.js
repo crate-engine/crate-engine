@@ -925,6 +925,7 @@ async function refresh(){
     ]);
     CHAT=cr.messages||[];GATES=gr.gates||[];SEATSVIEW=tr.seats||[];PREVIEWS=pv.previews||[];
     if(!GATES.length)GATEREL={}; // gate consumed (DEPLOYED) — clear the client-side release memory
+    if(!PREVIEWS.length)PVSRC={}; // previews clear at close — a fresh registration re-points the proxy
     // Blended panes auto-attach (PDR S2): the SERVER owns the PTY lifecycle;
     // the client is purely viewer + keyboard (stream-all + /api/tty/input —
     // no /api/tty/start). Attach once the live PTY exists; when its spawn
@@ -1028,14 +1029,44 @@ async function refreshSeat(seat){
 }
 // ── Preview surface (T5) ──
 function fullUrl(p){const u=p.url.replace(/\\/$/,"");const r=p.route&&p.route!=="/"?p.route:(p.route==="/"?"/":"");return u+(r||"");}
-function renderPreview(){
+// ── satellite previews (Adam, 2026-08-13): previews open as REAL windows
+// (phone-shaped / desktop) and can launch in Chrome. The engine PROXIES each
+// preview through the connection the app already has — the rig's dev server
+// lives on the SERVER's loopback, unreachable from the operator's machine
+// directly (the loose-URL theme, cured structurally). pointPreview aims the
+// proxy (tokened call) and returns the reachable src; an https target is
+// already reachable and opens direct. ──
+let PVSRC={};
+async function pointPreview(p){
+  const key=p.url+"|"+(p.route||"/");
+  if(PVSRC[key])return PVSRC[key];
+  let src=fullUrl(p);
+  if(p.url.indexOf("http://")===0){
+    const r=await fetch(api("/api/preview/point"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({url:p.url})}).then(r=>r.json()).catch(()=>null);
+    if(r&&r.ok&&r.proxyPort)src="http://"+location.hostname+":"+r.proxyPort+(p.route&&p.route!=="/"?p.route:"/");
+  }
+  PVSRC[key]=src;return src;
+}
+function openSatellite(kind,src){
+  // real windows in the app (the shell honors window.open since 2026-08-13);
+  // named per kind so re-clicks refocus instead of stacking duplicates
+  const f=kind==="mobile"?"width=390,height=844":"width=1280,height=860";
+  window.open(src,"crate-pv-"+kind,f+",resizable=yes");
+}
+function launchChrome(src){
+  // in the app: the shell intercepts crate-ext:// and hands the URL to real
+  // Chrome (default-browser fallback); in a plain browser: a normal new tab
+  if(window.crateShell){location.href="crate-ext://open?url="+encodeURIComponent(src);}
+  else window.open(src,"_blank");
+}
+async function renderPreview(){
   const w=document.getElementById("pvwrap");if(!w||!PREVIEWS.length)return;
-  const p=PREVIEWS[0];const src=fullUrl(p);
+  const p=PREVIEWS[0];const src=await pointPreview(p);
   const frameCls=pvView==="mobile"?"mobile":"desktop";
   w.innerHTML='<div class="pvhead"><h3>Preview</h3><span class="pvurl">'+esc(p.label||p.route)+' · '+esc(src)+'</span><span class="pvsp"></span>'
     +'<div class="vptoggle"><button id="pvd" class="'+(pvView==="desktop"?"on":"")+'">Desktop</button><button id="pvm" class="'+(pvView==="mobile"?"on":"")+'">Mobile</button></div></div>'
     +'<div class="pvstage"><iframe class="pvframe '+frameCls+'" src="'+esc(src)+'"></iframe></div>'
-    +'<div class="pvfoot"><button class="pvopen" id="pvopen">Open in a window</button>'
+    +'<div class="pvfoot"><button class="pvopen" id="pvwinm">Phone window</button><button class="pvopen" id="pvwind">Desktop window</button><button class="pvopen" id="pvchrome">Launch in Chrome</button>'
     +'<input class="pvnote" id="pvnote" placeholder="Notes if changes are needed (optional)…">'
     +'<button class="pvbad" id="pvbad">Needs changes</button><button class="pvok" id="pvok">Looks good ✓</button></div>';
   // W3 (audit J1): the desktop scale fits the stage instead of a magic 0.62
@@ -1043,7 +1074,9 @@ function renderPreview(){
     if(st&&f){const s=Math.min(1,Math.max(.3,(st.clientWidth-36)/1280));f.style.transform="scale("+s+")";f.style.transformOrigin="top center";}}
   document.getElementById("pvd").onclick=()=>{pvView="desktop";localStorage.setItem("crate.pvview","desktop");renderPreview();};
   document.getElementById("pvm").onclick=()=>{pvView="mobile";localStorage.setItem("crate.pvview","mobile");renderPreview();};
-  document.getElementById("pvopen").onclick=()=>window.open(src,"_blank");
+  document.getElementById("pvwinm").onclick=()=>openSatellite("mobile",src);
+  document.getElementById("pvwind").onclick=()=>openSatellite("desktop",src);
+  document.getElementById("pvchrome").onclick=()=>launchChrome(src);
   document.getElementById("pvok").onclick=()=>resolvePreview(true);
   document.getElementById("pvbad").onclick=()=>resolvePreview(false,document.getElementById("pvnote").value);
 }

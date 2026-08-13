@@ -8,6 +8,11 @@ export interface GuiState {
     reviveNotes?: ReviveNote[];
     /** T7-3: the dist cli.js this server runs from — used to spawn seat runners. */
     cliPath: string;
+    /** Preview proxy (satellites + Launch in Chrome, 2026-08-13): the target
+     * origin the proxy currently forwards to, pointed by the tokened cockpit
+     * call — and the proxy listener's port. */
+    previewTarget?: string;
+    previewProxyPort?: number;
     /** Pack 3 (stale-reattach): the engine sha THIS process loaded at boot.
      * /api/version reports it so a reattaching `crate open` can tell a stale
      * survivor from a fresh server — engineVersion()'s own sha is DISK truth
@@ -44,6 +49,9 @@ export interface GuiServer {
     token: string;
     url: string;
     state: GuiState;
+    /** The preview proxy listener (unref'd; loopback-only). */
+    previewProxy?: Server;
+    previewProxyPort?: number;
 }
 export declare function startGuiServer(opts?: {
     home?: string;

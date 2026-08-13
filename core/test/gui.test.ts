@@ -317,6 +317,50 @@ test("projectAt: a folder with attached .agents IS the project anchor; anything 
   assert.equal(projectAt(scratch), undefined);
 });
 
+// ── satellite previews: the proxy (2026-08-13) ──
+
+test("preview proxy: point → forward at ROOT paths (absolute assets + the site's own /api survive)", async () => {
+  const { createServer: mkTarget } = await import("node:http");
+  const target = mkTarget((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain", "X-Probe": "target" });
+    res.end(`served:${req.url}`);
+  });
+  await new Promise<void>((res) => target.listen(0, "127.0.0.1", res));
+  const taddr = target.address() as { port: number };
+  try {
+    assert.ok(gui.previewProxyPort && gui.previewProxyPort > 0, "the proxy listener is up");
+    // un-pointed proxy says so in plain words
+    const cold = await fetch(`http://127.0.0.1:${gui.previewProxyPort}/`);
+    assert.equal(cold.status, 503);
+    assert.match(await cold.text(), /no preview pointed/);
+    // pointing requires the token; https targets refuse (they open direct)
+    const bad = await call("POST", "/api/preview/point", { url: "https://example.com" });
+    assert.equal(bad.status, 400);
+    const point = await call("POST", "/api/preview/point", { url: `http://127.0.0.1:${taddr.port}` });
+    assert.equal(point.status, 200);
+    assert.equal(point.body.proxyPort, gui.previewProxyPort);
+    // root path, deep path, and an absolute asset path all forward
+    for (const path of ["/", "/find-my-jdm", "/_next/static/app.js", "/api/leads"]) {
+      const pr: Awaited<ReturnType<typeof fetch>> = await fetch(`http://127.0.0.1:${gui.previewProxyPort}${path}`);
+      assert.equal(pr.status, 200, path);
+      assert.equal(pr.headers.get("x-probe"), "target", "headers pass through");
+      assert.equal(await pr.text(), `served:${path}`);
+    }
+    // GET /api/preview advertises the proxy port to the page
+    const pv = await call("GET", "/api/preview");
+    assert.equal(pv.body.proxyPort, gui.previewProxyPort);
+  } finally {
+    target.close();
+  }
+});
+
+test("preview proxy: a dead target answers 502 in plain words, never a hang", async () => {
+  await call("POST", "/api/preview/point", { url: "http://127.0.0.1:1" }); // nothing listens on port 1
+  const r = await fetch(`http://127.0.0.1:${gui.previewProxyPort}/`);
+  assert.equal(r.status, 502);
+  assert.match(await r.text(), /unreachable.*dev server/i);
+});
+
 // ── S4: the wheel door refuses blended seats ──
 
 test("the wheel door REFUSES a blended seat — the pane IS the live session (no second writer)", async () => {

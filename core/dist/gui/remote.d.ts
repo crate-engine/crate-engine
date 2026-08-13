@@ -2,6 +2,7 @@
 export declare function parseAppUrl(text: string): {
     port: string;
     token: string;
+    previewPort?: string;
 } | undefined;
 /** The tunnel + window plan for a parsed remote app. Same port locally —
  * deterministic, and the token in the URL keeps a collision honest (a
@@ -9,6 +10,7 @@ export declare function parseAppUrl(text: string): {
 export declare function tunnelPlan(app: {
     port: string;
     token: string;
+    previewPort?: string;
 }, host: string): {
     tunnelArgv: string[];
     probeUrl: string;
