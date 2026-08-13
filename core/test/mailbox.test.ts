@@ -3,7 +3,15 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { enqueue, readNew, complete, deadLetter, auditLog } from "../src/mailbox.js";
+import { enqueue, localIsoOffset, readNew, complete, deadLetter, auditLog } from "../src/mailbox.js";
+
+test("localIsoOffset: local seconds + UTC offset — the ONE stamp shape (the two-clocks fix)", () => {
+  // agentctl's now() emits the identical shape (python .astimezone().isoformat
+  // (timespec='seconds')) — live-verified 2026-08-12; a drift here re-splits
+  // the clocks the flaw complained about.
+  assert.match(localIsoOffset(), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
+  assert.match(localIsoOffset(new Date(0)), /^19(69|70)-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
+});
 
 // PHASE-8 T1 (D11, maildir refinement): the headless mailbox. One FILE per
 // message under inbox/<seat>/new/; processed messages MOVE (atomic rename)

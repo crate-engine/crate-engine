@@ -1,3 +1,13 @@
+/** Local ISO seconds WITH the UTC offset (2026-08-12T13:39:05-05:00) — THE
+ * one stamp shape every human-visible line shares: events.log, turns.log,
+ * mail lines, chat mirrors. Pack 5 (the two-clocks flaw, 2026-08-12):
+ * agentctl wrote local-naive while engine writers wrote UTC Z, so every
+ * interleaved timeline read required mental TZ math. Local-first because
+ * the OPERATOR reads these; the offset keeps them machine-resolvable;
+ * agentctl's now() emits the identical shape (python isoformat). Machine
+ * DATA fields (session json, turn meta, filenames) stay UTC ISO — this is
+ * the display-stamp law, not a data migration. */
+export declare function localIsoOffset(d?: Date): string;
 export interface Message {
     /** Absolute path of the message file in new/. */
     path: string;

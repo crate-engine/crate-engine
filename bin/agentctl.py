@@ -139,7 +139,12 @@ def queue_message(role, sender, msg):
     return name
 
 def now():
-    return datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    """ONE CLOCK (Pack 5, 2026-08-12; FLAWS 'events.log mixes two clocks'):
+    local ISO seconds WITH the UTC offset (2026-08-12T13:39:05-05:00) — the
+    identical shape the engine's localIsoOffset() stamps, so interleaved
+    timelines read with zero TZ math. Was local-naive while engine lines
+    were UTC Z; parsers everywhere are token-based and read both."""
+    return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 
 def append(line):
     with open(LOG, "a", encoding="utf-8") as fh:

@@ -29,7 +29,7 @@ import { appendFileSync, existsSync, readdirSync, readFileSync, realpathSync, rm
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { complete, readNew, type Message } from "./mailbox.js";
+import { complete, localIsoOffset, readNew, type Message } from "./mailbox.js";
 import { attendedFile, isAck, runnerLoop, sessionFile, turnsDir, type RunnerLoopOpts, type TurnResult } from "./runner.js";
 import { claudeProjectDir } from "./ptyseat.js";
 import { RIG_PREFIX } from "./staffing.js";
@@ -839,7 +839,7 @@ export interface BlendedTurnOpts {
 
 function stampTurns(projectRoot: string, seat: string, line: string): void {
   try {
-    appendFileSync(join(turnsDir(projectRoot, seat), "turns.log"), `${new Date().toISOString()} | ${line}\n`);
+    appendFileSync(join(turnsDir(projectRoot, seat), "turns.log"), `${localIsoOffset()} | ${line}\n`);
   } catch {
     /* the delivery matters more than the note */
   }
@@ -853,7 +853,7 @@ function stampDeliverFailed(projectRoot: string, seat: string, id: string, reaso
   try {
     appendFileSync(
       join(projectRoot, ".agents", "state", "events.log"),
-      `[${new Date().toISOString()}] DELIVER_FAILED actor=engine seat=${seat} id=#${id} reason="${reason}"\n`,
+      `[${localIsoOffset()}] DELIVER_FAILED actor=engine seat=${seat} id=#${id} reason="${reason}"\n`,
     );
   } catch {
     /* turns.log already carries it */
@@ -1030,7 +1030,7 @@ export async function blendedTurn(o: BlendedTurnOpts): Promise<TurnResult> {
           // only reads state=), same law as DELIVER_FAILED.
           appendFileSync(
             join(projectRoot, ".agents", "state", "events.log"),
-            `[${new Date().toISOString()}] WATCHDOG_NUDGE actor=engine seat=${seat} id=#${r.id} reason="delivery verified, no assistant turn in window — nudge injected"\n`,
+            `[${localIsoOffset()}] WATCHDOG_NUDGE actor=engine seat=${seat} id=#${r.id} reason="delivery verified, no assistant turn in window — nudge injected"\n`,
           );
         } catch {
           /* turns.log already carries it */

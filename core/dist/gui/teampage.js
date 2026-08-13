@@ -93,6 +93,7 @@ header{padding:12px 22px;border-bottom:1px solid var(--line);display:flex;align-
 .console h3{font:600 11px/1 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--amber);margin-bottom:4px}
 .console .csub{font-size:11.5px;color:var(--faint);margin-bottom:14px}
 .crow{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line)}
+.crow.nogauge{opacity:.5}.crow.nogauge .cpc{color:var(--dim)}
 .crow .cname{font:500 10px/1.2 var(--mono);letter-spacing:.1em;text-transform:uppercase;flex:0 0 108px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .crow .cbar{flex:1;height:7px;border-radius:0;background:var(--line2);overflow:hidden}
 .crow .cfill{display:block;height:100%;border-radius:0;background:var(--ok)}
@@ -207,6 +208,7 @@ grid-template-rows:var(--r1,1fr) 1px var(--r2,1fr)}
 .gpct{font:600 9.5px/1 var(--mono);color:var(--faint);min-width:26px;text-align:right}
 .gauge.advisory .gfill{background:var(--amber)}.gauge.advisory .gpct{color:var(--amber)}
 .gauge.high .gfill{background:var(--bad)}.gauge.high .gpct{color:var(--bad)}
+.gauge.nogauge{opacity:.45}.gauge.nogauge .gpct{color:var(--dim)}
 .tstatus{font-size:12px;color:var(--dim);padding:7px 14px;border-bottom:1px solid var(--line);flex:0 0 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tstatus b{color:var(--amber);font-weight:600;text-transform:uppercase;font-size:10px;letter-spacing:.1em;font-family:var(--mono)}
 .feed{flex:1 1 auto;overflow-y:auto;padding:9px 15px;font-size:calc(13.5px * var(--tscale,1));display:flex;flex-direction:column;gap:4px}
@@ -693,7 +695,14 @@ function workingSpan(run){
     +'<span class="wd"></span><span class="rtext">'+racingText(run.startedAtMs,run.liveTokens)+'</span></span>';
 }
 function gaugeHtml(g,seat){
-  if(!g)return"";
+  // Pack 5 (gauge-honesty polish): a seat whose session format the engine
+  // cannot parse (pi/codex today) gets a DIM placeholder, never a blank —
+  // a missing gauge next to live ones read as inconsistency to the operator,
+  // and a fake % is forbidden by the honest-degrade law. Click still offers
+  // the visible refresh.
+  if(!g)return '<span class="gauge nogauge" data-seat="'+seat+'" title="No context gauge for this agent\\'s session format (the engine degrades honestly, never fakes a %) — click to refresh the session">'
+    +'<span class="gbar"><span class="gfill" style="width:0"></span></span>'
+    +'<span class="gpct">–</span></span>';
   const pct=Math.round(g.pct*100);
   const hint=g.band==="ok"?"context "+pct+"% — click to refresh (fresh session)":"context "+pct+"% — "+(g.band==="advisory"?"past 40%, consider a refresh":"high — refresh recommended")+" · click to refresh";
   return '<span class="gauge '+g.band+'" data-seat="'+seat+'" title="'+hint+' ('+(g.tokens/1000).toFixed(0)+'k / '+(g.window/1000).toFixed(0)+'k tokens)">'
@@ -1034,7 +1043,14 @@ async function checkpointTeam(){const r=await fetch(api("/api/context/checkpoint
 function renderConsole(){
   const el=document.getElementById("console");if(!el)return;
   const rows=SEATSVIEW.map(s=>{
-    const g=s.gauge;const pct=g?Math.round(g.pct*100):0;const band=g?g.band:"ok";
+    const g=s.gauge;
+    // No gauge = no NUMBER (Pack 5): the old row showed a fake 0% for a seat
+    // whose session format has no parser — a dim honest dash instead.
+    if(!g)return '<div class="crow nogauge"><span class="cname">'+esc(s.title)+'</span>'
+      +'<span class="cbar"><span class="cfill" style="width:0"></span></span>'
+      +'<span class="cpc" title="no gauge for this agent\\'s session format — honest degrade, never a fake %">–</span>'
+      +'<button class="crefresh" data-seat="'+s.seat+'">refresh</button></div>';
+    const pct=Math.round(g.pct*100);const band=g.band;
     return '<div class="crow '+band+'"><span class="cname">'+esc(s.title)+'</span>'
       +'<span class="cbar"><span class="cfill" style="width:'+Math.max(3,pct)+'%"></span></span>'
       +'<span class="cpc">'+pct+'%</span>'

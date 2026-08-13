@@ -13,6 +13,7 @@
 // runs inside the engine-server process; teamproc branches flagged seats
 // here instead of spawning a runner child.
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { localIsoOffset } from "./mailbox.js";
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { blendedLoop, blendEligible, claudeTrustHandshake, codexTrustHandshake, createStaleTracker, findBlendSessionCandidates, isBlended, seatsToReset, verifyDelivered, watchTaskEnds, } from "./blend.js";
@@ -95,7 +96,7 @@ export class BlendedSeat {
     }
     stamp(line) {
         try {
-            appendFileSync(join(turnsDir(this.o.projectRoot, this.o.seat), "turns.log"), `${new Date().toISOString()} | ${line}\n`);
+            appendFileSync(join(turnsDir(this.o.projectRoot, this.o.seat), "turns.log"), `${localIsoOffset()} | ${line}\n`);
         }
         catch {
             /* the seat matters more than the note */

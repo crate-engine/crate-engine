@@ -29,7 +29,7 @@ import { appendFileSync, existsSync, readdirSync, readFileSync, realpathSync, rm
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { complete, readNew } from "./mailbox.js";
+import { complete, localIsoOffset, readNew } from "./mailbox.js";
 import { attendedFile, isAck, runnerLoop, sessionFile, turnsDir } from "./runner.js";
 import { claudeProjectDir } from "./ptyseat.js";
 import { RIG_PREFIX } from "./staffing.js";
@@ -630,7 +630,7 @@ export async function codexTrustHandshake(readReplay, tty, opts = {}) {
 }
 function stampTurns(projectRoot, seat, line) {
     try {
-        appendFileSync(join(turnsDir(projectRoot, seat), "turns.log"), `${new Date().toISOString()} | ${line}\n`);
+        appendFileSync(join(turnsDir(projectRoot, seat), "turns.log"), `${localIsoOffset()} | ${line}\n`);
     }
     catch {
         /* the delivery matters more than the note */
@@ -642,7 +642,7 @@ function stampTurns(projectRoot, seat, line) {
  * the state machine — a record, never a transition. */
 function stampDeliverFailed(projectRoot, seat, id, reason) {
     try {
-        appendFileSync(join(projectRoot, ".agents", "state", "events.log"), `[${new Date().toISOString()}] DELIVER_FAILED actor=engine seat=${seat} id=#${id} reason="${reason}"\n`);
+        appendFileSync(join(projectRoot, ".agents", "state", "events.log"), `[${localIsoOffset()}] DELIVER_FAILED actor=engine seat=${seat} id=#${id} reason="${reason}"\n`);
     }
     catch {
         /* turns.log already carries it */
@@ -810,7 +810,7 @@ export async function blendedTurn(o) {
             try {
                 // A record, never a transition — no state= token (agentctl's parser
                 // only reads state=), same law as DELIVER_FAILED.
-                appendFileSync(join(projectRoot, ".agents", "state", "events.log"), `[${new Date().toISOString()}] WATCHDOG_NUDGE actor=engine seat=${seat} id=#${r.id} reason="delivery verified, no assistant turn in window — nudge injected"\n`);
+                appendFileSync(join(projectRoot, ".agents", "state", "events.log"), `[${localIsoOffset()}] WATCHDOG_NUDGE actor=engine seat=${seat} id=#${r.id} reason="delivery verified, no assistant turn in window — nudge injected"\n`);
             }
             catch {
                 /* turns.log already carries it */

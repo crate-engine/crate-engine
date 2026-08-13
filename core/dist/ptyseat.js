@@ -10,6 +10,7 @@
 // the fork so the next headless turn remembers what the human did.
 import { appendFileSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { localIsoOffset } from "./mailbox.js";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { attendedFile, isTurnActive, seatEnv, sessionFile, turnsDir, } from "./runner.js";
@@ -337,7 +338,7 @@ export async function startSeatTty(opts) {
     const subs = new Set();
     const stamp = (line) => {
         try {
-            appendFileSync(join(turnsDir(projectRoot, seat), "turns.log"), `${new Date().toISOString()} | ${line}\n`);
+            appendFileSync(join(turnsDir(projectRoot, seat), "turns.log"), `${localIsoOffset()} | ${line}\n`);
         }
         catch {
             /* the session matters more than the note */

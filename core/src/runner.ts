@@ -12,7 +12,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, watch, wri
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { deriveBrainRoot } from "./launcher.js";
-import { complete, deadLetter, readNew, type Message } from "./mailbox.js";
+import { complete, deadLetter, localIsoOffset, readNew, type Message } from "./mailbox.js";
 import { gaugeFrom } from "./gui/context.js";
 import { buildHeadlessInvocation, composeTurnPrompt, parseSessionId, parseUsage, type HeadlessInvocation, type TurnUsage } from "./turn.js";
 import { normalizeAgent, resolveHeadlessWall } from "./wall.js";
@@ -198,7 +198,7 @@ export async function runTurn(opts: RunTurnOpts): Promise<TurnResult> {
     complete(inboxRoot, seat, mail);
     appendFileSync(
       join(turnsDir(projectRoot, seat), "turns.log"),
-      `${new Date().toISOString()} | absorbed | ${mail.length} ack(s), no turn\n`,
+      `${localIsoOffset()} | absorbed | ${mail.length} ack(s), no turn\n`,
     );
     return { ok: true, idle: true };
   }
@@ -418,7 +418,7 @@ export async function runnerLoop(opts: RunnerLoopOpts): Promise<void> {
         heldNoted = true;
         appendFileSync(
           join(turnsDir(opts.projectRoot, opts.seat), "turns.log"),
-          `${new Date().toISOString()} | held — operator has the keys (native TUI); turns resume on release\n`,
+          `${localIsoOffset()} | held — operator has the keys (native TUI); turns resume on release\n`,
         );
       }
       await idleWait();
@@ -429,7 +429,7 @@ export async function runnerLoop(opts: RunnerLoopOpts): Promise<void> {
       try {
         appendFileSync(
           join(turnsDir(opts.projectRoot, opts.seat), "turns.log"),
-          `${new Date().toISOString()} | orphaned — supervisor (pid ${ppid0}) is gone; runner exiting\n`,
+          `${localIsoOffset()} | orphaned — supervisor (pid ${ppid0}) is gone; runner exiting\n`,
         );
       } catch { /* the exit matters more than the note */ }
       // Runner-deaths fix (FLAWS 2026-08-11): SELF-stamp the forensic trail.
@@ -439,7 +439,7 @@ export async function runnerLoop(opts: RunnerLoopOpts): Promise<void> {
       // lines and zero gui.log lines during the battle-test relaunch.
       const home = opts.home ?? process.env.HOME;
       if (home) {
-        const stamp = `[${new Date().toISOString()}] runner ${opts.seat} orphan-exit — supervisor ${ppid0} gone\n`;
+        const stamp = `[${localIsoOffset()}] runner ${opts.seat} orphan-exit — supervisor ${ppid0} gone\n`;
         try {
           const p = join(home, ".crate", "logs", "runners", `${opts.seat}.log`);
           mkdirSync(join(home, ".crate", "logs", "runners"), { recursive: true });
@@ -461,7 +461,7 @@ export async function runnerLoop(opts: RunnerLoopOpts): Promise<void> {
         if (existsSync(sf)) rmSync(sf);
         appendFileSync(
           join(turnsDir(opts.projectRoot, opts.seat), "turns.log"),
-          `${new Date().toISOString()} | auto-refreshed | context ${Math.round(g.pct * 100)}% ≥ ceiling — session dropped\n`,
+          `${localIsoOffset()} | auto-refreshed | context ${Math.round(g.pct * 100)}% ≥ ceiling — session dropped\n`,
         );
       }
     }

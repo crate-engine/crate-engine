@@ -6,19 +6,16 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { localIsoOffset } from "../mailbox.js";
 import { parseRigConf } from "../staffing.js";
 
 function agentctl(projectRoot: string): string {
   return join(projectRoot, ".agents", "bin", "agentctl.py");
 }
 
-/** Local naive ISO seconds — the SAME shape agentctl's now() stamps on
- * mirror lines, so merged chat threads sort correctly. */
-function localIso(): string {
-  const d = new Date();
-  const p = (n: number): string => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-}
+// One clock (Pack 5): every mirror line stamps localIsoOffset — the SAME
+// shape agentctl's now() emits since the two-clocks fix, so merged chat
+// threads sort correctly with zero TZ math for the operator.
 
 /** 2d durable echo/ack (grilled 2026-07-25): append one line to a role's
  * inbox audit mirror WITHOUT waking any runner — the mirror is what the
@@ -28,7 +25,7 @@ function localIso(): string {
 export function mirrorNote(projectRoot: string, role: string, sender: string, text: string): void {
   const inboxDir = join(projectRoot, ".agents", "state", "inbox");
   mkdirSync(inboxDir, { recursive: true });
-  appendFileSync(join(inboxDir, `${role}.md`), `[${localIso()}] (${sender}) ${text.replaceAll("\n", "\\n")}\n`);
+  appendFileSync(join(inboxDir, `${role}.md`), `[${localIsoOffset()}] (${sender}) ${text.replaceAll("\n", "\\n")}\n`);
 }
 
 /** TS port of agentctl's operator_released(): True iff THIS task's gate is

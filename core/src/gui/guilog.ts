@@ -8,6 +8,7 @@
 import { appendFileSync, mkdirSync, openSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tierPaths } from "../usertier.js";
+import { localIsoOffset } from "../mailbox.js";
 
 export function guiLogPath(home: string): string {
   return join(tierPaths(home).root, "logs", "gui.log");
@@ -24,7 +25,7 @@ export function guiLog(home: string, line: string): void {
   try {
     const p = guiLogPath(home);
     mkdirSync(dirname(p), { recursive: true });
-    appendFileSync(p, `[${new Date().toISOString()}] ${line}\n`);
+    appendFileSync(p, `[${localIsoOffset()}] ${line}\n`);
   } catch {
     /* logging must never take the server down */
   }

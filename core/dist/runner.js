@@ -12,7 +12,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, watch, wri
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { deriveBrainRoot } from "./launcher.js";
-import { complete, deadLetter, readNew } from "./mailbox.js";
+import { complete, deadLetter, localIsoOffset, readNew } from "./mailbox.js";
 import { gaugeFrom } from "./gui/context.js";
 import { buildHeadlessInvocation, composeTurnPrompt, parseSessionId, parseUsage } from "./turn.js";
 import { normalizeAgent, resolveHeadlessWall } from "./wall.js";
@@ -171,7 +171,7 @@ export async function runTurn(opts) {
     // the loop-breaker exists for seat-to-seat chatter only.
     if (mail.every((m) => m.from !== "operator" && isAck(m.body))) {
         complete(inboxRoot, seat, mail);
-        appendFileSync(join(turnsDir(projectRoot, seat), "turns.log"), `${new Date().toISOString()} | absorbed | ${mail.length} ack(s), no turn\n`);
+        appendFileSync(join(turnsDir(projectRoot, seat), "turns.log"), `${localIsoOffset()} | absorbed | ${mail.length} ack(s), no turn\n`);
         return { ok: true, idle: true };
     }
     const resumed = sessionAlive(projectRoot, seat, agent); // BEFORE loadSession's pi pre-mint
@@ -366,7 +366,7 @@ export async function runnerLoop(opts) {
             if (isAttended(opts.projectRoot, opts.seat)) {
                 if (!heldNoted) {
                     heldNoted = true;
-                    appendFileSync(join(turnsDir(opts.projectRoot, opts.seat), "turns.log"), `${new Date().toISOString()} | held — operator has the keys (native TUI); turns resume on release\n`);
+                    appendFileSync(join(turnsDir(opts.projectRoot, opts.seat), "turns.log"), `${localIsoOffset()} | held — operator has the keys (native TUI); turns resume on release\n`);
                 }
                 await idleWait();
                 continue;
@@ -374,7 +374,7 @@ export async function runnerLoop(opts) {
             heldNoted = false;
             if (getPpid() !== ppid0) {
                 try {
-                    appendFileSync(join(turnsDir(opts.projectRoot, opts.seat), "turns.log"), `${new Date().toISOString()} | orphaned — supervisor (pid ${ppid0}) is gone; runner exiting\n`);
+                    appendFileSync(join(turnsDir(opts.projectRoot, opts.seat), "turns.log"), `${localIsoOffset()} | orphaned — supervisor (pid ${ppid0}) is gone; runner exiting\n`);
                 }
                 catch { /* the exit matters more than the note */ }
                 // Runner-deaths fix (FLAWS 2026-08-11): SELF-stamp the forensic trail.
@@ -384,7 +384,7 @@ export async function runnerLoop(opts) {
                 // lines and zero gui.log lines during the battle-test relaunch.
                 const home = opts.home ?? process.env.HOME;
                 if (home) {
-                    const stamp = `[${new Date().toISOString()}] runner ${opts.seat} orphan-exit — supervisor ${ppid0} gone\n`;
+                    const stamp = `[${localIsoOffset()}] runner ${opts.seat} orphan-exit — supervisor ${ppid0} gone\n`;
                     try {
                         const p = join(home, ".crate", "logs", "runners", `${opts.seat}.log`);
                         mkdirSync(join(home, ".crate", "logs", "runners"), { recursive: true });
@@ -407,7 +407,7 @@ export async function runnerLoop(opts) {
                     const sf = sessionFile(opts.projectRoot, opts.seat);
                     if (existsSync(sf))
                         rmSync(sf);
-                    appendFileSync(join(turnsDir(opts.projectRoot, opts.seat), "turns.log"), `${new Date().toISOString()} | auto-refreshed | context ${Math.round(g.pct * 100)}% ≥ ceiling — session dropped\n`);
+                    appendFileSync(join(turnsDir(opts.projectRoot, opts.seat), "turns.log"), `${localIsoOffset()} | auto-refreshed | context ${Math.round(g.pct * 100)}% ≥ ceiling — session dropped\n`);
                 }
             }
             if (r.idle) {
