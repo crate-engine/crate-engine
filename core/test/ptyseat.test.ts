@@ -249,3 +249,37 @@ test("the PTY door registers the pane's pid (pty.json) at spawn and clears it on
     rmSync(p, { recursive: true, force: true });
   }
 });
+
+// ── Multi-view sizing (FLAWS 2026-08-12): smallest-client-wins, tmux's rule ──
+
+test("two views of one PTY: the smallest FRESH proposal wins each dimension; expiry restores the survivor", async () => {
+  const p = tmpProject();
+  try {
+    const { startSeatTty, evictSeatTty } = await import("../src/ptyseat.js");
+    const r = await startSeatTty({
+      projectRoot: p, seat: "coder", agent: "pi", blended: true,
+      argvOverride: ["sleep", "10"], sizeProposalTtlMs: 150,
+    });
+    if (!r.ok) throw new Error("no tty: " + JSON.stringify(r));
+    const tty = r.tty;
+    tty.resize(120, 40, "grid");
+    assert.equal(tty.cols, 120);
+    assert.equal(tty.rows, 40);
+    tty.resize(80, 50, "popped"); // smaller cols, LARGER rows — min per dimension
+    assert.equal(tty.cols, 80, "cols clamp to the smallest view (the popped window)");
+    assert.equal(tty.rows, 40, "rows clamp to the smallest view (the grid)");
+    tty.resize(120, 40, "grid"); // the big view re-fits — still clamped by the popped one
+    assert.equal(tty.cols, 80, "last-writer-wins is dead: the other view's proposal still binds");
+    await new Promise((res) => setTimeout(res, 200)); // the popped view closes (TTL expiry)
+    tty.resize(120, 40, "grid"); // the survivor's heartbeat restores its full size
+    assert.equal(tty.cols, 120, "a closed view releases its clamp by TTL");
+    assert.equal(tty.rows, 40);
+    // a CLIENT-LESS call stays the legacy direct path (tests/tools)
+    tty.resize(77, 33);
+    assert.equal(tty.cols, 77);
+    assert.equal(tty.rows, 33);
+    evictSeatTty(p, "coder");
+  } finally {
+    rmSync(p, { recursive: true, force: true });
+  }
+});

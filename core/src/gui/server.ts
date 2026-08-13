@@ -578,10 +578,15 @@ export async function startGuiServer(
           // Backlog 13: the Servers panel — every visible dev server, honest.
           // Registered previews (state/servers.json) ∪ read-only discovery;
           // standing rig.conf infra tagged system-service, never killable.
-          const { serversView } = await import("./servers.js");
+          const { serversView, nagUnregistered } = await import("./servers.js");
           const proj = url.searchParams.get("project") ?? state.project;
           if (!proj) return json(res, 200, { servers: [], orphans: 0, lsofAvailable: false });
-          return json(res, 200, serversView(proj));
+          const view = serversView(proj);
+          // Engine assist (design-previews belt): an unregistered mid-task
+          // listener earns ONE dedup'd nudge to the orchestrator, riding the
+          // panel's own poll. Fail-open inside — never blocks the read.
+          nagUnregistered(proj, view);
+          return json(res, 200, view);
         }
         case "POST /api/servers/kill": {
           // NOTHING DIES WITHOUT THE OPERATOR'S CLICK (the grill's law). Only
@@ -874,7 +879,8 @@ export async function startGuiServer(
           const tty = liveTty(proj, String(body.seat ?? ""));
           if (!tty) return json(res, 404, { error: "no live terminal" });
           const cols = Number(body.cols), rows = Number(body.rows);
-          if (cols > 0 && rows > 0) tty.resize(cols, rows);
+          // client = the view's id — smallest-client-wins across live views
+          if (cols > 0 && rows > 0) tty.resize(cols, rows, body.client ? String(body.client) : undefined);
           return json(res, 200, { ok: true });
         }
         case "POST /api/tty/stop": {
@@ -1014,7 +1020,7 @@ export async function startGuiServer(
           const body = await readBody(req);
           const target = resolveTarget(body.target as string, { home: state.home });
           const plan = planAttach(target, tierPaths(state.home).engineDir, { create: Boolean(body.create) });
-          const report = executeAttach(plan, { gitInit: Boolean(body.gitInit) });
+          const report = executeAttach(plan, { gitInit: Boolean(body.gitInit), githubRepo: Boolean(body.githubRepo) });
           // Flaw 1: an inherited rig.conf may aim DEV_URL at a FOREIGN server
           // — heal BEFORE the doctor runs so its dev-server row probes truth.
           const { healDevUrl } = await import("../attach.js");

@@ -482,6 +482,10 @@ async function restaffDialog(seat){
 // div per wheeled seat; mountTtys re-appends the living terminals after
 // every paint. ──
 let TTYS={};
+// Multi-view PTY sizing (smallest-client-wins): this view's stable id — every
+// resize is a PROPOSAL keyed by it (the heartbeat interval lives with the
+// other timers at the foot of the script).
+const VIEWID=Math.random().toString(36).slice(2)+Date.now().toString(36);
 function b64enc(s){const b=new TextEncoder().encode(s);let x="";b.forEach(c=>x+=String.fromCharCode(c));return btoa(x);}
 function b64dec(s){const raw=atob(s);const u=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)u[i]=raw.charCodeAt(i);return u;}
 // terminal font follows the pane's Cmd+/- zoom scale (same store, same keys)
@@ -546,7 +550,7 @@ function attachTty(seat,skipRefresh){
     // ~3 GB in 15 min down the cockpit link, drowning the operator's WiFi.
     if(term.cols===t.pcols&&term.rows===t.prows)return;
     t.pcols=term.cols;t.prows=term.rows;
-    fetch(api("/api/tty/resize"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat,cols:term.cols,rows:term.rows})}).catch(()=>{});
+    fetch(api("/api/tty/resize"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat,cols:term.cols,rows:term.rows,client:VIEWID})}).catch(()=>{});
   }catch(e){}};
   // keystrokes → the PTY (8ms micro-batch so paste isn't a POST per char)
   let buf="",tm=null;
@@ -1409,6 +1413,14 @@ window.addEventListener("keydown",e=>{if(e.key==="Escape")closeRail();});
 });
 loadWorkspaces();
 setLens(lens);setInterval(refresh,2000);setInterval(tickWorking,1000);
+// Multi-view PTY heartbeat (smallest-client-wins): re-assert this view's fit
+// every 10s so its size proposal stays fresh server-side — a closed view's
+// proposal expires by TTL and the survivor's next beat restores full size.
+// The server dedups identical effective dims, so a heartbeat never SIGWINCHes
+// a quiet TUI (the resize-storm law holds; fit()'s own guard is untouched).
+setInterval(()=>{Object.keys(TTYS).forEach(seat=>{const t=TTYS[seat];
+  if(t&&t.term&&t.pcols)fetch(api("/api/tty/resize"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat,cols:t.pcols,rows:t.prows,client:VIEWID})}).catch(()=>{});
+});},10000);
 // gate bar wiring lives in wire() — the bar repaints with the grid (Pack 4)
 startStream(); // 2c: the SSE push channel — the poll above stays as the floor
 anchorPanels();

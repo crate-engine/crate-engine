@@ -442,6 +442,10 @@ export interface AttachReport {
   firstCommit?: string;
   /** Absolute path of the local origin mirror, when one was set up (PHASE-B #3). */
   originMirror?: string;
+  /** GitHub repo URL when the optional create+push step ran (create mode). */
+  githubRepo?: string;
+  /** Why the GitHub step was skipped/failed — the attach itself succeeded. */
+  githubNote?: string;
 }
 
 function seedTree(srcDir: string, destDir: string, subst: (s: string) => string): void {
@@ -481,7 +485,7 @@ export function writeManagedGitignore(file: string): void {
   writeFileSync(file, outside + GI_BLOCK);
 }
 
-export function executeAttach(plan: AttachPlan, opts: { gitInit?: boolean } = {}): AttachReport {
+export function executeAttach(plan: AttachPlan, opts: { gitInit?: boolean; githubRepo?: boolean } = {}): AttachReport {
   const { projectRoot, project, engineDir } = plan;
   const changed: string[] = [];
   const subst = (s: string) => s.replaceAll("{{PROJECT}}", project).replaceAll("{{PROJECT_PATH}}", projectRoot);
@@ -582,7 +586,38 @@ export function executeAttach(plan: AttachPlan, opts: { gitInit?: boolean } = {}
     originMirror = mirror;
   }
 
-  return { changed, gitInitialized, firstCommit, originMirror };
+  // FLAWS (Adam's gate-day run #1 request; pulled forward 2026-08-13): a
+  // brand-new project gets offered OFF-BOX backup — an optional GitHub repo,
+  // created and pushed in the same breath. gh-CLI only; strictly graceful:
+  // no gh, not signed in, or a refused create must NEVER fail the attach.
+  // The local mirror keeps `origin`; GitHub rides a separate `github` remote.
+  let githubRepo: string | undefined;
+  let githubNote: string | undefined;
+  if (opts.githubRepo && plan.mode === "create") {
+    const run = (cmd: string, args: string[]): string =>
+      execFileSync(cmd, args, { cwd: projectRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    try {
+      run("gh", ["auth", "status"]);
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException;
+      githubNote =
+        err.code === "ENOENT"
+          ? "GitHub step skipped — the gh CLI isn't installed (brew install gh, then gh auth login)"
+          : "GitHub step skipped — gh isn't signed in (run: gh auth login)";
+    }
+    if (!githubNote) {
+      try {
+        run("gh", ["repo", "create", project, "--private", `--source=${projectRoot}`, "--remote=github", "--push"]);
+        githubRepo = run("git", ["remote", "get-url", "github"]).trim();
+      } catch (e) {
+        const err = e as { stderr?: string; message?: string };
+        const detail = (err.stderr ?? err.message ?? "").toString().trim().split("\n")[0];
+        githubNote = `GitHub repo not created — ${detail || "gh repo create failed"}; the project is fine, create it later with: gh repo create ${project} --private --source=. --remote=github --push`;
+      }
+    }
+  }
+
+  return { changed, gitInitialized, firstCommit, originMirror, githubRepo, githubNote };
 }
 
 /**

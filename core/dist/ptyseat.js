@@ -335,6 +335,9 @@ export async function startSeatTty(opts) {
     }
     const chunks = [];
     let chunkBytes = 0;
+    // Multi-view size proposals (smallest-client-wins) — per-view latest fit.
+    const sizeProposals = new Map();
+    const proposalTtl = opts.sizeProposalTtlMs ?? 25_000;
     // Turn-boundary verify: a rolling (ts, bytes) log of pane output, pruned
     // to the last minute — the verifier's busy/quiet probe reads it.
     const outLog = [];
@@ -387,17 +390,35 @@ export async function startSeatTty(opts) {
             }
             catch { /* exited */ }
         },
-        resize: (c, r) => {
+        resize: (c, r, client) => {
+            // Multi-view policy (FLAWS 2026-08-12, smallest-client-wins): with a
+            // client id, this call is a PROPOSAL — the PTY sizes to the min of
+            // every fresh proposal, so the grid and a popped window never leave
+            // each other mis-wrapped (last-writer-wins did). Stale proposals
+            // (closed views) expire by TTL on the next call.
+            let ec = c;
+            let er = r;
+            if (client) {
+                const nowMs = Date.now();
+                sizeProposals.set(client, { c, r, at: nowMs });
+                for (const [k, v] of sizeProposals)
+                    if (nowMs - v.at > proposalTtl)
+                        sizeProposals.delete(k);
+                for (const v of sizeProposals.values()) {
+                    ec = Math.min(ec, v.c);
+                    er = Math.min(er, v.r);
+                }
+            }
             // Resize-storm guard (2026-08-12): the cockpit's 2s repaint re-fits
             // every seat; identical dims must never reach the TUI — a SIGWINCH
             // makes claude repaint its FULL transcript, and five seats doing that
             // flooded the cockpit link (~3 GB in 15 min over WiFi).
-            if (c === tty.cols && r === tty.rows)
+            if (ec === tty.cols && er === tty.rows)
                 return;
-            tty.cols = c;
-            tty.rows = r;
+            tty.cols = ec;
+            tty.rows = er;
             try {
-                proc.resize(c, r);
+                proc.resize(ec, er);
             }
             catch { /* exited */ }
         },

@@ -589,6 +589,7 @@ async function plan() {
       (local.length ? '<h2 style="margin-top:14px;font-size:13.5px">Local-only wiring (never pushed — auto-gitignored)</h2><table>' + rows(local) + '</table>' : '') +
       (keeps.length ? '<p class="dim" style="margin-top:10px;font-size:13px">Already present, kept as-is: ' + keeps.map(w => esc(w.rel)).join(', ') + '</p>' : '') +
       (PLAN.needsGit && PLAN.mode === 'attach' ? '<p class="warn" style="margin-top:10px">This folder is not a git repository. <label><input type="checkbox" id="gitinit" checked> Initialize git (recommended)</label></p>' : '') +
+      (PLAN.mode === 'create' ? '<p style="margin-top:10px"><label><input type="checkbox" id="ghrepo"> Also create a private GitHub repo and push (off-box backup — needs the gh CLI signed in)</label></p>' : '') +
       '<p style="margin-top:14px"><button id="confirm">Looks right — attach the team</button></p></div>';
     el('confirm').onclick = execute;
   } catch (e) { el('msg').innerHTML = '<span class="bad">' + esc(e.message) + '</span>'; }
@@ -597,10 +598,13 @@ async function execute() {
   el('confirm').disabled = true; el('msg').textContent = 'attaching…';
   try {
     const gi = document.getElementById('gitinit');
+    const gr = document.getElementById('ghrepo');
     const r = await api('POST','/api/attach/execute',
-      { target: targetValue(), create: MODE === 'new', gitInit: gi ? gi.checked : false });
+      { target: targetValue(), create: MODE === 'new', gitInit: gi ? gi.checked : false, githubRepo: gr ? gr.checked : false });
     el('msg').innerHTML = '<span class="ok">Done — ' + r.report.changed.length + ' paths written' +
-      (r.report.firstCommit ? ', first commit ' + esc(r.report.firstCommit) : '') + '.</span>' +
+      (r.report.firstCommit ? ', first commit ' + esc(r.report.firstCommit) : '') +
+      (r.report.githubRepo ? ', GitHub: ' + esc(r.report.githubRepo) : '') + '.</span>' +
+      (r.report.githubNote ? ' <span class="warn">' + esc(r.report.githubNote) + '</span>' : '') +
       ' <span class="dim">Taking you to start your engine…</span>';
     // W1: tooling + wiring + boot are ONE preflight now — go to Start.
     setTimeout(() => location.href = link('/start'), 500);

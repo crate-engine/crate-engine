@@ -8,12 +8,12 @@
 // (the teamproc.test.ts pattern), hermetic scratch dirs.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
-import { confirmedKill, hasLsof, parseEtime, serversView } from "../src/gui/servers.js";
+import { confirmedKill, hasLsof, nagUnregistered, parseEtime, serversView } from "../src/gui/servers.js";
 import { startGuiServer, type GuiServer } from "../src/gui/server.js";
 import { teamPage } from "../src/gui/teampage.js";
 
@@ -306,4 +306,53 @@ test("the masthead grows a Servers chip with its overlay, chevron sync, and 10s 
   assert.ok(html.includes("system service"), "standing infra is tagged");
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]!);
   for (const s of scripts) new Function(s); // the whole page script still parses
+});
+
+// ── ENGINE ASSIST (design-previews entry, thread 2): the belt behind the
+// registration law — ONE dedup'd nudge for an unregistered mid-task listener ──
+
+test("an unregistered mid-task listener earns ONE nudge to the orchestrator — dedup'd forever after", { skip: !LSOF }, async () => {
+  const rig = makeRig("py-nag");
+  mkdirSync(join(rig, ".agents", "bin"), { recursive: true });
+  copyFileSync(AGENTCTL, join(rig, ".agents", "bin", "agentctl.py"));
+  writeFileSync(
+    join(rig, ".agents", "state", "events.log"),
+    "[2026-08-13T11:00:00-05:00] START_IMPL actor=orchestrator state=implementing\n",
+  );
+  const { port } = await spawnListener(rig);
+  const nagged = nagUnregistered(rig, serversView(rig), 0);
+  assert.deepEqual(nagged, [port], "the discovered listener gets its nudge");
+  const newDir = join(rig, ".agents", "state", "inbox", "orchestrator", "new");
+  const mails = readdirSync(newDir);
+  assert.ok(mails.length >= 1, "the nudge is a REAL delivery (maildir)");
+  const body = readFileSync(join(newDir, mails[0]!), "utf8");
+  assert.match(body, /ENGINE ASSIST/, "named as the engine's assist, not a seat's voice");
+  assert.match(body, new RegExp(`:${port}`), "names the port");
+  assert.match(body, /agentctl\.py preview/, "carries the exact registration command");
+  // dedup: the next poll nags NOTHING (marker persisted)
+  assert.deepEqual(nagUnregistered(rig, serversView(rig), 0), [], "one nudge per loop+port, ever");
+  assert.equal(readdirSync(newDir).length, mails.length, "no duplicate mail");
+});
+
+test("the nag holds its tongue: idle loop → silent; registered listener → silent", { skip: !LSOF }, async () => {
+  // idle rig: a live listener but NO loop in flight
+  const idle = makeRig("py-nag-idle");
+  mkdirSync(join(idle, ".agents", "bin"), { recursive: true });
+  copyFileSync(AGENTCTL, join(idle, ".agents", "bin", "agentctl.py"));
+  await spawnListener(idle);
+  assert.deepEqual(nagUnregistered(idle, serversView(idle), 0), [], "no loop in flight → no nag");
+  // active rig, but the listener is REGISTERED — the law was followed
+  const reg = makeRig("py-nag-reg");
+  mkdirSync(join(reg, ".agents", "bin"), { recursive: true });
+  copyFileSync(AGENTCTL, join(reg, ".agents", "bin", "agentctl.py"));
+  writeFileSync(
+    join(reg, ".agents", "state", "events.log"),
+    "[2026-08-13T11:00:00-05:00] START_IMPL actor=orchestrator state=implementing\n",
+  );
+  const l = await spawnListener(reg);
+  writeFileSync(
+    join(reg, ".agents", "state", "servers.json"),
+    JSON.stringify([{ url: `http://127.0.0.1:${l.port}`, port: l.port, label: "x", from: "designer", task: "main", at: "2026-08-13T11:01:00", status: "live" }]),
+  );
+  assert.deepEqual(nagUnregistered(reg, serversView(reg), 0), [], "a registered listener is the law FOLLOWED — silence");
 });

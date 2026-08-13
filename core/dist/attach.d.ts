@@ -86,11 +86,16 @@ export interface AttachReport {
     firstCommit?: string;
     /** Absolute path of the local origin mirror, when one was set up (PHASE-B #3). */
     originMirror?: string;
+    /** GitHub repo URL when the optional create+push step ran (create mode). */
+    githubRepo?: string;
+    /** Why the GitHub step was skipped/failed — the attach itself succeeded. */
+    githubNote?: string;
 }
 /** Rewrite the managed .gitignore block: strip any old block, append the fresh one. */
 export declare function writeManagedGitignore(file: string): void;
 export declare function executeAttach(plan: AttachPlan, opts?: {
     gitInit?: boolean;
+    githubRepo?: boolean;
 }): AttachReport;
 /**
  * Flaw 1 (Adam's battle test, 2026-08-10): an attached repo can carry a

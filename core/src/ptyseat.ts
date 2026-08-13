@@ -272,7 +272,12 @@ export interface TtySeat {
   /** The ENGINE door: writes to the PTY without touching the human
    * timestamps (deliveries must not look like typing to the quiet gate). */
   inject(data: Buffer | string): void;
-  resize(cols: number, rows: number): void;
+  /** Multi-view policy (FLAWS 2026-08-12, smallest-client-wins): pass a
+   * stable per-view `client` id and the PTY sizes to the MIN of every fresh
+   * proposal (tmux's rule) — two views of one seat never fight. Views
+   * heartbeat their dims (~10s); a closed view's proposal expires by TTL.
+   * A client-less call applies the dims directly (legacy/tests). */
+  resize(cols: number, rows: number, client?: string): void;
   kill(): void;
   subscribe(cb: (ev: TtyEvent) => void): () => void;
   /** Everything the terminal has shown so far (ring-capped) — the replay a
@@ -326,6 +331,9 @@ export interface StartTtyOpts {
    * lifecycle/registry seams need a spawnable stub where no agent CLI exists,
    * the same reason runner.ts carries invocationOverride. */
   argvOverride?: string[];
+  /** Tests only: shrink the multi-view size-proposal TTL (default 25s) so
+   * expiry is provable without a 25s wait. */
+  sizeProposalTtlMs?: number;
 }
 
 /**
@@ -410,6 +418,9 @@ export async function startSeatTty(opts: StartTtyOpts): Promise<StartTtyResult> 
 
   const chunks: Buffer[] = [];
   let chunkBytes = 0;
+  // Multi-view size proposals (smallest-client-wins) — per-view latest fit.
+  const sizeProposals = new Map<string, { c: number; r: number; at: number }>();
+  const proposalTtl = opts.sizeProposalTtlMs ?? 25_000;
   // Turn-boundary verify: a rolling (ts, bytes) log of pane output, pruned
   // to the last minute — the verifier's busy/quiet probe reads it.
   const outLog: Array<[number, number]> = [];
@@ -455,15 +466,31 @@ export async function startSeatTty(opts: StartTtyOpts): Promise<StartTtyResult> 
       // push its own quiet window away or read as a half-typed draft.
       try { proc.write(typeof d === "string" ? d : d.toString("utf8")); } catch { /* exited */ }
     },
-    resize: (c, r) => {
+    resize: (c, r, client) => {
+      // Multi-view policy (FLAWS 2026-08-12, smallest-client-wins): with a
+      // client id, this call is a PROPOSAL — the PTY sizes to the min of
+      // every fresh proposal, so the grid and a popped window never leave
+      // each other mis-wrapped (last-writer-wins did). Stale proposals
+      // (closed views) expire by TTL on the next call.
+      let ec = c;
+      let er = r;
+      if (client) {
+        const nowMs = Date.now();
+        sizeProposals.set(client, { c, r, at: nowMs });
+        for (const [k, v] of sizeProposals) if (nowMs - v.at > proposalTtl) sizeProposals.delete(k);
+        for (const v of sizeProposals.values()) {
+          ec = Math.min(ec, v.c);
+          er = Math.min(er, v.r);
+        }
+      }
       // Resize-storm guard (2026-08-12): the cockpit's 2s repaint re-fits
       // every seat; identical dims must never reach the TUI — a SIGWINCH
       // makes claude repaint its FULL transcript, and five seats doing that
       // flooded the cockpit link (~3 GB in 15 min over WiFi).
-      if (c === tty.cols && r === tty.rows) return;
-      tty.cols = c;
-      tty.rows = r;
-      try { proc.resize(c, r); } catch { /* exited */ }
+      if (ec === tty.cols && er === tty.rows) return;
+      tty.cols = ec;
+      tty.rows = er;
+      try { proc.resize(ec, er); } catch { /* exited */ }
     },
     kill: () => {
       try { proc.kill(); } catch { /* already gone */ }

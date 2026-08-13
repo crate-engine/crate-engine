@@ -488,7 +488,38 @@ export function executeAttach(plan, opts = {}) {
         }
         originMirror = mirror;
     }
-    return { changed, gitInitialized, firstCommit, originMirror };
+    // FLAWS (Adam's gate-day run #1 request; pulled forward 2026-08-13): a
+    // brand-new project gets offered OFF-BOX backup — an optional GitHub repo,
+    // created and pushed in the same breath. gh-CLI only; strictly graceful:
+    // no gh, not signed in, or a refused create must NEVER fail the attach.
+    // The local mirror keeps `origin`; GitHub rides a separate `github` remote.
+    let githubRepo;
+    let githubNote;
+    if (opts.githubRepo && plan.mode === "create") {
+        const run = (cmd, args) => execFileSync(cmd, args, { cwd: projectRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+        try {
+            run("gh", ["auth", "status"]);
+        }
+        catch (e) {
+            const err = e;
+            githubNote =
+                err.code === "ENOENT"
+                    ? "GitHub step skipped — the gh CLI isn't installed (brew install gh, then gh auth login)"
+                    : "GitHub step skipped — gh isn't signed in (run: gh auth login)";
+        }
+        if (!githubNote) {
+            try {
+                run("gh", ["repo", "create", project, "--private", `--source=${projectRoot}`, "--remote=github", "--push"]);
+                githubRepo = run("git", ["remote", "get-url", "github"]).trim();
+            }
+            catch (e) {
+                const err = e;
+                const detail = (err.stderr ?? err.message ?? "").toString().trim().split("\n")[0];
+                githubNote = `GitHub repo not created — ${detail || "gh repo create failed"}; the project is fine, create it later with: gh repo create ${project} --private --source=. --remote=github --push`;
+            }
+        }
+    }
+    return { changed, gitInitialized, firstCommit, originMirror, githubRepo, githubNote };
 }
 /**
  * Flaw 1 (Adam's battle test, 2026-08-10): an attached repo can carry a

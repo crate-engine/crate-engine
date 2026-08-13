@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -256,4 +257,66 @@ test("makeDir: creates inside the jail and steps in; junk names + duplicates ref
   }
   assert.throws(() => makeDir(join(home, "Projects"), "my-new-app", { home }), /already exists/);
   assert.throws(() => makeDir("/private/tmp", "x", { home }), /inside your home/);
+});
+
+// ── FLAWS (Adam's gate-day run #1 request, pulled forward 2026-08-13):
+// create-new offers a GitHub repo — gh-CLI driven, strictly graceful. The
+// local mirror keeps `origin`; GitHub rides its own `github` remote. ──
+
+test("create + GitHub: gh authed → repo created on a `github` remote and PUSHED; origin stays the mirror", () => {
+  const fakebin = join(scratch, "fakebin-gh-ok");
+  mkdirSync(fakebin, { recursive: true });
+  const ghRemotes = join(scratch, "gh-remotes");
+  mkdirSync(ghRemotes, { recursive: true });
+  writeFileSync(
+    join(fakebin, "gh"),
+    [
+      "#!/bin/sh",
+      'if [ "$1 $2" = "auth status" ]; then exit 0; fi',
+      'if [ "$1 $2" = "repo create" ]; then',
+      `  git init --bare --quiet "${ghRemotes}/$3.git"`,
+      `  git remote add github "${ghRemotes}/$3.git"`,
+      "  git push --quiet github HEAD",
+      "  exit 0",
+      "fi",
+      "exit 1",
+    ].join("\n") + "\n",
+  );
+  chmodSync(join(fakebin, "gh"), 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${fakebin}:${oldPath}`;
+  try {
+    const target = resolveTarget("ghproj", { projectsRoot: join(scratch, "projects") });
+    const plan = planAttach(target, engine, { create: true });
+    const report = executeAttach(plan, { githubRepo: true });
+    assert.equal(report.githubNote, undefined, report.githubNote ?? "");
+    assert.match(report.githubRepo ?? "", /ghproj\.git$/, "the github remote URL is reported");
+    const remotes = execFileSync("git", ["remote"], { cwd: target.projectRoot, encoding: "utf8" }).trim().split("\n").sort();
+    assert.deepEqual(remotes, ["github", "origin"], "origin stays the local mirror; GitHub rides its own remote");
+    const pushed = execFileSync("git", ["ls-remote", "--heads", join(ghRemotes, "ghproj.git")], { encoding: "utf8" });
+    assert.ok(pushed.trim().length > 0, "the first commit is PUSHED off-box");
+  } finally {
+    process.env.PATH = oldPath;
+  }
+});
+
+test("create + GitHub: gh not signed in → the attach itself still SUCCEEDS, with an honest note and no github remote", () => {
+  const fakebin = join(scratch, "fakebin-gh-noauth");
+  mkdirSync(fakebin, { recursive: true });
+  writeFileSync(join(fakebin, "gh"), "#!/bin/sh\nexit 1\n");
+  chmodSync(join(fakebin, "gh"), 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${fakebin}:${oldPath}`;
+  try {
+    const target = resolveTarget("ghproj2", { projectsRoot: join(scratch, "projects") });
+    const plan = planAttach(target, engine, { create: true });
+    const report = executeAttach(plan, { githubRepo: true });
+    assert.ok(report.firstCommit, "the attach itself succeeded");
+    assert.equal(report.githubRepo, undefined);
+    assert.match(report.githubNote ?? "", /signed in/);
+    const remotes = execFileSync("git", ["remote"], { cwd: target.projectRoot, encoding: "utf8" }).trim().split("\n");
+    assert.ok(!remotes.includes("github"), "no half-made github remote");
+  } finally {
+    process.env.PATH = oldPath;
+  }
 });

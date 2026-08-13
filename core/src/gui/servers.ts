@@ -300,6 +300,76 @@ export async function confirmedKill(port: number, pid: number, exec: Exec = sh):
   };
 }
 
+/** Engine assist (FLAWS design-previews entry, thread 2 — the belt behind
+ * the Pack-2 binder law): a walled seat that binds a listener mid-task and
+ * never registers it earns ONE dedup'd nudge to the orchestrator. The law
+ * stays a binder law; this only reminds. Conditions: a discovered
+ * (unregistered, non-system, project-owned) row; a loop in flight
+ * (events.log non-idle); the listener ≥graceSecs old (a seat about to
+ * register gets its grace). Dedup marker: state/preview-nag.json, keyed
+ * task:port — one nudge per loop per port, ever. Fail-open everywhere. */
+export function nagUnregistered(proj: string, view: ServersView, graceSecs = 120): number[] {
+  const nagged: number[] = [];
+  try {
+    const stateDir = join(proj, ".agents", "state");
+    let log = "";
+    try {
+      log = readFileSync(join(stateDir, "events.log"), "utf8");
+    } catch {
+      return nagged;
+    }
+    // the /api/loop derivation: task= lines drive per-task states, bare lines
+    // the session scalar; any non-idle state = a loop in flight
+    let scalar = "down";
+    const tasks: Record<string, string> = {};
+    for (const l of log.split("\n")) {
+      const st = l.match(/ state=(\S+)/)?.[1];
+      if (!st) continue;
+      const task = l.match(/ task=(\S+)/)?.[1];
+      if (task) tasks[task] = st;
+      else scalar = st;
+    }
+    const IDLE = new Set(["down", "idle", "checkpointed", "initialized"]);
+    const liveTasks = Object.keys(tasks).filter((t) => !IDLE.has(tasks[t]!));
+    if (!liveTasks.length && IDLE.has(scalar)) return nagged;
+    const loopKey = liveTasks.sort().join(",") || scalar;
+
+    const markerPath = join(stateDir, "preview-nag.json");
+    let marker: Record<string, string> = {};
+    try {
+      marker = JSON.parse(readFileSync(markerPath, "utf8")) as Record<string, string>;
+    } catch {
+      marker = {};
+    }
+    for (const row of view.servers) {
+      if (row.kind !== "discovered") continue;
+      if (row.ageSecs === null || row.ageSecs < graceSecs) continue;
+      const key = `${loopKey}:${row.port}`;
+      if (marker[key]) continue;
+      const mins = Math.max(1, Math.round(row.ageSecs / 60));
+      const msg =
+        `ENGINE ASSIST: a dev server on :${row.port} (pid ${row.pid}) has been live ~${mins}m this loop ` +
+        `but is NOT registered with the cockpit. If it is meant for the operator's eyes, have the owning ` +
+        `seat run: python3 .agents/bin/agentctl.py preview http://127.0.0.1:${row.port} --from <seat> — ` +
+        `registered previews ride the proxy and always reach the operator; loose URLs are fallback only.`;
+      try {
+        execFileSync("python3", [join(proj, ".agents", "bin", "agentctl.py"), "deliver", "orchestrator", "--from", "engine", msg], {
+          cwd: proj,
+          stdio: "ignore",
+        });
+        marker[key] = new Date().toISOString();
+        nagged.push(row.port);
+      } catch {
+        /* no agentctl / delivery failed — try again next poll, never wedge */
+      }
+    }
+    if (nagged.length) writeFileSync(markerPath, JSON.stringify(marker));
+  } catch {
+    /* the assist must never break the panel */
+  }
+  return nagged;
+}
+
 /** One click, still the operator's: kill every killable orphan, sequentially,
  * each through the same confirmed-kill. Freed ports prune on the next read. */
 export async function sweepOrphans(proj: string, exec: Exec = sh): Promise<KillResult[]> {
