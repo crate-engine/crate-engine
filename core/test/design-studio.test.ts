@@ -87,3 +87,11 @@ test("cmd-4 RAISES existing frames, not just opens missing ones — a buried stu
   const fn = shell.slice(shell.indexOf("@objc func openStudio"), shell.indexOf("validateMenuItem"));
   assert.ok(fn.includes('hasPrefix("Crate Studio")') && fn.includes("orderFrontRegardless"), "existing studio windows order front before the page opens any missing ones");
 });
+
+test("the Preview overlay is a SLOT CARD now — the second viewer and the second verdict door are gone (Adam, 2026-08-14)", () => {
+  assert.ok(!html.includes("pvstage") && !html.includes("pvframe"), "the embedded iframe viewer is dead — viewing lives in the studio");
+  assert.ok(!html.includes("pvok") && !html.includes("pvbad") && !html.includes("pvnote"), "verdict buttons + note box are gone — verdicts are SPOKEN in the panes");
+  assert.ok(html.includes('id="pvstudio"') && html.includes("crateOpenStudio()"), "the card's primary door opens the studio");
+  assert.ok(html.includes('id="pvchrome"'), "Launch in Chrome stays — the routing law's one explicit escape hatch");
+  assert.ok(html.includes('pvstatus \'+(live?"live":"down")'), "the card tells the slot's probed truth");
+});

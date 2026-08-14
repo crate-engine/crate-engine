@@ -94,24 +94,26 @@ header{padding:12px 22px;border-bottom:1px solid var(--line);display:flex;align-
 /* static dot, NOT pulsing (Adam, 2026-08-13): a registered preview is an offer, not an alarm */
 .navbtn.pending::before{content:"";position:absolute;top:-1px;left:-12px;width:8px;height:8px;border-radius:50%;background:var(--amber)}
 .navbtn.hidden{display:none}
-/* Preview surface (T5) */
-.pvwrap{position:absolute;top:53px;left:50%;transform:translateX(-50%);width:min(1100px,calc(100vw - 32px));max-height:86vh;background:var(--panel);border:1px solid var(--line2);border-top:0;border-radius:0;box-shadow:0 12px 50px rgba(0,0,0,.6);display:flex;flex-direction:column;overflow:hidden}
-.pvhead{display:flex;align-items:center;gap:14px;padding:13px 18px;border-bottom:1px solid var(--line);flex:0 0 auto}
+/* Preview SLOT CARD (Adam, 2026-08-14 — demoted from viewer to card after
+   the studio shipped): viewing lives in the STUDIO frames; verdicts are
+   SPOKEN in the panes. The card carries only the slot's state (what design,
+   from whom, live/down) and the two doors — Open Design Studio + the
+   explicit Launch in Chrome (the routing law's one manual escape hatch). */
+.pvwrap{position:absolute;top:53px;right:14px;width:min(400px,calc(100vw - 32px));background:var(--panel);border:1px solid var(--line2);border-top:0;border-radius:0;box-shadow:0 12px 50px rgba(0,0,0,.6);overflow:hidden}
+.pvhead{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line)}
 .pvhead h3{font:600 11px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--amber)}
-.pvhead .pvurl{font:500 11.5px/1 var(--mono);color:var(--dim)}
 .pvhead .pvsp{flex:1}
-.vptoggle{display:flex;border:1px solid var(--line2);border-radius:0;overflow:hidden}
-.vptoggle button{background:transparent;color:var(--dim);border:0;padding:7px 13px;font:600 10px/1 var(--body);letter-spacing:.1em;text-transform:uppercase;cursor:pointer}
-.vptoggle button.on{background:var(--amber);color:#151109}
-.pvstage{flex:1 1 auto;overflow:auto;background:var(--carbon);display:flex;justify-content:center;align-items:flex-start;padding:18px}
-.pvframe{background:#fff;border:0;box-shadow:0 6px 24px rgba(0,0,0,.4)}
-.pvframe.mobile{width:390px;height:844px;border-radius:14px}
-.pvframe.desktop{width:1280px;height:800px;transform-origin:top center}
-.pvfoot{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--line);flex:0 0 auto}
-.pvfoot .pvnote{flex:1;background:var(--panel2);border:1px solid var(--line2);border-radius:0;color:var(--fg);padding:9px 12px;font-size:13px;outline:none}
+.pvstatus{font:600 10px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase}
+.pvstatus.live{color:var(--ok)}
+.pvstatus.down{color:var(--bad,#e4614d)}
+.pvbody{padding:13px 16px;border-bottom:1px solid var(--line)}
+.pvbody .pvlabel{font:600 13px/1.4 var(--body);color:var(--fg)}
+.pvbody .pvmeta{font:500 11px/1.6 var(--mono);color:var(--dim);margin-top:4px}
+.pvfoot{display:flex;align-items:center;gap:10px;padding:12px 16px}
 .pvfoot .pvopen{background:transparent;border:1px solid var(--line2);border-radius:0;color:var(--dim);padding:9px 13px;font:600 10px/1 var(--body);letter-spacing:.08em;text-transform:uppercase;cursor:pointer}
-.pvfoot .pvbad{background:transparent;border:1px solid var(--line2);border-radius:0;color:var(--fg);padding:9px 14px;font:600 11px/1 var(--body);cursor:pointer}
-.pvfoot .pvok{background:var(--ok);color:#0b1410;border:0;border-radius:0;padding:9px 16px;font:600 11px/1 var(--body);cursor:pointer}
+.pvfoot .pvopen:hover{color:var(--fg);border-color:var(--dim)}
+.pvfoot .pvstudio{border-color:var(--amber);color:var(--amber)}
+.pvfoot .pvstudio:hover{background:rgba(226,163,60,.1);color:var(--amber)}
 /* Context Console overlay (D12) */
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;z-index:50}
 .overlay.open{display:block}
@@ -865,7 +867,6 @@ function startStream(){
     pokeRefresh();
   };
 }
-let pvView=localStorage.getItem("crate.pvview")||"desktop";
 const BOLT='<svg class="wbolt" viewBox="0 0 24 24" aria-hidden="true"><path d="M13.2 2 4.8 13.4h5L8.6 22l10.6-13.2h-6.2L13.2 2z"/></svg>';
 // racing-inspired working words (Adam) — rotate like Claude Code's spinner
 const RACING=["Revving","Shifting","Drafting","Redlining","Launching","Boosting","Cornering","Downshifting","Throttling","Tuning","Pitting","Gunning","Flooring","Hustling","Chasing the apex","Warming the tires","Hitting the gas"];
@@ -1195,7 +1196,7 @@ async function refresh(){
       if(rkDirty("downchip",dtxt)){dc.hidden=dead.length===0;if(dead.length)dc.textContent=dtxt;}
     }
     if(rkDirty("pvtab",String(PREVIEWS.length>0)))syncPreviewTab();
-    if(document.getElementById("pvoverlay").classList.contains("open")&&rkDirty("pvpanel",JSON.stringify([PREVIEWS,pvView])))renderPreview();
+    if(document.getElementById("pvoverlay").classList.contains("open")&&rkDirty("pvpanel",JSON.stringify(PREVIEWS)))renderPreview();
     if(document.getElementById("ctxoverlay").classList.contains("open")&&rkDirty("ctxpanel",JSON.stringify(SEATSVIEW.map(s=>[s.seat,s.title,s.agent,s.model,s.gauge]))))renderConsole();
     // custom layout: tiles render in SLOT order (the user's arrangement),
     // seams ride along as drag handles
@@ -1346,29 +1347,23 @@ function launchChrome(src){
   else window.open(src,"_blank");
 }
 async function renderPreview(){
+  // The SLOT CARD (2026-08-14): viewing moved to the studio frames; verdicts
+  // are spoken in the panes (Adam's law — the old Looks good/Needs changes
+  // buttons were a second, contradicting door). The card shows the slot and
+  // holds the two doors: Open Design Studio + the explicit Launch in Chrome.
   const w=document.getElementById("pvwrap");if(!w||!PREVIEWS.length)return;
   const p=PREVIEWS[0];const src=await pointPreview(p);
-  const frameCls=pvView==="mobile"?"mobile":"desktop";
-  w.innerHTML='<div class="pvhead"><h3>Preview</h3><span class="pvurl">'+esc(p.label||p.route)+' · '+esc(src)+'</span><span class="pvsp"></span>'
-    +'<div class="vptoggle"><button id="pvd" class="'+(pvView==="desktop"?"on":"")+'">Desktop</button><button id="pvm" class="'+(pvView==="mobile"?"on":"")+'">Mobile</button></div></div>'
-    +'<div class="pvstage"><iframe class="pvframe '+frameCls+'" src="'+esc(src)+'"></iframe></div>'
-    +'<div class="pvfoot"><button class="pvopen" id="pvwinm">Phone window</button><button class="pvopen" id="pvwind">Desktop window</button><button class="pvopen" id="pvchrome">Launch in Chrome</button>'
-    +'<input class="pvnote" id="pvnote" placeholder="Notes if changes are needed (optional)…">'
-    +'<button class="pvbad" id="pvbad">Needs changes</button><button class="pvok" id="pvok">Looks good ✓</button></div>';
-  // W3 (audit J1): the desktop scale fits the stage instead of a magic 0.62
-  if(pvView==="desktop"){const st=w.querySelector(".pvstage"),f=w.querySelector(".pvframe");
-    if(st&&f){const s=Math.min(1,Math.max(.3,(st.clientWidth-36)/1280));f.style.transform="scale("+s+")";f.style.transformOrigin="top center";}}
-  document.getElementById("pvd").onclick=()=>{pvView="desktop";localStorage.setItem("crate.pvview","desktop");renderPreview();};
-  document.getElementById("pvm").onclick=()=>{pvView="mobile";localStorage.setItem("crate.pvview","mobile");renderPreview();};
-  document.getElementById("pvwinm").onclick=()=>openStudioFrame("mobile");
-  document.getElementById("pvwind").onclick=()=>openStudioFrame("desktop");
+  let st=null;
+  try{st=await fetch(api("/api/studio/state")).then(r=>r.json());}catch(e){}
+  const live=st&&st.mode==="live";
+  w.innerHTML='<div class="pvhead"><h3>Design Slot</h3><span class="pvsp"></span>'
+    +'<span class="pvstatus '+(live?"live":"down")+'">'+(live?"live":"server down")+'</span></div>'
+    +'<div class="pvbody"><div class="pvlabel">'+esc(p.label||p.route)+'</div>'
+    +'<div class="pvmeta">'+esc(p.route||"/")+' · from '+esc(p.from||"?")+'</div></div>'
+    +'<div class="pvfoot"><button class="pvopen pvstudio" id="pvstudio">Open Design Studio</button>'
+    +'<span class="pvsp" style="flex:1"></span><button class="pvopen" id="pvchrome">Launch in Chrome</button></div>';
+  document.getElementById("pvstudio").onclick=()=>window.crateOpenStudio();
   document.getElementById("pvchrome").onclick=()=>launchChrome(src);
-  document.getElementById("pvok").onclick=()=>resolvePreview(true);
-  document.getElementById("pvbad").onclick=()=>resolvePreview(false,document.getElementById("pvnote").value);
-}
-async function resolvePreview(approve,note){
-  await fetch(api("/api/preview/resolve"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({approve,note:note||""})});
-  document.getElementById("pvoverlay").classList.remove("open");refresh();
 }
 function syncPreviewTab(){
   const b=document.getElementById("pvbtn");if(!b)return;
