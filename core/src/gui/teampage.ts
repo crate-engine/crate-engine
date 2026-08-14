@@ -579,13 +579,42 @@ function attachTty(seat,skipRefresh){
     const ss=term._core&&term._core._selectionService;
     if(ss&&typeof ss.disable==="function")ss.disable=()=>{ss._enabled=false;};
   }catch(err){}
-  // Selection recency + MEMORY (the copy bridge picks the NEWEST selection;
-  // the cached text is the belt — if anything else clears the live
-  // selection between release and Cmd+C, the copy still lands). A new
-  // mousedown in the pane invalidates the memory (a plain click IS a
-  // deliberate deselect).
-  term.onSelectionChange(()=>{const sel=term.hasSelection()?term.getSelection():"";if(sel){t.selAt=Date.now();t.selText=sel;}});
-  wrap.addEventListener("mousedown",()=>{t.selText=null;},true);
+  // Selection recency + MEMORY + the KEEPER (Adam's pane-vanish, both live
+  // finds 2026-08-14): claude's TUI clears selections two ways — mouse-mode
+  // re-asserts (cured above via the disable patch) and ALT-SCREEN flips
+  // during redraw cycles (proven live: 1049l wipes the selection through a
+  // path the disable patch can't cover; pi/deepseek TUIs don't flip, which
+  // is exactly why coder/reviewer never suffered). The KEEPER: a clear with
+  // NO user gesture behind it gets the selection PUT BACK from the
+  // remembered range — validated against the remembered text (a restore
+  // mid-flip can land on the wrong content; mismatch → clear → retry on
+  // the refire, capped) — while a deliberate click or keystroke stays a
+  // deselect. The 20s memory text also backs both copy doors regardless.
+  term.onSelectionChange(()=>{
+    const sel=term.hasSelection()?term.getSelection():"";
+    if(sel){
+      t.selAt=Date.now();t.selText=sel;
+      try{const p=term.getSelectionPosition();if(p)t.selPos={s:p.start,e:p.end,n:0};}catch(err){}
+      return;
+    }
+    const pos=t.selPos;
+    if(!pos||pos.n>=10)return;                                   // gave up — the memory belt still covers Cmd+C
+    if(t.lastDownAt&&Date.now()-t.lastDownAt<600)return;         // user clicked — honor the deselect
+    if(t.lastKeyAt&&Date.now()-t.lastKeyAt<600)return;           // user typed — terminals clear on input
+    if(!t.selAt||Date.now()-t.selAt>20000)return;                // stale — let it go
+    pos.n++;
+    setTimeout(()=>{try{
+      if(term.hasSelection())return;                             // something restored it already
+      const len=(pos.e.y-pos.s.y)*term.cols+(pos.e.x-pos.s.x);
+      if(len<=0)return;
+      term.select(pos.s.x,pos.s.y,len);
+      // validate: a mid-flip restore can grab the wrong content — clear it
+      // (which refires this keeper for another capped try) rather than let
+      // a WRONG highlight feed a copy
+      if(t.selText&&term.getSelection()!==t.selText)term.clearSelection();
+    }catch(err){}},60);
+  });
+  wrap.addEventListener("mousedown",()=>{t.selText=null;t.selPos=null;t.lastDownAt=Date.now();},true);
   // Clipboard (Adam, 2026-08-11; REWIRED 2026-08-13 — "still not working" in
   // the app shell): WKWebView's async clipboard SILENTLY REJECTS its promise
   // (a sync try/catch never sees it), so copy now falls back to the
@@ -594,6 +623,7 @@ function attachTty(seat,skipRefresh){
   // belt if the async API is walled. Plain Ctrl+C still passes as SIGINT.
   const execCopy=t=>{const ta=document.createElement("textarea");ta.value=t;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(err){}ta.remove();term.focus();};
   term.attachCustomKeyEventHandler(e=>{
+    if(e.type==="keydown"&&!e.metaKey)t.lastKeyAt=Date.now(); // real typing — the keeper must honor input-clears
     if(e.type==="keydown"&&e.metaKey&&!e.ctrlKey&&(e.key==="c"||e.key==="C")){
       // live selection first; the 20s selection MEMORY as the belt (a TUI
       // redraw may have cleared the live one between release and Cmd+C)

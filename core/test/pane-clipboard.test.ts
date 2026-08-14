@@ -27,6 +27,18 @@ test("the page exposes the copy bridge: NEWEST non-empty xterm selection wins, D
   assert.ok(fn.includes("getSelection"), "plain DOM selections still copy (chat text)");
 });
 
+test("the KEEPER: a no-gesture clear (alt-screen flip) puts the selection BACK, validated against the remembered text", () => {
+  // root cause #3 (the coder/reviewer vs claude split): claude's TUI flips
+  // the alt screen during redraws; EVERY buffer switch clears the selection
+  // through a path the disable patch can't cover. pi/deepseek don't flip.
+  assert.ok(html.includes("t.selPos={s:p.start,e:p.end,n:0}"), "the selection RANGE is remembered, not just the text");
+  assert.ok(html.includes("pos.n>=10"), "restores are capped — never an infinite tug-of-war");
+  assert.ok(html.includes("t.lastDownAt&&Date.now()-t.lastDownAt<600"), "a deliberate click stays a deselect");
+  assert.ok(html.includes("t.lastKeyAt&&Date.now()-t.lastKeyAt<600"), "typing stays an input-clear (terminal law)");
+  assert.ok(html.includes("term.select(pos.s.x,pos.s.y,len)"), "the range is re-applied");
+  assert.ok(html.includes("term.getSelection()!==t.selText)term.clearSelection()"), "a wrong-content restore is cleared, never left to feed a copy");
+});
+
 test("the selection SURVIVES the TUI's mouse-mode re-asserts, and Cmd+C keeps a 20s memory", () => {
   // root cause #2 (Adam's live find): claude re-asserts DECSET tracking on
   // redraws; xterm's protocol-change handler calls selectionService.disable()
@@ -35,7 +47,7 @@ test("the selection SURVIVES the TUI's mouse-mode re-asserts, and Cmd+C keeps a 
   assert.ok(html.includes("term._core&&term._core._selectionService"), "…guarded private-API surgery — an xterm upgrade degrades, never breaks");
   assert.ok(html.includes("t.selText=sel"), "non-empty selections are remembered");
   assert.ok((html.match(/Date\.now\(\)-t\.selAt<20000/g) || []).length >= 2, "the 20s memory backs BOTH doors (in-page Cmd+C and the native bridge)");
-  assert.ok(html.includes('wrap.addEventListener("mousedown",()=>{t.selText=null;}'), "a new gesture (or deliberate click-deselect) forgets the memory");
+  assert.ok(html.includes('wrap.addEventListener("mousedown",()=>{t.selText=null;t.selPos=null;t.lastDownAt=Date.now();}'), "a new gesture forgets the memory AND stamps the gesture clock for the keeper");
 });
 
 test("drag-to-select is cockpit law: tracking TUIs (claude) can't swallow the drag", () => {
