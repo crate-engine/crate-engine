@@ -178,7 +178,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     wv.uiDelegate = self
     win.contentView = wv
     win.center()
-    win.makeKeyAndOrderFront(nil)
+    // Design Studio frames (backlog 10, PDR dev/pdr/design-studio.md): the
+    // /studio windows are FIXTURES — they remember their exact monitor
+    // position across launches (autosave restores over the center() above),
+    // and they NEVER steal focus: auto-deploy means a frame appearing on the
+    // side monitor while Adam keeps typing in the cockpit, so they order
+    // front without becoming key. The mobile frame carries a real iPhone UA
+    // so the build renders its mobile experience (viewport parity with QA's
+    // device profile; real-device truth stays the QR ritual).
+    if let u = navigationAction.request.url, u.path == "/studio" {
+      let comps = URLComponents(url: u, resolvingAgainstBaseURL: false)
+      let mobile = comps?.queryItems?.first(where: { $0.name == "frame" })?.value == "mobile"
+      win.title = mobile ? "Crate Studio — Mobile" : "Crate Studio — Desktop"
+      win.setFrameAutosaveName(mobile ? "CrateStudioMobile" : "CrateStudioDesktop")
+      if mobile {
+        wv.customUserAgent =
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+      }
+      win.orderFrontRegardless()
+    } else {
+      win.makeKeyAndOrderFront(nil)
+    }
     satellites.append(win)
     NotificationCenter.default.addObserver(
       forName: NSWindow.willCloseNotification, object: win, queue: .main
@@ -301,6 +321,11 @@ final class PanelActions: NSObject, NSMenuItemValidation {
   @objc func openTeam(_ sender: Any?) { open("team") }
   @objc func openContext(_ sender: Any?) { open("context") }
   @objc func openHealth(_ sender: Any?) { open("health") }
+  /// Backlog 10: the Design Studio — one item opens BOTH frames (Adam's
+  /// call: the pair is the default; closing either one is free).
+  @objc func openStudio(_ sender: Any?) {
+    cockpit()?.evaluateJavaScript("window.crateOpenStudio && window.crateOpenStudio()", completionHandler: nil)
+  }
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { cockpit() != nil }
 }
 
@@ -337,6 +362,10 @@ viewMenu.addItem(contextMenuItem)
 let healthMenuItem = NSMenuItem(title: "Health", action: #selector(PanelActions.openHealth(_:)), keyEquivalent: "3")
 healthMenuItem.target = PanelActions.shared
 viewMenu.addItem(healthMenuItem)
+viewMenu.addItem(NSMenuItem.separator())
+let studioMenuItem = NSMenuItem(title: "Design Studio", action: #selector(PanelActions.openStudio(_:)), keyEquivalent: "4")
+studioMenuItem.target = PanelActions.shared
+viewMenu.addItem(studioMenuItem)
 viewItem.submenu = viewMenu
 app.mainMenu = mainMenu
 

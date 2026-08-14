@@ -84,6 +84,28 @@ export interface Preview {
     from: string;
     at: string;
 }
+/** Design Studio slot state (backlog 10, PDR dev/pdr/design-studio.md) —
+ * DERIVED, never reported: the slot is occupied iff a registered preview
+ * exists (preview.json is written/cleared by agentctl on the design task's
+ * own transitions — a spoken "design locked" clears it through the same
+ * door). One slot: previews[0] under the one-at-a-time law. The two
+ * waiting truths read differently on the glass: a free slot ("awaiting the
+ * next design task" — which is also the honest post-lock state) vs a dead
+ * server behind an occupied slot ("the preview server went down"). */
+export type StudioState = {
+    mode: "waiting";
+    reason: string;
+} | {
+    mode: "live";
+    url: string;
+    route: string;
+    label: string;
+    from: string;
+    at: string;
+    key: string;
+    proxyPort?: number;
+};
+export declare function deriveStudioState(previews: Preview[], probeOk: boolean, proxyPort?: number): StudioState;
 /** PHASE-8 T5: pending previews (pages flagged for the human's eyes). */
 export declare function pendingPreviews(projectRoot: string): Preview[];
 /** The human's verdict on a preview: clear it, and (if changes) tell the

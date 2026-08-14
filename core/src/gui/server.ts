@@ -367,6 +367,37 @@ export interface GuiServer {
  * `project|seat`). Server-lifetime state, epsilon-sized (64-char cap each). */
 const paneLineBuf = new Map<string, string>();
 
+// Design Studio liveness probe (backlog 10): is the slot's target answering?
+// Cached briefly — two frames poll every ~4s and must never hammer the rig's
+// dev server. ANY http answer counts as alive (an error page is still a
+// running server); only a dead socket reads "down" on the glass.
+const studioProbe = { at: 0, target: "", ok: false };
+function probePreviewTarget(target: string): Promise<boolean> {
+  if (studioProbe.target === target && Date.now() - studioProbe.at < 2500) return Promise.resolve(studioProbe.ok);
+  return new Promise((resolve) => {
+    const done = (ok: boolean) => {
+      studioProbe.at = Date.now();
+      studioProbe.target = target;
+      studioProbe.ok = ok;
+      resolve(ok);
+    };
+    try {
+      const rq = httpRequest(target, { method: "HEAD", timeout: 1500 }, (r) => {
+        r.resume();
+        done(true);
+      });
+      rq.on("error", () => done(false));
+      rq.on("timeout", () => {
+        rq.destroy();
+        done(false);
+      });
+      rq.end();
+    } catch {
+      done(false);
+    }
+  });
+}
+
 export async function startGuiServer(
   opts: { home?: string; project?: string; detectPath?: string; cliPath?: string } = {},
 ): Promise<GuiServer> {
@@ -460,6 +491,13 @@ export async function startGuiServer(
           return html(res, attachPage());
         case "GET /start":
           return html(res, startPage());
+        case "GET /studio": {
+          // Design Studio glass (backlog 10, PDR dev/pdr/design-studio.md):
+          // one page, framed mobile or desktop by query — pure glass, no
+          // cockpit chrome. The shell gives it a persistent NSWindow.
+          const { studioPage } = await import("./studiopage.js");
+          return html(res, studioPage(url.searchParams.get("frame") === "mobile" ? "mobile" : "desktop"));
+        }
         case "GET /arm":
         case "GET /check":
         case "GET /health": {
@@ -572,6 +610,22 @@ export async function startGuiServer(
           const proj = url.searchParams.get("project") ?? state.project;
           if (!proj) return json(res, 200, { previews: [], proxyPort: state.previewProxyPort ?? null });
           return json(res, 200, { previews: pendingPreviews(proj), proxyPort: state.previewProxyPort ?? null, target: state.previewTarget ?? null });
+        }
+        case "GET /api/studio/state": {
+          // Design Studio (backlog 10): the slot, DERIVED + probed. Reading
+          // this also AIMS the proxy at the slot's http target (idempotent) —
+          // the glass never holds a raw dev URL (the routing law); it renders
+          // through the engine's proxy or waits.
+          const { pendingPreviews, deriveStudioState } = await import("./teamctl.js");
+          const proj = url.searchParams.get("project") ?? state.project;
+          const previews = proj ? pendingPreviews(proj) : [];
+          const first = previews[0];
+          let probeOk = false;
+          if (first) {
+            if (first.url.startsWith("http://")) state.previewTarget = first.url;
+            probeOk = first.url.startsWith("http") ? await probePreviewTarget(first.url) : true;
+          }
+          return json(res, 200, deriveStudioState(previews, probeOk, state.previewProxyPort));
         }
         case "POST /api/preview/point": {
           // Satellites + Launch in Chrome (2026-08-13): aim the preview proxy

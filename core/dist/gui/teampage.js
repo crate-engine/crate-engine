@@ -1305,12 +1305,30 @@ async function pointPreview(p){
   }
   PVSRC[key]=src;return src;
 }
-function openSatellite(kind,src){
-  // real windows in the app (the shell honors window.open since 2026-08-13);
-  // named per kind so re-clicks refocus instead of stacking duplicates
-  const f=kind==="mobile"?"width=390,height=844":"width=1280,height=860";
-  window.open(src,"crate-pv-"+kind,f+",resizable=yes");
+// ── THE DESIGN STUDIO (backlog 10, PDR dev/pdr/design-studio.md) ──
+// Two persistent frames of pure glass. The frames load /studio (never a raw
+// preview URL — the ROUTING LAW: engine previews render in the studio; the
+// old loose-URL satellite path is deliberately gone, Chrome only by the
+// explicit button). Named targets: re-opens refocus the same frames.
+const STUDIO={};let STUDIOKEY="";const STUDIOCLOSED={mobile:false,desktop:false};
+function openStudioFrame(kind){
+  const f=kind==="mobile"?"width=375,height=812":"width=1280,height=860";
+  STUDIO[kind]=window.open("/studio?frame="+kind+"&"+tq(),"crate-studio-"+kind,f+",resizable=yes");
 }
+window.crateOpenStudio=()=>{openStudioFrame("mobile");openStudioFrame("desktop");};
+// AUTO-DEPLOY (Adam's call at the grill): a NEW design going live opens the
+// frames on their remembered monitors — the shell orders them front WITHOUT
+// stealing focus. A frame Adam closed mid-task stays closed for THAT task
+// (respected via the closed-flags); the next design task re-deploys it.
+function studioAutoDeploy(){
+  const key=PREVIEWS.length?(PREVIEWS[0].url+"|"+(PREVIEWS[0].route||"/")):"";
+  if(key!==STUDIOKEY){
+    STUDIOKEY=key;STUDIOCLOSED.mobile=false;STUDIOCLOSED.desktop=false;
+    if(key)["mobile","desktop"].forEach(k=>{if(!STUDIO[k]||STUDIO[k].closed)openStudioFrame(k);});
+  }
+  ["mobile","desktop"].forEach(k=>{if(key&&STUDIO[k]&&STUDIO[k].closed){STUDIOCLOSED[k]=true;STUDIO[k]=null;}});
+}
+setInterval(studioAutoDeploy,5000);
 function launchChrome(src){
   // in the app: the shell intercepts crate-ext:// and hands the URL to real
   // Chrome (default-browser fallback); in a plain browser: a normal new tab
@@ -1332,8 +1350,8 @@ async function renderPreview(){
     if(st&&f){const s=Math.min(1,Math.max(.3,(st.clientWidth-36)/1280));f.style.transform="scale("+s+")";f.style.transformOrigin="top center";}}
   document.getElementById("pvd").onclick=()=>{pvView="desktop";localStorage.setItem("crate.pvview","desktop");renderPreview();};
   document.getElementById("pvm").onclick=()=>{pvView="mobile";localStorage.setItem("crate.pvview","mobile");renderPreview();};
-  document.getElementById("pvwinm").onclick=()=>openSatellite("mobile",src);
-  document.getElementById("pvwind").onclick=()=>openSatellite("desktop",src);
+  document.getElementById("pvwinm").onclick=()=>openStudioFrame("mobile");
+  document.getElementById("pvwind").onclick=()=>openStudioFrame("desktop");
   document.getElementById("pvchrome").onclick=()=>launchChrome(src);
   document.getElementById("pvok").onclick=()=>resolvePreview(true);
   document.getElementById("pvbad").onclick=()=>resolvePreview(false,document.getElementById("pvnote").value);

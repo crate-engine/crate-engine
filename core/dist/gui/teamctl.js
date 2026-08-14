@@ -315,6 +315,25 @@ export function chatHistory(projectRoot, limit = 40) {
     msgs.sort((a, b) => a.at.localeCompare(b.at));
     return msgs.slice(-limit);
 }
+export function deriveStudioState(previews, probeOk, proxyPort) {
+    const p = previews[0];
+    if (!p)
+        return { mode: "waiting", reason: "awaiting the next design task" };
+    if (!probeOk)
+        return { mode: "waiting", reason: "the preview server went down" };
+    return {
+        mode: "live",
+        url: p.url,
+        route: p.route || "/",
+        label: p.label || p.route || p.url,
+        from: p.from,
+        at: p.at,
+        key: `${p.url}|${p.route || "/"}`,
+        // http targets render through the engine's proxy (the glass never holds
+        // a raw dev URL — the routing law); anything else passes through as-is
+        ...(p.url.startsWith("http://") && proxyPort ? { proxyPort } : {}),
+    };
+}
 /** PHASE-8 T5: pending previews (pages flagged for the human's eyes). */
 export function pendingPreviews(projectRoot) {
     const f = join(projectRoot, ".agents", "state", "preview.json");

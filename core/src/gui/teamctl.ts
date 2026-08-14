@@ -312,6 +312,36 @@ export interface Preview {
   at: string;
 }
 
+/** Design Studio slot state (backlog 10, PDR dev/pdr/design-studio.md) —
+ * DERIVED, never reported: the slot is occupied iff a registered preview
+ * exists (preview.json is written/cleared by agentctl on the design task's
+ * own transitions — a spoken "design locked" clears it through the same
+ * door). One slot: previews[0] under the one-at-a-time law. The two
+ * waiting truths read differently on the glass: a free slot ("awaiting the
+ * next design task" — which is also the honest post-lock state) vs a dead
+ * server behind an occupied slot ("the preview server went down"). */
+export type StudioState =
+  | { mode: "waiting"; reason: string }
+  | { mode: "live"; url: string; route: string; label: string; from: string; at: string; key: string; proxyPort?: number };
+
+export function deriveStudioState(previews: Preview[], probeOk: boolean, proxyPort?: number): StudioState {
+  const p = previews[0];
+  if (!p) return { mode: "waiting", reason: "awaiting the next design task" };
+  if (!probeOk) return { mode: "waiting", reason: "the preview server went down" };
+  return {
+    mode: "live",
+    url: p.url,
+    route: p.route || "/",
+    label: p.label || p.route || p.url,
+    from: p.from,
+    at: p.at,
+    key: `${p.url}|${p.route || "/"}`,
+    // http targets render through the engine's proxy (the glass never holds
+    // a raw dev URL — the routing law); anything else passes through as-is
+    ...(p.url.startsWith("http://") && proxyPort ? { proxyPort } : {}),
+  };
+}
+
 /** PHASE-8 T5: pending previews (pages flagged for the human's eyes). */
 export function pendingPreviews(projectRoot: string): Preview[] {
   const f = join(projectRoot, ".agents", "state", "preview.json");
