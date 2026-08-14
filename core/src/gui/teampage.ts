@@ -577,6 +577,17 @@ function attachTty(seat,skipRefresh){
     macOptionClickForcesSelection:true,altClickMovesCursor:false});
   const fit=new FitAddon.FitAddon();term.loadAddon(fit);
   term.open(wrap);
+  // WebGL renderer (2026-08-14, from Adam's red-notch find): the DOM renderer
+  // measures text per style run, and rounding drift painted colored row
+  // backgrounds past the cell grid — ragged right edges on pi's full-width
+  // blocks. WebGL draws an exact cell grid (and is the faster renderer).
+  // Graceful both ways: no GL context (headless, driver) → the DOM renderer
+  // stands; a context lost mid-flight disposes back to DOM, never a dead pane.
+  try{
+    const gl=new WebglAddon.WebglAddon();
+    gl.onContextLoss(()=>{try{gl.dispose();}catch(err){}});
+    term.loadAddon(gl);
+  }catch(err){}
   // The FORCE (capture phase — runs before xterm's own handler): a plain
   // left-button gesture in a TRACKING pane becomes a forced-selection
   // gesture (alt+shift as far as xterm can tell), so drag selects exactly
@@ -1633,6 +1644,16 @@ const teamOv=document.getElementById("teamoverlay");
 document.getElementById("teambtn").onclick=()=>{teamOv.classList.add("open");renderTeamMenu();};
 teamOv.onclick=e=>{if(e.target===teamOv)teamOv.classList.remove("open");};
 window.addEventListener("keydown",e=>{if(e.key==="Escape")closeRail();});
+// Backlog 11 (native menus, 2026-08-14): the mac shell's View menu opens the
+// static panels through this bridge (⌘1/⌘2/⌘3 live in the OS chrome). In the
+// shell those three navbtns retire — one home per control. Preview and
+// Servers KEEP their in-page buttons everywhere: their state (pending dot,
+// server chip) lives in the page, and native menus can't carry it.
+window.crateOpenPanel=name=>{
+  const b=document.getElementById({team:"teambtn",context:"ctxbtn",health:"healthbtn"}[name]||"");
+  if(b&&b.onclick){anchorPanels();b.onclick();}
+};
+if(window.crateShell){["teambtn","ctxbtn","healthbtn"].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.add("hidden");});}
 // PHASE-B #5: the nav chevrons spin while their panel is open — observed off
 // the overlay's class so every open/close path (click, outside, actions) syncs.
 [["pvbtn","pvoverlay"],["teambtn","teamoverlay"],["svbtn","svoverlay"],["ctxbtn","ctxoverlay"],["healthbtn","healthoverlay"]].forEach(p=>{
@@ -1685,6 +1706,7 @@ export function teamPage(view: TeamView): string {
 <main id="grid"></main>
 <script src="/assets/xterm.js"></script>
 <script src="/assets/addon-fit.js"></script>
+<script src="/assets/addon-webgl.js"></script>
 <script>${VIEW_JS}</script>
 </body></html>`;
 }

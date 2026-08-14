@@ -55,3 +55,13 @@ test("the PANES' bars match too: xterm's own div scrollbar (not webkit) is pinne
   assert.ok(html.includes(".xterm .xterm-scrollable-element>.scrollbar.vertical{width:8px!important}"), "the lane is 8px like everything else");
   assert.ok(html.includes(">.slider{width:8px!important;left:0!important;border-radius:0!important}"), "…and the slider itself: 8px, flush, square (!important beats xterm's inline styles)");
 });
+
+// ── WebGL renderer (2026-08-14, from Adam's red-notch find) ──
+
+test("the panes render on WebGL with a graceful DOM fallback — the cell grid is exact, never ragged", () => {
+  assert.ok(html.includes('<script src="/assets/addon-webgl.js"></script>'), "the addon is self-hosted like xterm itself (no CDN law)");
+  assert.ok(html.includes("new WebglAddon.WebglAddon()"), "the renderer loads at the pane mount");
+  assert.ok(html.includes("gl.onContextLoss"), "a lost GL context disposes back to the DOM renderer — never a dead pane");
+  const mount = html.indexOf("new WebglAddon.WebglAddon()");
+  assert.ok(html.lastIndexOf("try{", mount) > html.lastIndexOf("term.open(wrap)", mount), "activation is guarded — no GL means the DOM renderer simply stands");
+});

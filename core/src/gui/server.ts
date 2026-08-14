@@ -401,6 +401,16 @@ export async function startGuiServer(
   };
   const token = randomUUID();
 
+  // Backlog 2b: the telemetry mirror rides the server's project lifecycle —
+  // it starts with the project, follows an attach, and (being unref'd)
+  // dies with the process. One writer, per the park-time law.
+  const { startTelemetryMirror } = await import("../telemetry.js");
+  let telemetry = state.project ? startTelemetryMirror(state.project, home) : undefined;
+  const retargetTelemetry = (projectRoot: string) => {
+    telemetry?.stop();
+    telemetry = startTelemetryMirror(projectRoot, home);
+  };
+
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -428,6 +438,7 @@ export async function startGuiServer(
           "xterm.js": { file: join("@xterm", "xterm", "lib", "xterm.js"), type: "text/javascript" },
           "xterm.css": { file: join("@xterm", "xterm", "css", "xterm.css"), type: "text/css" },
           "addon-fit.js": { file: join("@xterm", "addon-fit", "lib", "addon-fit.js"), type: "text/javascript" },
+          "addon-webgl.js": { file: join("@xterm", "addon-webgl", "lib", "addon-webgl.js"), type: "text/javascript" },
         };
         const a = ASSETS[url.pathname.slice("/assets/".length)];
         const file = a ? join(import.meta.dirname, "..", "..", "node_modules", a.file) : undefined;
@@ -1035,6 +1046,7 @@ export async function startGuiServer(
           const { healDevUrl } = await import("../attach.js");
           const devHeal = await healDevUrl(plan.projectRoot);
           state.project = plan.projectRoot; // health/boot now operate on it
+          retargetTelemetry(plan.projectRoot); // 2b: the mirror follows the project
           writeLastProject(state.home, plan.projectRoot); // P6-5: survives restarts
           (await import("./workspaces.js")).registerWorkspace(state.home, plan.projectRoot); // T7-1: rail entry
           const doctor = await runDoctor(plan.projectRoot);

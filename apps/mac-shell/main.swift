@@ -47,6 +47,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
   /// Satellite preview windows (Adam, 2026-08-13): retained here — a closed
   /// window is pruned by the willClose observer, never left dangling.
   var satellites: [NSWindow] = []
+  /// Backlog 11: the View menu's panel items stay DISABLED until the cockpit
+  /// page is actually loaded (error/boot screens have no panels to open).
+  var cockpitReady = false
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     let frame = NSRect(x: 0, y: 0, width: 1440, height: 900)
@@ -109,6 +112,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         }
       }
     }
+  }
+
+  /// Backlog 11: the cockpit is "connected" when the MAIN webview finishes
+  /// loading a loopback page (the engine's door is always a tunneled/local
+  /// loopback URL; brand/error screens load via loadHTMLString → no host).
+  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    guard webView == self.webView else { return }
+    let host = webView.url?.host ?? ""
+    cockpitReady = (host == "127.0.0.1" || host == "localhost")
   }
 
   func webView(
@@ -271,6 +283,27 @@ final class EditActions: NSObject {
   }
 }
 
+// Backlog 11 (Adam, 2026-08-12; shipped 2026-08-14): the cockpit's STATIC
+// panels move into the OS chrome — a real View menu opens Team/Context/
+// Health through the page's crateOpenPanel bridge (⌘1/⌘2/⌘3). Items
+// validate against cockpitReady, so they sit disabled on boot/error
+// screens. The page retires its three in-page buttons when crateShell —
+// one home per control. Preview/Servers stay in-page (stateful chrome).
+final class PanelActions: NSObject, NSMenuItemValidation {
+  static let shared = PanelActions()
+  private func cockpit() -> WKWebView? {
+    guard let d = NSApp.delegate as? AppDelegate, d.cockpitReady else { return nil }
+    return d.webView
+  }
+  private func open(_ name: String) {
+    cockpit()?.evaluateJavaScript("window.crateOpenPanel && window.crateOpenPanel('\(name)')", completionHandler: nil)
+  }
+  @objc func openTeam(_ sender: Any?) { open("team") }
+  @objc func openContext(_ sender: Any?) { open("context") }
+  @objc func openHealth(_ sender: Any?) { open("health") }
+  func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { cockpit() != nil }
+}
+
 // Minimal real menus — copy/paste and Cmd-Q must work inside the cockpit
 // (and inside TUI panes). Without an Edit menu, WKWebView eats shortcuts.
 let mainMenu = NSMenu()
@@ -293,6 +326,18 @@ editMenu.addItem(copyItem)
 editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
 editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
 editItem.submenu = editMenu
+let viewItem = NSMenuItem(); mainMenu.addItem(viewItem)
+let viewMenu = NSMenu(title: "View")
+let teamMenuItem = NSMenuItem(title: "Team", action: #selector(PanelActions.openTeam(_:)), keyEquivalent: "1")
+teamMenuItem.target = PanelActions.shared
+viewMenu.addItem(teamMenuItem)
+let contextMenuItem = NSMenuItem(title: "Context", action: #selector(PanelActions.openContext(_:)), keyEquivalent: "2")
+contextMenuItem.target = PanelActions.shared
+viewMenu.addItem(contextMenuItem)
+let healthMenuItem = NSMenuItem(title: "Health", action: #selector(PanelActions.openHealth(_:)), keyEquivalent: "3")
+healthMenuItem.target = PanelActions.shared
+viewMenu.addItem(healthMenuItem)
+viewItem.submenu = viewMenu
 app.mainMenu = mainMenu
 
 let delegate = AppDelegate()
