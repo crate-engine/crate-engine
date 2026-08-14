@@ -778,6 +778,11 @@ export async function startGuiServer(
           // always complete. Budget: 1 main SSE + 1 tty SSE, ever.
           const proj = url.searchParams.get("project") ?? state.project;
           if (!proj) return json(res, 400, { error: "no project" });
+          // client = the view's id. This stream IS the view's liveness for
+          // the smallest-client-wins size policy (tmux's model, Adam's call
+          // 2026-08-14: no heartbeats) — its close releases the view's size
+          // proposals immediately, and a (re)opening view re-proposes.
+          const viewClient = url.searchParams.get("client") ?? "";
           const { liveTtyList } = await import("../ptyseat.js");
           const ttys = liveTtyList(proj);
           res.writeHead(200, {
@@ -804,6 +809,10 @@ export async function startGuiServer(
           req.on("close", () => {
             clearInterval(hbAll);
             for (const u of unsubs) u();
+            // release this view's size clamps NOW — fresh list, not the
+            // connect-time one (the view may have proposed onto ttys born
+            // after this stream opened, right before its reopen)
+            if (viewClient) for (const t of liveTtyList(proj)) t.dropSizeProposal(viewClient);
           });
           return;
         }

@@ -78,11 +78,17 @@ export interface TtySeat {
      * timestamps (deliveries must not look like typing to the quiet gate). */
     inject(data: Buffer | string): void;
     /** Multi-view policy (FLAWS 2026-08-12, smallest-client-wins): pass a
-     * stable per-view `client` id and the PTY sizes to the MIN of every fresh
-     * proposal (tmux's rule) — two views of one seat never fight. Views
-     * heartbeat their dims (~10s); a closed view's proposal expires by TTL.
-     * A client-less call applies the dims directly (legacy/tests). */
+     * stable per-view `client` id and the PTY sizes to the MIN of every live
+     * proposal (tmux's rule) — two views of one seat never fight. Liveness is
+     * the view's SSE stream, exactly as tmux's is the client socket (Adam's
+     * call, 2026-08-14: event-driven, no heartbeats, no TTL): the stream
+     * handler drops the client's proposal on disconnect, and the view
+     * re-proposes when it (re)opens its stream. A client-less call applies
+     * the dims directly (legacy/tests). */
     resize(cols: number, rows: number, client?: string): void;
+    /** Release one view's size proposal (its stream closed) — the survivors'
+     * min applies IMMEDIATELY; with no proposals left the size just stands. */
+    dropSizeProposal(client: string): void;
     kill(): void;
     subscribe(cb: (ev: TtyEvent) => void): () => void;
     /** Everything the terminal has shown so far (ring-capped) — the replay a
@@ -125,9 +131,6 @@ export interface StartTtyOpts {
      * lifecycle/registry seams need a spawnable stub where no agent CLI exists,
      * the same reason runner.ts carries invocationOverride. */
     argvOverride?: string[];
-    /** Tests only: shrink the multi-view size-proposal TTL (default 25s) so
-     * expiry is provable without a 25s wait. */
-    sizeProposalTtlMs?: number;
 }
 /**
  * Open (or reattach) the seat's interactive door. Refuses `busy` while a

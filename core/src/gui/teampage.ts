@@ -482,9 +482,13 @@ async function restaffDialog(seat){
 // div per wheeled seat; mountTtys re-appends the living terminals after
 // every paint. ──
 let TTYS={};
-// Multi-view PTY sizing (smallest-client-wins): this view's stable id — every
-// resize is a PROPOSAL keyed by it (the heartbeat interval lives with the
-// other timers at the foot of the script).
+// Multi-view PTY sizing (smallest-client-wins, tmux's model — Adam's call
+// 2026-08-14: the CONNECTION is the liveness signal, no heartbeats). Every
+// resize is a PROPOSAL keyed by TTYCID = view id + stream generation: the
+// proposal lives exactly as long as that stream, the server drops it on
+// disconnect, and onopen re-asserts our dims after every (re)connect. The
+// per-GENERATION key kills the reopen race — an old stream's close can only
+// drop its own generation's proposals, never the successor's.
 const VIEWID=Math.random().toString(36).slice(2)+Date.now().toString(36);
 function b64enc(s){const b=new TextEncoder().encode(s);let x="";b.forEach(c=>x+=String.fromCharCode(c));return btoa(x);}
 function b64dec(s){const raw=atob(s);const u=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)u[i]=raw.charCodeAt(i);return u;}
@@ -550,7 +554,7 @@ function attachTty(seat,skipRefresh){
     // ~3 GB in 15 min down the cockpit link, drowning the operator's WiFi.
     if(term.cols===t.pcols&&term.rows===t.prows)return;
     t.pcols=term.cols;t.prows=term.rows;
-    fetch(api("/api/tty/resize"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat,cols:term.cols,rows:term.rows,client:VIEWID})}).catch(()=>{});
+    fetch(api("/api/tty/resize"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat,cols:term.cols,rows:term.rows,client:TTYCID||undefined})}).catch(()=>{});
   }catch(e){}};
   // keystrokes → the PTY (8ms micro-batch so paste isn't a POST per char)
   let buf="",tm=null;
@@ -564,12 +568,20 @@ function attachTty(seat,skipRefresh){
 // SSE per wheel + the main stream FROZE the whole cockpit at 5 wheels
 // (Adam, 2026-08-11). One EventSource carries all wheels ({seat,...});
 // reopened whenever the wheel set changes so replays stay complete. ──
-let TTYES=null;
+let TTYES=null,TTYGEN=0,TTYCID=null;
+function proposeAllSizes(){
+  if(!TTYCID)return;
+  Object.keys(TTYS).forEach(seat=>{const t=TTYS[seat];
+    if(t&&t.term&&t.pcols)fetch(api("/api/tty/resize"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat,cols:t.pcols,rows:t.prows,client:TTYCID})}).catch(()=>{});
+  });
+}
 function syncTtyStream(){
   try{TTYES&&TTYES.close();}catch(e){}
-  TTYES=null;
+  TTYES=null;TTYCID=null;
   if(!Object.keys(TTYS).some(s=>!TTYS[s].waiting))return;
-  TTYES=new EventSource(api("/api/tty/stream-all"));
+  TTYCID=VIEWID+"."+(++TTYGEN);
+  TTYES=new EventSource(api("/api/tty/stream-all")+"&client="+TTYCID);
+  TTYES.onopen=proposeAllSizes; // every (re)connect renews the lease — re-assert our dims
   TTYES.onmessage=e=>{let d;try{d=JSON.parse(e.data);}catch(err){return;}
     const t=TTYS[d.seat];if(!t||!t.term)return; // server-side wheel we don't hold — ignore
     if(d.replay!==undefined){t.term.reset();t.term.write(b64dec(d.replay));return;} // (re)connect replaces, never duplicates
@@ -1413,14 +1425,6 @@ window.addEventListener("keydown",e=>{if(e.key==="Escape")closeRail();});
 });
 loadWorkspaces();
 setLens(lens);setInterval(refresh,2000);setInterval(tickWorking,1000);
-// Multi-view PTY heartbeat (smallest-client-wins): re-assert this view's fit
-// every 10s so its size proposal stays fresh server-side — a closed view's
-// proposal expires by TTL and the survivor's next beat restores full size.
-// The server dedups identical effective dims, so a heartbeat never SIGWINCHes
-// a quiet TUI (the resize-storm law holds; fit()'s own guard is untouched).
-setInterval(()=>{Object.keys(TTYS).forEach(seat=>{const t=TTYS[seat];
-  if(t&&t.term&&t.pcols)fetch(api("/api/tty/resize"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat,cols:t.pcols,rows:t.prows,client:VIEWID})}).catch(()=>{});
-});},10000);
 // gate bar wiring lives in wire() — the bar repaints with the grid (Pack 4)
 startStream(); // 2c: the SSE push channel — the poll above stays as the floor
 anchorPanels();

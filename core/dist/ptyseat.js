@@ -336,8 +336,29 @@ export async function startSeatTty(opts) {
     const chunks = [];
     let chunkBytes = 0;
     // Multi-view size proposals (smallest-client-wins) — per-view latest fit.
+    // A proposal lives exactly as long as its view's SSE stream (tmux's model:
+    // the connection IS the liveness signal — no heartbeats, no TTL).
     const sizeProposals = new Map();
-    const proposalTtl = opts.sizeProposalTtlMs ?? 25_000;
+    // Recompute min-per-dimension over the live proposals and apply through
+    // the storm guard (identical effective dims never SIGWINCH the TUI).
+    const applyProposedSize = () => {
+        if (sizeProposals.size === 0)
+            return;
+        let ec = Infinity;
+        let er = Infinity;
+        for (const v of sizeProposals.values()) {
+            ec = Math.min(ec, v.c);
+            er = Math.min(er, v.r);
+        }
+        if (ec === tty.cols && er === tty.rows)
+            return;
+        tty.cols = ec;
+        tty.rows = er;
+        try {
+            proc.resize(ec, er);
+        }
+        catch { /* exited */ }
+    };
     // Turn-boundary verify: a rolling (ts, bytes) log of pane output, pruned
     // to the last minute — the verifier's busy/quiet probe reads it.
     const outLog = [];
@@ -393,34 +414,32 @@ export async function startSeatTty(opts) {
         resize: (c, r, client) => {
             // Multi-view policy (FLAWS 2026-08-12, smallest-client-wins): with a
             // client id, this call is a PROPOSAL — the PTY sizes to the min of
-            // every fresh proposal, so the grid and a popped window never leave
-            // each other mis-wrapped (last-writer-wins did). Stale proposals
-            // (closed views) expire by TTL on the next call.
-            let ec = c;
-            let er = r;
+            // every live view's proposal, so the grid and a second cockpit never
+            // leave each other mis-wrapped (last-writer-wins did).
             if (client) {
-                const nowMs = Date.now();
-                sizeProposals.set(client, { c, r, at: nowMs });
-                for (const [k, v] of sizeProposals)
-                    if (nowMs - v.at > proposalTtl)
-                        sizeProposals.delete(k);
-                for (const v of sizeProposals.values()) {
-                    ec = Math.min(ec, v.c);
-                    er = Math.min(er, v.r);
-                }
+                sizeProposals.set(client, { c, r });
+                applyProposedSize();
+                return;
             }
             // Resize-storm guard (2026-08-12): the cockpit's 2s repaint re-fits
             // every seat; identical dims must never reach the TUI — a SIGWINCH
             // makes claude repaint its FULL transcript, and five seats doing that
             // flooded the cockpit link (~3 GB in 15 min over WiFi).
-            if (ec === tty.cols && er === tty.rows)
+            if (c === tty.cols && r === tty.rows)
                 return;
-            tty.cols = ec;
-            tty.rows = er;
+            tty.cols = c;
+            tty.rows = r;
             try {
-                proc.resize(ec, er);
+                proc.resize(c, r);
             }
             catch { /* exited */ }
+        },
+        dropSizeProposal: (client) => {
+            // The view's stream closed — its clamp releases NOW; the survivors'
+            // min applies immediately. No proposals left → the size just stands
+            // (a reconnecting view re-proposes when its stream reopens).
+            if (sizeProposals.delete(client))
+                applyProposedSize();
         },
         kill: () => {
             try {

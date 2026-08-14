@@ -250,30 +250,39 @@ test("the PTY door registers the pane's pid (pty.json) at spawn and clears it on
   }
 });
 
-// ── Multi-view sizing (FLAWS 2026-08-12): smallest-client-wins, tmux's rule ──
+// ── Multi-view sizing (FLAWS 2026-08-12): smallest-client-wins, tmux's model
+// — the view's STREAM is its liveness (Adam, 2026-08-14: no heartbeats, no
+// TTL); a closed stream drops its proposal and the survivors apply NOW ──
 
-test("two views of one PTY: the smallest FRESH proposal wins each dimension; expiry restores the survivor", async () => {
+test("two views of one PTY: the smallest live proposal wins each dimension; a dropped view releases its clamp INSTANTLY", async () => {
   const p = tmpProject();
   try {
     const { startSeatTty, evictSeatTty } = await import("../src/ptyseat.js");
     const r = await startSeatTty({
       projectRoot: p, seat: "coder", agent: "pi", blended: true,
-      argvOverride: ["sleep", "10"], sizeProposalTtlMs: 150,
+      argvOverride: ["sleep", "10"],
     });
     if (!r.ok) throw new Error("no tty: " + JSON.stringify(r));
     const tty = r.tty;
-    tty.resize(120, 40, "grid");
+    tty.resize(120, 40, "grid.1");
     assert.equal(tty.cols, 120);
     assert.equal(tty.rows, 40);
-    tty.resize(80, 50, "popped"); // smaller cols, LARGER rows — min per dimension
-    assert.equal(tty.cols, 80, "cols clamp to the smallest view (the popped window)");
+    tty.resize(80, 50, "popped.1"); // smaller cols, LARGER rows — min per dimension
+    assert.equal(tty.cols, 80, "cols clamp to the smallest view (the second cockpit)");
     assert.equal(tty.rows, 40, "rows clamp to the smallest view (the grid)");
-    tty.resize(120, 40, "grid"); // the big view re-fits — still clamped by the popped one
+    tty.resize(120, 40, "grid.1"); // the big view re-fits — still clamped by the other
     assert.equal(tty.cols, 80, "last-writer-wins is dead: the other view's proposal still binds");
-    await new Promise((res) => setTimeout(res, 200)); // the popped view closes (TTL expiry)
-    tty.resize(120, 40, "grid"); // the survivor's heartbeat restores its full size
-    assert.equal(tty.cols, 120, "a closed view releases its clamp by TTL");
+    tty.dropSizeProposal("popped.1"); // its stream closed — the server calls this
+    assert.equal(tty.cols, 120, "the clamp releases the INSTANT the stream closes — no timer, no wait");
     assert.equal(tty.rows, 40);
+    tty.dropSizeProposal("grid.1"); // last view gone — the size just stands
+    assert.equal(tty.cols, 120, "no proposals left → nothing moves");
+    // the reopen race: the OLD generation's close can never erase the NEW
+    // generation's proposal (per-stream keys — the reopen is invisible)
+    tty.resize(100, 30, "grid.2");
+    tty.dropSizeProposal("grid.1"); // stale close lands late
+    assert.equal(tty.cols, 100, "a late old-generation close is inert");
+    assert.equal(tty.rows, 30);
     // a CLIENT-LESS call stays the legacy direct path (tests/tools)
     tty.resize(77, 33);
     assert.equal(tty.cols, 77);

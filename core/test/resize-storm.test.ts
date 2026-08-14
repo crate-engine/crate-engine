@@ -79,3 +79,14 @@ test("TtySeat.resize drops identical dims — repeated same-size calls never SIG
     rmSync(p, { recursive: true, force: true });
   }
 });
+
+// ── multi-view sizing (2026-08-14, Adam's call): EVENT-driven like tmux —
+// the stream is the liveness signal; nothing polls to keep proposals alive ──
+
+test("multi-view sizing rides the stream, not a poll: per-generation client id, onopen re-propose, no resize heartbeat", () => {
+  const html = teamPage({ project: "demo", seats: [] });
+  assert.ok(html.includes('"&client="+TTYCID'), "the tty stream carries the per-generation view id — the connection IS the liveness");
+  assert.ok(html.includes("TTYES.onopen=proposeAllSizes"), "every (re)connect re-asserts this view's dims");
+  assert.ok(html.includes('TTYCID=VIEWID+"."+(++TTYGEN)'), "per-STREAM keys: an old generation's close can never erase the successor's proposals");
+  assert.ok(!/setInterval\([\s\S]{0,250}?tty\/resize/.test(html), "no interval posts resize — proposals live and die with the stream, zero standing chatter");
+});
