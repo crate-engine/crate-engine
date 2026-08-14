@@ -502,8 +502,9 @@ window.crateCopySelection=function(){
   // an empty-text selection on blank rows returned "" and stopped the scan)
   let best=null;
   for(const s in TTYS){const t=TTYS[s];
-    if(!t||!t.term||!t.term.hasSelection())continue;
-    const sel=t.term.getSelection();
+    if(!t||!t.term)continue;
+    // live selection first; the 20s selection MEMORY as the belt
+    const sel=(t.term.hasSelection()&&t.term.getSelection())||((t.selAt&&Date.now()-t.selAt<20000&&t.selText)||"");
     if(sel&&(!best||(t.selAt||0)>best.at))best={sel,at:t.selAt||0};
   }
   if(best)return best.sel;
@@ -564,9 +565,27 @@ function attachTty(seat,skipRefresh){
     if(!term.modes||term.modes.mouseTrackingMode==="none")return;
     try{Object.defineProperty(e,"altKey",{get:()=>true});Object.defineProperty(e,"shiftKey",{get:()=>true});}catch(err){}
   },true);
-  // Selection recency (the copy bridge picks the NEWEST selection — a stale
-  // highlight in another pane must never shadow the one just made).
-  term.onSelectionChange(()=>{if(term.hasSelection()&&term.getSelection())t.selAt=Date.now();});
+  // Selection SURVIVES the TUI's mouse-mode re-asserts (Adam's second live
+  // find, 2026-08-14 — "release and it disappears, sometimes"): claude
+  // re-asserts DECSET mouse tracking on redraw cycles, xterm's protocol-
+  // change handler calls selectionService.disable(), and disable() CLEARS
+  // the selection. Stack-traced live (disable<onProtocolChange), then
+  // proven differentially: unpatched, a re-assert wipes the selection;
+  // patched, it survives. We keep the flag flip — forced-selection
+  // gestures ignore _enabled anyway — and drop ONLY the clear. Private-API
+  // surgery, deliberately: guarded so an xterm upgrade degrades to the old
+  // behavior, never breaks.
+  try{
+    const ss=term._core&&term._core._selectionService;
+    if(ss&&typeof ss.disable==="function")ss.disable=()=>{ss._enabled=false;};
+  }catch(err){}
+  // Selection recency + MEMORY (the copy bridge picks the NEWEST selection;
+  // the cached text is the belt — if anything else clears the live
+  // selection between release and Cmd+C, the copy still lands). A new
+  // mousedown in the pane invalidates the memory (a plain click IS a
+  // deliberate deselect).
+  term.onSelectionChange(()=>{const sel=term.hasSelection()?term.getSelection():"";if(sel){t.selAt=Date.now();t.selText=sel;}});
+  wrap.addEventListener("mousedown",()=>{t.selText=null;},true);
   // Clipboard (Adam, 2026-08-11; REWIRED 2026-08-13 — "still not working" in
   // the app shell): WKWebView's async clipboard SILENTLY REJECTS its promise
   // (a sync try/catch never sees it), so copy now falls back to the
@@ -575,10 +594,12 @@ function attachTty(seat,skipRefresh){
   // belt if the async API is walled. Plain Ctrl+C still passes as SIGINT.
   const execCopy=t=>{const ta=document.createElement("textarea");ta.value=t;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(err){}ta.remove();term.focus();};
   term.attachCustomKeyEventHandler(e=>{
-    if(e.type==="keydown"&&e.metaKey&&!e.ctrlKey&&(e.key==="c"||e.key==="C")&&term.hasSelection()){
-      const sel=term.getSelection();
-      try{navigator.clipboard.writeText(sel).catch(()=>execCopy(sel));}catch(err){execCopy(sel);}
-      return false;
+    if(e.type==="keydown"&&e.metaKey&&!e.ctrlKey&&(e.key==="c"||e.key==="C")){
+      // live selection first; the 20s selection MEMORY as the belt (a TUI
+      // redraw may have cleared the live one between release and Cmd+C)
+      const sel=(term.hasSelection()&&term.getSelection())||((t.selAt&&Date.now()-t.selAt<20000&&t.selText)||"");
+      if(sel){try{navigator.clipboard.writeText(sel).catch(()=>execCopy(sel));}catch(err){execCopy(sel);}return false;}
+      return true;
     }
     if(e.type==="keydown"&&e.metaKey&&!e.ctrlKey&&(e.key==="v"||e.key==="V")){
       try{navigator.clipboard.readText().then(t=>{if(t)term.paste(t);}).catch(()=>{});}catch(err){}

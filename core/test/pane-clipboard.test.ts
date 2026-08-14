@@ -27,6 +27,17 @@ test("the page exposes the copy bridge: NEWEST non-empty xterm selection wins, D
   assert.ok(fn.includes("getSelection"), "plain DOM selections still copy (chat text)");
 });
 
+test("the selection SURVIVES the TUI's mouse-mode re-asserts, and Cmd+C keeps a 20s memory", () => {
+  // root cause #2 (Adam's live find): claude re-asserts DECSET tracking on
+  // redraws; xterm's protocol-change handler calls selectionService.disable()
+  // which CLEARS the selection. The patch keeps the flag, drops the clear.
+  assert.ok(html.includes("ss.disable=()=>{ss._enabled=false;}"), "disable() flips the flag but never clears (forced gestures ignore the flag)");
+  assert.ok(html.includes("term._core&&term._core._selectionService"), "…guarded private-API surgery — an xterm upgrade degrades, never breaks");
+  assert.ok(html.includes("t.selText=sel"), "non-empty selections are remembered");
+  assert.ok((html.match(/Date\.now\(\)-t\.selAt<20000/g) || []).length >= 2, "the 20s memory backs BOTH doors (in-page Cmd+C and the native bridge)");
+  assert.ok(html.includes('wrap.addEventListener("mousedown",()=>{t.selText=null;}'), "a new gesture (or deliberate click-deselect) forgets the memory");
+});
+
 test("drag-to-select is cockpit law: tracking TUIs (claude) can't swallow the drag", () => {
   assert.ok(html.includes("macOptionClickForcesSelection:true"), "the mac force switch is ON (xterm ships it off)");
   assert.ok(html.includes("altClickMovesCursor:false"), "…without alt-click teleporting the TUI cursor");
