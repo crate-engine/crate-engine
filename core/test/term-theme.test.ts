@@ -44,3 +44,13 @@ test("the scrollbar is styled ONCE for the whole cockpit: thin, square, brighter
   assert.ok(html.includes("::-webkit-scrollbar-thumb{background:var(--line2);border-radius:0}"), "brand-quiet square thumb (rounded-none law)");
   assert.ok(html.includes("::-webkit-scrollbar-thumb:hover{background:var(--dim)}"), "hover brightens, never thickens");
 });
+
+test("the PANES' bars match too: xterm's own div scrollbar (not webkit) is pinned to the same 8px square lane", () => {
+  // Adam's catch: 'reviewer huge, coder small' — xterm v6 draws a VS Code-
+  // style DIV scrollbar the webkit rules never touch; stock width varied.
+  assert.ok(html.includes('scrollbarSliderBackground:"#323a4b"'), "slider = --line2 (matches the webkit thumb)");
+  assert.ok(html.includes('scrollbarSliderHoverBackground:"#8b94a5"'), "hover = --dim (brightens, matching)");
+  assert.ok(html.includes('scrollbarSliderActiveBackground:"#e2a33c"'), "drag = amber (the brand's one loud moment)");
+  assert.ok(html.includes(".xterm .xterm-scrollable-element>.scrollbar.vertical{width:8px!important}"), "the lane is 8px like everything else");
+  assert.ok(html.includes(">.slider{width:8px!important;left:0!important;border-radius:0!important}"), "…and the slider itself: 8px, flush, square (!important beats xterm's inline styles)");
+});

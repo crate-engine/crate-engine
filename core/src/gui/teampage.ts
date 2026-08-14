@@ -39,6 +39,13 @@ const VIEW_STYLE = `
 ::-webkit-scrollbar-thumb{background:var(--line2);border-radius:0}
 ::-webkit-scrollbar-thumb:hover{background:var(--dim)}
 ::-webkit-scrollbar-corner{background:transparent}
+/* …and the PANES: xterm v6 draws its own VS Code-style div scrollbar (the
+   webkit rules above never touched it — Adam's "reviewer huge, coder
+   small" was xterm's stock slider at stock width). Pin it to the same
+   8px, square, full-height lane; colors come from CRATE_TERM_THEME's
+   scrollbarSlider* keys. !important beats the inline styles xterm sets. */
+.xterm .xterm-scrollable-element>.scrollbar.vertical{width:8px!important}
+.xterm .xterm-scrollable-element>.scrollbar.vertical>.slider{width:8px!important;left:0!important;border-radius:0!important}
 /* W3 a11y: visible keyboard focus + honor reduced-motion (audit X2) */
 :is(button,a,select,input):focus-visible{outline:2px solid var(--amber);outline-offset:2px}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
@@ -547,6 +554,9 @@ async function tryStartTty(seat){
 // brand never had (blue/magenta/cyan) are steel designs cut for carbon.
 // Truecolor a CLI hardcodes keeps its own color — accepted at the grill.
 const CRATE_TERM_THEME={background:"#0b0e14",foreground:"#f1f3f6",cursor:"#e2a33c",cursorAccent:"#0b0e14",selectionBackground:"#32405a",
+  // Backlog 14: xterm v6 draws its OWN scrollbar (a VS Code-style div, not
+  // the native webkit bar) — themed here, sized by the CSS override below.
+  scrollbarSliderBackground:"#323a4b",scrollbarSliderHoverBackground:"#8b94a5",scrollbarSliderActiveBackground:"#e2a33c",
   black:"#1a202c",red:"#e4614d",green:"#57c489",yellow:"#e2a33c",blue:"#6ea3e0",magenta:"#b08ad0",cyan:"#5db8c2",white:"#c7cdd8",
   brightBlack:"#6b7488",brightRed:"#f07f6e",brightGreen:"#7cd8a6",brightYellow:"#f0b654",brightBlue:"#93bfee",brightMagenta:"#c9a9e2",brightCyan:"#84cdd6",brightWhite:"#f1f3f6"};
 function attachTty(seat,skipRefresh){
