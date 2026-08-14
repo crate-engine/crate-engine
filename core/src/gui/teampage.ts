@@ -490,6 +490,16 @@ let TTYS={};
 // per-GENERATION key kills the reopen race — an old stream's close can only
 // drop its own generation's proposals, never the successor's.
 const VIEWID=Math.random().toString(36).slice(2)+Date.now().toString(36);
+// Native copy bridge (Adam's live find, 2026-08-14): the mac shell's Edit
+// menu consumes Cmd+C BEFORE the page sees it, and WebKit's copy: only
+// knows DOM selections — xterm paints its own, so the app beeped and
+// copied nothing. The shell now asks US: xterm selection first (any pane
+// holding one), DOM selection as fallback, "" = nothing selected (the
+// shell stays silent). The in-page Cmd+C handler stays for plain browsers.
+window.crateCopySelection=function(){
+  for(const s in TTYS){const t=TTYS[s];if(t&&t.term&&t.term.hasSelection())return t.term.getSelection();}
+  return window.getSelection?String(window.getSelection()):"";
+};
 function b64enc(s){const b=new TextEncoder().encode(s);let x="";b.forEach(c=>x+=String.fromCharCode(c));return btoa(x);}
 function b64dec(s){const raw=atob(s);const u=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)u[i]=raw.charCodeAt(i);return u;}
 // terminal font follows the pane's Cmd+/- zoom scale (same store, same keys)

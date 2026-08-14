@@ -241,6 +241,36 @@ func launchEngine(remote: String) -> LaunchResult {
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 
+// The COPY bridge (Adam's live find, 2026-08-14 — "error chime, no copy"):
+// the Edit menu's Cmd+C key equivalent fires BEFORE the page ever sees the
+// keystroke, and WebKit's native copy: only knows DOM selections — xterm
+// paints its OWN selection, so copy: found nothing, validation failed, and
+// macOS beeped. (This is exactly why the 08-13 JS clipboard rework fixed
+// Chrome but never the app: the page's Cmd+C handler is unreachable here.)
+// Cure: Copy targets the shell, which asks the PAGE for the real selection
+// (window.crateCopySelection — xterm selection first, DOM selection as the
+// fallback) and writes the pasteboard natively. Empty selection = silence,
+// never a beep.
+final class EditActions: NSObject {
+  static let shared = EditActions()
+  private func activeWebView() -> WKWebView? {
+    guard let win = NSApp.keyWindow else { return nil }
+    if let wv = win.contentView as? WKWebView { return wv }
+    return win.contentView?.subviews.compactMap { $0 as? WKWebView }.first
+  }
+  @objc func copySelection(_ sender: Any?) {
+    guard let wv = activeWebView() else { return }
+    let js = "window.crateCopySelection ? window.crateCopySelection() : (window.getSelection ? String(window.getSelection()) : '')"
+    wv.evaluateJavaScript(js) { result, _ in
+      let text = (result as? String) ?? ""
+      guard !text.isEmpty else { return } // nothing selected — stay silent
+      let pb = NSPasteboard.general
+      pb.clearContents()
+      pb.setString(text, forType: .string)
+    }
+  }
+}
+
 // Minimal real menus — copy/paste and Cmd-Q must work inside the cockpit
 // (and inside TUI panes). Without an Edit menu, WKWebView eats shortcuts.
 let mainMenu = NSMenu()
@@ -257,7 +287,9 @@ editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: 
 editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
 editMenu.addItem(NSMenuItem.separator())
 editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+let copyItem = NSMenuItem(title: "Copy", action: #selector(EditActions.copySelection(_:)), keyEquivalent: "c")
+copyItem.target = EditActions.shared // explicit target: never falls to WebKit's DOM-only copy: (the beep)
+editMenu.addItem(copyItem)
 editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
 editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
 editItem.submenu = editMenu
