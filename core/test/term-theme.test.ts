@@ -36,3 +36,11 @@ test("the brand slots carry the cockpit's own tokens (the locked palette)", () =
   assert.match(obj, /brightWhite:"#f1f3f6"/, "brightWhite = --fg");
   assert.match(obj, /cursor:"#e2a33c"/, "the amber cursor survives");
 });
+
+// ── Backlog 14, styling half (Adam): one scrollbar look everywhere ──
+
+test("the scrollbar is styled ONCE for the whole cockpit: thin, square, brighter-not-thicker on hover", () => {
+  assert.ok(html.includes("::-webkit-scrollbar{width:8px"), "explicit thin width — the macOS overlay can't fatten on hover");
+  assert.ok(html.includes("::-webkit-scrollbar-thumb{background:var(--line2);border-radius:0}"), "brand-quiet square thumb (rounded-none law)");
+  assert.ok(html.includes("::-webkit-scrollbar-thumb:hover{background:var(--dim)}"), "hover brightens, never thickens");
+});

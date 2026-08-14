@@ -29,6 +29,16 @@ const VIEW_STYLE = `
 --disp:"Michroma",sans-serif;--body:"Barlow",-apple-system,system-ui,sans-serif;
 --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;}
 *{box-sizing:border-box;margin:0}html{color-scheme:dark}
+/* Backlog 14, styling half (Adam, 2026-08-14): ONE scrollbar look
+   everywhere — thin, carbon-quiet, square (brand), a touch brighter under
+   the cursor but never THICKER (explicit width stops the macOS overlay
+   grow that Adam flagged). The claude panes' MISSING bar is the alt-screen
+   half of item 14 — grilled separately, not a styling matter. */
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--line2);border-radius:0}
+::-webkit-scrollbar-thumb:hover{background:var(--dim)}
+::-webkit-scrollbar-corner{background:transparent}
 /* W3 a11y: visible keyboard focus + honor reduced-motion (audit X2) */
 :is(button,a,select,input):focus-visible{outline:2px solid var(--amber);outline-offset:2px}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
