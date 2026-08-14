@@ -77,3 +77,8 @@ test("the shell makes studio frames fixtures: remembered positions, no focus the
   assert.ok(studio.includes("iPhone"), "the mobile frame carries a real device UA (viewport parity with QA)");
   assert.ok(shell.includes('NSMenuItem(title: "Design Studio",') && shell.includes('keyEquivalent: "4"'), "View menu opens the studio on cmd-4");
 });
+
+test("QA finds 2026-08-14: non-gesture window.open is allowed (menu + auto-deploy are not gestures), and macOS tab items stay out of the View menu", () => {
+  assert.ok(shell.includes("javaScriptCanOpenWindowsAutomatically = true"), "WebKit drops non-gesture popups by default — the studio opens from a menu action and a watcher");
+  assert.ok(shell.includes("NSWindow.allowsAutomaticWindowTabbing = false"), "the View menu is exactly what we built — no injected Show Tab Bar");
+});

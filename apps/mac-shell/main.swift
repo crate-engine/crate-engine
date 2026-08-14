@@ -64,6 +64,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
 
     let conf = WKWebViewConfiguration()
     conf.preferences.setValue(true, forKey: "developerExtrasEnabled")
+    // Design Studio (backlog 10, QA find 2026-08-14): the studio frames open
+    // via window.open from a MENU action (evaluateJavaScript) and from the
+    // AUTO-DEPLOY watcher (setInterval) — neither is a user gesture, and
+    // WebKit silently drops non-gesture window.open by default. The popups
+    // still route through our UIDelegate (real NSWindows), so allowing them
+    // is safe: only the cockpit's own page runs here.
+    conf.preferences.javaScriptCanOpenWindowsAutomatically = true
     // The page detects the shell via window.crateShell (satellite windows +
     // Launch in Chrome take the shell-native paths; a plain browser falls
     // back to window.open). Injected at document start, inherited by
@@ -272,6 +279,10 @@ func launchEngine(remote: String) -> LaunchResult {
 
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
+// Backlog 11 polish (QA find 2026-08-14): macOS injects "Show Tab Bar" items
+// into any menu titled View — the cockpit has no window tabs, so keep the
+// menu exactly the four items we built.
+NSWindow.allowsAutomaticWindowTabbing = false
 
 // The COPY bridge (Adam's live find, 2026-08-14 — "error chime, no copy"):
 // the Edit menu's Cmd+C key equivalent fires BEFORE the page ever sees the
