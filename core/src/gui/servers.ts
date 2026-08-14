@@ -168,7 +168,12 @@ export interface ServersView {
 
 export function serversView(proj: string, exec: Exec = sh): ServersView {
   const lsofAvailable = hasLsof();
-  const listeners = lsofAvailable ? listListeners(exec) : [];
+  // The engine never watches ITSELF (live-found 2026-08-14, the rig's own
+  // orchestrator filed it: the GUI process command names the project path,
+  // so discovery claimed the cockpit API + preview proxy as project
+  // servers and the assist nagged the team to "register" them — on every
+  // cockpit restart, fresh ephemeral ports). Our own pid is invisible.
+  const listeners = lsofAvailable ? listListeners(exec).filter((l) => l.pid !== process.pid) : [];
   const sys = systemPorts(proj);
   const reg = readRegistry(proj);
   const rows: ServerRow[] = [];

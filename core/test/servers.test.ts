@@ -356,3 +356,26 @@ test("the nag holds its tongue: idle loop → silent; registered listener → si
   );
   assert.deepEqual(nagUnregistered(reg, serversView(reg), 0), [], "a registered listener is the law FOLLOWED — silence");
 });
+
+test("the engine never watches ITSELF: its own process's listeners are invisible to the panel and the nag", { skip: !LSOF }, async () => {
+  const proj = makeProj("self");
+  // an IN-PROCESS listener (the engine's own posture: cockpit API + preview
+  // proxy live in the GUI server's pid) + a registry row claiming its port
+  const { createServer } = await import("node:http");
+  const srv = await new Promise<any>((res) => {
+    const s = createServer((_q, r) => r.end("ok"));
+    s.listen(0, "127.0.0.1", () => res(s));
+  });
+  const port = srv.address().port;
+  try {
+    writeFileSync(
+      join(proj, ".agents", "state", "servers.json"),
+      JSON.stringify([{ url: `http://127.0.0.1:${port}`, port, label: "self", from: "engine", task: "t", at: "2026-08-14T10:00:00", status: "live" }]),
+    );
+    const v = serversView(proj);
+    assert.ok(!v.servers.some((s) => s.port === port), "our own pid's listener never shows");
+    assert.deepEqual(nagUnregistered(proj, v, 0), [], "…and can never be nagged about");
+  } finally {
+    srv.close();
+  }
+});
