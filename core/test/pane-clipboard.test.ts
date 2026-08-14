@@ -18,11 +18,21 @@ const shell = readFileSync(
   "utf8",
 );
 
-test("the page exposes the copy bridge: xterm selection first, DOM selection fallback, empty = silence", () => {
+test("the page exposes the copy bridge: NEWEST non-empty xterm selection wins, DOM selection fallback", () => {
   assert.ok(html.includes("window.crateCopySelection=function()"), "the bridge exists");
   const fn = html.slice(html.indexOf("window.crateCopySelection"), html.indexOf("};", html.indexOf("window.crateCopySelection")));
   assert.ok(fn.includes("hasSelection()"), "xterm selections win (WebKit can't see them)");
+  assert.ok(fn.includes("t.selAt"), "recency decides — a stale selection in another pane never shadows the fresh one");
+  assert.ok(fn.includes("if(sel&&"), "empty-text selections (blank rows) never stop the scan");
   assert.ok(fn.includes("getSelection"), "plain DOM selections still copy (chat text)");
+});
+
+test("drag-to-select is cockpit law: tracking TUIs (claude) can't swallow the drag", () => {
+  assert.ok(html.includes("macOptionClickForcesSelection:true"), "the mac force switch is ON (xterm ships it off)");
+  assert.ok(html.includes("altClickMovesCursor:false"), "…without alt-click teleporting the TUI cursor");
+  assert.ok(html.includes('term.modes.mouseTrackingMode==="none"'), "panes with tracking OFF are untouched (shift-click keeps extending)");
+  assert.ok(/Object\.defineProperty\(e,"altKey"/.test(html), "a plain drag in a tracking pane is forced into a selection gesture");
+  assert.ok(html.includes("term.onSelectionChange"), "selections stamp recency for the bridge");
 });
 
 test("the browser door survives: in-page Cmd+C with the execCommand fallback", () => {

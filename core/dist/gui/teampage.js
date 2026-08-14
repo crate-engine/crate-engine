@@ -487,7 +487,16 @@ const VIEWID=Math.random().toString(36).slice(2)+Date.now().toString(36);
 // holding one), DOM selection as fallback, "" = nothing selected (the
 // shell stays silent). The in-page Cmd+C handler stays for plain browsers.
 window.crateCopySelection=function(){
-  for(const s in TTYS){const t=TTYS[s];if(t&&t.term&&t.term.hasSelection())return t.term.getSelection();}
+  // newest non-empty pane selection wins (live-found 2026-08-14: a stale
+  // selection in another pane shadowed the one the operator just made, and
+  // an empty-text selection on blank rows returned "" and stopped the scan)
+  let best=null;
+  for(const s in TTYS){const t=TTYS[s];
+    if(!t||!t.term||!t.term.hasSelection())continue;
+    const sel=t.term.getSelection();
+    if(sel&&(!best||(t.selAt||0)>best.at))best={sel,at:t.selAt||0};
+  }
+  if(best)return best.sel;
   return window.getSelection?String(window.getSelection()):"";
 };
 function b64enc(s){const b=new TextEncoder().encode(s);let x="";b.forEach(c=>x+=String.fromCharCode(c));return btoa(x);}
@@ -524,9 +533,30 @@ function attachTty(seat,skipRefresh){
   t.waiting=false;
   const wrap=document.createElement("div");wrap.className="ttywrap";
   const term=new Terminal({fontFamily:"'JetBrains Mono',ui-monospace,Menlo,monospace",fontSize:ttyFontFor(seat),cursorBlink:true,scrollback:5000,
-    theme:CRATE_TERM_THEME});
+    theme:CRATE_TERM_THEME,
+    // Drag-to-select is COCKPIT LAW (Adam's live find, 2026-08-14): claude's
+    // TUI enables mouse tracking ("any"), and a tracking TUI swallows every
+    // drag — xterm never makes a selection, so Cmd+C had nothing to copy in
+    // exactly the claude panes. These two let a forced selection exist at
+    // all on mac (xterm ships the force switch OFF) and stop alt-clicks
+    // from teleporting the TUI cursor while we force.
+    macOptionClickForcesSelection:true,altClickMovesCursor:false});
   const fit=new FitAddon.FitAddon();term.loadAddon(fit);
   term.open(wrap);
+  // The FORCE (capture phase — runs before xterm's own handler): a plain
+  // left-button gesture in a TRACKING pane becomes a forced-selection
+  // gesture (alt+shift as far as xterm can tell), so drag selects exactly
+  // like every other pane. The TUI keeps its wheel scroll (wheel events are
+  // untouched) and cmd/ctrl-clicks still reach it; panes with tracking OFF
+  // (pi/deepseek) are untouched — shift-click must keep extending there.
+  wrap.addEventListener("mousedown",e=>{
+    if(e.button!==0||e.metaKey||e.ctrlKey)return;
+    if(!term.modes||term.modes.mouseTrackingMode==="none")return;
+    try{Object.defineProperty(e,"altKey",{get:()=>true});Object.defineProperty(e,"shiftKey",{get:()=>true});}catch(err){}
+  },true);
+  // Selection recency (the copy bridge picks the NEWEST selection — a stale
+  // highlight in another pane must never shadow the one just made).
+  term.onSelectionChange(()=>{if(term.hasSelection()&&term.getSelection())t.selAt=Date.now();});
   // Clipboard (Adam, 2026-08-11; REWIRED 2026-08-13 — "still not working" in
   // the app shell): WKWebView's async clipboard SILENTLY REJECTS its promise
   // (a sync try/catch never sees it), so copy now falls back to the
