@@ -333,8 +333,14 @@ final class PanelActions: NSObject, NSMenuItemValidation {
   @objc func openContext(_ sender: Any?) { open("context") }
   @objc func openHealth(_ sender: Any?) { open("health") }
   /// Backlog 10: the Design Studio — one item opens BOTH frames (Adam's
-  /// call: the pair is the default; closing either one is free).
+  /// call: the pair is the default; closing either one is free). cmd-4 also
+  /// RAISES frames that already exist (QA find: a frame buried behind the
+  /// cockpit re-navigates via its named target but never surfaces — "bring
+  /// me my studio" must always mean visible).
   @objc func openStudio(_ sender: Any?) {
+    if let d = NSApp.delegate as? AppDelegate {
+      for w in d.satellites where w.title.hasPrefix("Crate Studio") { w.orderFrontRegardless() }
+    }
     cockpit()?.evaluateJavaScript("window.crateOpenStudio && window.crateOpenStudio()", completionHandler: nil)
   }
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { cockpit() != nil }

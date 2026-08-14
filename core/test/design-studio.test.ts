@@ -82,3 +82,8 @@ test("QA finds 2026-08-14: non-gesture window.open is allowed (menu + auto-deplo
   assert.ok(shell.includes("javaScriptCanOpenWindowsAutomatically = true"), "WebKit drops non-gesture popups by default — the studio opens from a menu action and a watcher");
   assert.ok(shell.includes("NSWindow.allowsAutomaticWindowTabbing = false"), "the View menu is exactly what we built — no injected Show Tab Bar");
 });
+
+test("cmd-4 RAISES existing frames, not just opens missing ones — a buried studio always surfaces", () => {
+  const fn = shell.slice(shell.indexOf("@objc func openStudio"), shell.indexOf("validateMenuItem"));
+  assert.ok(fn.includes('hasPrefix("Crate Studio")') && fn.includes("orderFrontRegardless"), "existing studio windows order front before the page opens any missing ones");
+});
