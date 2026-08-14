@@ -56,6 +56,9 @@ test("the studio page is pure glass: a full-bleed frame, a branded wait, and not
 test("the cockpit routes ALL preview windows through the studio — the loose raw-URL satellite path is gone", () => {
   assert.ok(html.includes("window.crateOpenStudio="), "the menu bridge exists");
   assert.ok(html.includes('window.open("/studio?frame="+kind'), "frames load /studio, never a preview URL");
+  assert.ok(html.includes('"crate-studio-"+kind+"-"+(++STUDIOGEN)'), "per-GENERATION names — a closed frame's stale named target can never eat a reopen (Adam's find)");
+  assert.ok(html.includes("if(w&&!w.closed){try{w.focus();}catch(e){}return;}"), "the handle guard prevents duplicate frames");
+  assert.ok(html.includes("STUDIOCLOSED[kind]=false;"), "a manual open lifts the mid-task closed-mute");
   assert.ok(!html.includes("openSatellite"), "the old loose-URL window path is deliberately dead");
   assert.ok(html.includes('openStudioFrame("mobile")') && html.includes('openStudioFrame("desktop")'), "the Preview overlay's window buttons open studio frames");
   assert.ok(html.includes("crateShell") && html.includes("crate-ext://"), "Launch in Chrome survives ONLY as the explicit press");
@@ -75,6 +78,7 @@ test("the shell makes studio frames fixtures: remembered positions, no focus the
   assert.ok(studio.includes("orderFrontRegardless"), "auto-deploy never steals keyboard focus");
   assert.ok(!studio.includes("makeKeyAndOrderFront"), "…the key-window grab is the non-studio branch only");
   assert.ok(studio.includes("iPhone"), "the mobile frame carries a real device UA (viewport parity with QA)");
+  assert.ok(studio.includes("styleMask.remove(.resizable)"), "the mobile frame is SIZE-LOCKED — it IS a device; only its position is yours (Adam)");
   assert.ok(shell.includes('NSMenuItem(title: "Design Studio",') && shell.includes('keyEquivalent: "4"'), "View menu opens the studio on cmd-4");
 });
 

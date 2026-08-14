@@ -201,6 +201,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
       if mobile {
         wv.customUserAgent =
           "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+        // Adam's call (2026-08-14): the mobile frame IS a device — its size
+        // is the device's, only its position is yours. Desktop stays free.
+        win.styleMask.remove(.resizable)
       }
       win.orderFrontRegardless()
     } else {

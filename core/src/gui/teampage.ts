@@ -1321,10 +1321,19 @@ async function pointPreview(p){
 // preview URL — the ROUTING LAW: engine previews render in the studio; the
 // old loose-URL satellite path is deliberately gone, Chrome only by the
 // explicit button). Named targets: re-opens refocus the same frames.
-const STUDIO={};let STUDIOKEY="";const STUDIOCLOSED={mobile:false,desktop:false};
+const STUDIO={};let STUDIOKEY="";let STUDIOGEN=0;const STUDIOCLOSED={mobile:false,desktop:false};
+// Per-GENERATION window names (Adam's live find, 2026-08-14: a closed frame
+// never came back — WebKit holds the closed named target stale, and
+// window.open into it creates NOTHING). Same law as the multi-view client
+// ids: a fresh generation per open, the handle guard prevents duplicates.
+// A MANUAL open also lifts the mid-task closed-mute: asking for the frame
+// back means auto-deploy may mind it again.
 function openStudioFrame(kind){
+  const w=STUDIO[kind];
+  if(w&&!w.closed){try{w.focus();}catch(e){}return;}
+  STUDIOCLOSED[kind]=false;
   const f=kind==="mobile"?"width=375,height=812":"width=1280,height=860";
-  STUDIO[kind]=window.open("/studio?frame="+kind+"&"+tq(),"crate-studio-"+kind,f+",resizable=yes");
+  STUDIO[kind]=window.open("/studio?frame="+kind+"&"+tq(),"crate-studio-"+kind+"-"+(++STUDIOGEN),f+",resizable=yes");
 }
 window.crateOpenStudio=()=>{openStudioFrame("mobile");openStudioFrame("desktop");};
 // AUTO-DEPLOY (Adam's call at the grill): a NEW design going live opens the
