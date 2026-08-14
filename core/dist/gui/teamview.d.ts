@@ -5,8 +5,11 @@ export interface TurnEvent {
     /** Plain-English version for the Narrated lens (non-coder friendly);
      * falls back to `narrated` when there's nothing to simplify. */
     plain?: string;
-    /** Raw jsonl line (Engineer lens). */
-    raw: string;
+    /** Raw jsonl line. narrateLine always sets it; readTeamView STRIPS it
+     * from the wire (stage 2, quiet-cockpit PDR): nothing renders it, and it
+     * multiplied the poll payload — ~25 full transcripts re-shipped every
+     * tick carried every original line for nobody. */
+    raw?: string;
     kind: "tool" | "text" | "result" | "system" | "stderr" | "meta" | "think" | "other";
 }
 export interface TurnView {
@@ -76,8 +79,10 @@ export declare function narrateLine(raw: string): TurnEvent;
 export interface StreamEvent {
     /** seam=turn boundary · td=text delta · text=final text · think=thought
      * summary · tool=call beat · fold=output size note · errtail=failed-call
-     * evidence · stderr=harness stderr · meta=turn end line */
-    k: "seam" | "td" | "text" | "think" | "tool" | "fold" | "errtail" | "stderr" | "meta";
+     * evidence · stderr=harness stderr · meta=turn end line · poke=project
+     * STATE changed (gates/chat/seat files — stage 2 event-primary): the
+     * client schedules a throttled refresh; carries no data of its own */
+    k: "seam" | "td" | "text" | "think" | "tool" | "fold" | "errtail" | "stderr" | "meta" | "poke";
     t: string;
     /** plain-English flavor (tool beats only — the Narrated lens). */
     p?: string;

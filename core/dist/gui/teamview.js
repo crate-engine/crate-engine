@@ -268,7 +268,11 @@ function runningTokens(parsed) {
 }
 function readTurn(path) {
     const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
-    const events = lines.map(narrateLine);
+    // raw stays narrateLine's contract but never rides the view (see TurnEvent.raw)
+    const events = lines.map((l) => {
+        const { raw: _omit, ...e } = narrateLine(l);
+        return e;
+    });
     const parsed = lines.map((l) => { try {
         return JSON.parse(l);
     }

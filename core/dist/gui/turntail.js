@@ -31,6 +31,7 @@ export class TurnTailHub {
     listeners = new Set();
     timer;
     scanQueued = new Set();
+    pokeQueued = false;
     constructor(projectRoot, pollMs = 1500) {
         this.projectRoot = projectRoot;
         this.pollMs = pollMs;
@@ -122,11 +123,60 @@ export class TurnTailHub {
                 /* watch unavailable on this fs — pure polling still works */
             }
         }
+        // ── STAGE 2 (quiet-cockpit PDR, Adam 2026-08-14): event-primary. The
+        // hub also watches the project STATE the poll used to discover — seat
+        // state files + events.log (gates) in state/, the chat mirror in
+        // state/inbox/, and every seat's maildir (unread badges) — and emits a
+        // coalesced `poke` (no payload: the client's refresh diffs; the poke
+        // just says "now"). Same doctrine as the turn watchers: watch the
+        // DIRECTORY, ignore args, fail to the poll floor (the client keeps a
+        // 12s reconciliation poll — a dead watcher degrades to that, never
+        // crashes). turns/ subdirs are excluded by non-recursion: turn lines
+        // already stream as their own events.
+        const stateDir = join(this.projectRoot, ".agents", "state");
+        const stateTargets = [
+            stateDir,
+            join(stateDir, "inbox"),
+            ...SEATS.map((s) => join(stateDir, "inbox", s, "new")),
+        ];
+        // mkdir EVERYTHING first, then watch: creating inbox dirs under an
+        // already-armed state/ watcher would fire a spurious boot poke.
+        for (const dir of stateTargets) {
+            try {
+                mkdirSync(dir, { recursive: true });
+            }
+            catch {
+                /* unwritable — the poll floor covers it */
+            }
+        }
+        for (const dir of stateTargets) {
+            try {
+                const w = watch(dir, () => this.queuePoke());
+                w.on("error", () => {
+                    /* watcher died — the client's reconciliation poll carries on */
+                });
+                this.watchers.push(w);
+            }
+            catch {
+                /* watch unavailable on this fs — the poll floor covers it */
+            }
+        }
         this.timer = setInterval(() => {
             for (const seat of this.seats.keys())
                 this.scan(seat);
         }, this.pollMs);
         this.timer.unref();
+    }
+    /** Coalesce state-watcher bursts into ONE poke (a close writes several
+     * files; the client needs one refresh, not five). */
+    queuePoke() {
+        if (this.pokeQueued)
+            return;
+        this.pokeQueued = true;
+        setTimeout(() => {
+            this.pokeQueued = false;
+            this.broadcast({ seat: "", k: "poke", t: new Date().toISOString() });
+        }, 300).unref();
     }
     stop() {
         for (const w of this.watchers) {

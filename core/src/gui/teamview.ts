@@ -19,8 +19,11 @@ export interface TurnEvent {
   /** Plain-English version for the Narrated lens (non-coder friendly);
    * falls back to `narrated` when there's nothing to simplify. */
   plain?: string;
-  /** Raw jsonl line (Engineer lens). */
-  raw: string;
+  /** Raw jsonl line. narrateLine always sets it; readTeamView STRIPS it
+   * from the wire (stage 2, quiet-cockpit PDR): nothing renders it, and it
+   * multiplied the poll payload — ~25 full transcripts re-shipped every
+   * tick carried every original line for nobody. */
+  raw?: string;
   kind: "tool" | "text" | "result" | "system" | "stderr" | "meta" | "think" | "other";
 }
 
@@ -205,8 +208,10 @@ export function narrateLine(raw: string): TurnEvent {
 export interface StreamEvent {
   /** seam=turn boundary · td=text delta · text=final text · think=thought
    * summary · tool=call beat · fold=output size note · errtail=failed-call
-   * evidence · stderr=harness stderr · meta=turn end line */
-  k: "seam" | "td" | "text" | "think" | "tool" | "fold" | "errtail" | "stderr" | "meta";
+   * evidence · stderr=harness stderr · meta=turn end line · poke=project
+   * STATE changed (gates/chat/seat files — stage 2 event-primary): the
+   * client schedules a throttled refresh; carries no data of its own */
+  k: "seam" | "td" | "text" | "think" | "tool" | "fold" | "errtail" | "stderr" | "meta" | "poke";
   t: string;
   /** plain-English flavor (tool beats only — the Narrated lens). */
   p?: string;
@@ -325,7 +330,11 @@ function runningTokens(parsed: Record<string, unknown>[]): number | undefined {
 
 function readTurn(path: string): TurnView {
   const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
-  const events = lines.map(narrateLine);
+  // raw stays narrateLine's contract but never rides the view (see TurnEvent.raw)
+  const events = lines.map((l) => {
+    const { raw: _omit, ...e } = narrateLine(l);
+    return e;
+  });
   const parsed = lines.map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return {}; } });
   const meta = parsed.find((d) => d.turnMeta);
   const name = path.split("/").pop()!;

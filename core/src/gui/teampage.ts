@@ -715,6 +715,12 @@ function startStream(){
   ES.onerror=()=>{SSELIVE=false;}; // EventSource auto-reconnects; the poll floor carries
   ES.onmessage=e=>{
     let d;try{d=JSON.parse(e.data);}catch(err){return;}
+    // STAGE 2 (event-primary): a poke = project state changed (gates/chat/
+    // seat files) — no payload; the throttled refresh diffs and repaints
+    // only what moved. Every OTHER stream event also nudges the throttle:
+    // turn activity keeps the gauge/turn-meta fresh at ~today's cadence
+    // while a turn runs, and costs nothing when quiet.
+    if(d.k==="poke"){pokeRefresh();return;}
     if(d.backlog){ // connect/reconnect: REPLACE the buffers — never duplicate
       FEEDS={};d.backlog.forEach(pushItem);
       stampBacklogMs();
@@ -723,6 +729,7 @@ function startStream(){
       return;
     }
     pushItem(d);paintFeed(d.seat);
+    pokeRefresh();
   };
 }
 let pvView=localStorage.getItem("crate.pvview")||"desktop";
@@ -946,6 +953,22 @@ function renderTile(s,slot){
   return '<div class="tile'+cls+'" data-seat="'+s.seat+'" style="--tscale:'+(SCALES[s.seat]||1)+'">'+tileHead(s)+status+'<div class="feed '+(lens==="engineer"?"eng":"")+'">'+feed+'</div></div>';
 }
 let POLLFAILS=0;
+// ── STAGE 2 (quiet-cockpit PDR): EVENT-PRIMARY. The stream drives the
+// refresh; the poll demotes to a liveness + reconciliation FLOOR. Any
+// stream event (a state poke, a turn line) schedules ONE refresh through a
+// trailing ≥2s throttle — busy ≈ today's cadence, quiet = nothing. The
+// floor: SSE live → refresh only if none succeeded in 12s (drift + dead-
+// server honesty); SSE down → the poll is primary again at 2s, exactly the
+// old page (the deadbar detector keeps its reflexes).
+let LASTREFRESH=0,PKTM=null;
+function pokeRefresh(){
+  if(PKTM)return;
+  PKTM=setTimeout(()=>{PKTM=null;refresh();},Math.max(60,2000-(Date.now()-LASTREFRESH)));
+}
+function pollTick(){
+  if(SSELIVE&&Date.now()-LASTREFRESH<12000)return;
+  refresh();
+}
 // Selection hold (Adam, 2026-08-13): the 2s repaint re-parents the live
 // terminal nodes, which kills a drag-selection mid-drag and yanks a fresh
 // one before Cmd+C can land. While the mouse is down in a pane — or within
@@ -1089,7 +1112,7 @@ async function refresh(){
     if(rkDirty("layout",JSON.stringify(LAYOUT)))applyLayout();
     // clean tiles: surgical in-place value patches, never tree rebuilds
     (tr.seats||[]).forEach(s=>{if(!structDirty&&dirtyTiles.indexOf(s.seat)<0)patchTileLive(s);});
-    POLLFAILS=0;
+    POLLFAILS=0;LASTREFRESH=Date.now(); // success stamps the floor — failures keep the 2s retry so the deadbar stays honest
     if(document.body.classList.contains("dead"))document.body.classList.remove("dead");
   }catch(e){
     // PHASE-B #1: a dead server must LOOK dead. Two consecutive failed polls
@@ -1495,7 +1518,7 @@ window.addEventListener("keydown",e=>{if(e.key==="Escape")closeRail();});
   new MutationObserver(()=>bt.classList.toggle("open",ov.classList.contains("open"))).observe(ov,{attributes:true,attributeFilter:["class"]});
 });
 loadWorkspaces();
-setLens(lens);setInterval(refresh,2000);setInterval(tickWorking,1000);
+setLens(lens);setInterval(pollTick,2000);setInterval(tickWorking,1000); // stage 2: the tick is the FLOOR, the stream drives
 // gate bar wiring lives in wire() — the bar repaints with the grid (Pack 4)
 startStream(); // 2c: the SSE push channel — the poll above stays as the floor
 anchorPanels();
