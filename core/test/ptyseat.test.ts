@@ -292,3 +292,65 @@ test("two views of one PTY: the smallest live proposal wins each dimension; a dr
     rmSync(p, { recursive: true, force: true });
   }
 });
+
+// ── Backlog 14 (Adam's verify, 2026-08-14): the pane scrolls the whole thread ──
+
+test("claude panes spawn with the INLINE renderer pinned — the alt-screen TUI can never eat the thread's scrollback", async () => {
+  const p = tmpProject();
+  try {
+    const { startSeatTty, evictSeatTty } = await import("../src/ptyseat.js");
+    const r = await startSeatTty({
+      projectRoot: p, seat: "designer", agent: "claude", blended: true,
+      argvOverride: ["bash", "-c", 'echo "ALT=${CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN:-unset}"; sleep 2'],
+    });
+    assert.ok(r.ok && !r.reattached);
+    if (!r.ok) return;
+    await new Promise((res) => setTimeout(res, 400));
+    assert.match(r.tty.replay().toString("utf8"), /ALT=1/,
+      "host settings drift (superman's tui:fullscreen) must not decide pane physics — the engine pins inline");
+    evictSeatTty(p, "designer");
+  } finally {
+    rmSync(p, { recursive: true, force: true });
+  }
+});
+
+test("pi panes carry NO claude renderer pin — the env is claude-only", async () => {
+  const p = tmpProject();
+  try {
+    const { startSeatTty, evictSeatTty } = await import("../src/ptyseat.js");
+    const r = await startSeatTty({
+      projectRoot: p, seat: "coder", agent: "pi", blended: true,
+      argvOverride: ["bash", "-c", 'echo "ALT=${CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN:-unset}"; sleep 2'],
+    });
+    assert.ok(r.ok);
+    if (!r.ok) return;
+    await new Promise((res) => setTimeout(res, 400));
+    assert.match(r.tty.replay().toString("utf8"), /ALT=unset/, "a foreign CLI never inherits claude's pin");
+    evictSeatTty(p, "coder");
+  } finally {
+    rmSync(p, { recursive: true, force: true });
+  }
+});
+
+test("the replay ring holds a THREAD, not a screen: a 400K burst survives intact (the old 256K cap dropped it)", async () => {
+  const p = tmpProject();
+  try {
+    const { startSeatTty, evictSeatTty } = await import("../src/ptyseat.js");
+    const r = await startSeatTty({
+      projectRoot: p, seat: "reviewer", agent: "pi", blended: true,
+      argvOverride: ["bash", "-c", "head -c 400000 /dev/zero | tr '\\0' 'x'; echo END-OF-BURST; sleep 5"],
+    });
+    assert.ok(r.ok);
+    if (!r.ok) return;
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline && !r.tty.replay().toString("utf8").includes("END-OF-BURST"))
+      await new Promise((res) => setTimeout(res, 100));
+    const replay = r.tty.replay();
+    assert.ok(replay.toString("utf8").includes("END-OF-BURST"), "the burst fully landed before judging the ring");
+    assert.ok(replay.length >= 300_000,
+      `attach must repaint deep history (got ${replay.length} bytes) — the session owns its scrollback, the window is a view`);
+    evictSeatTty(p, "reviewer");
+  } finally {
+    rmSync(p, { recursive: true, force: true });
+  }
+});

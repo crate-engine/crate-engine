@@ -23,12 +23,13 @@ const VIEW_STYLE = `
 /* Backlog 14, styling half (Adam, 2026-08-14): ONE scrollbar look
    everywhere — thin, carbon-quiet, square (brand), a touch brighter under
    the cursor but never THICKER (explicit width stops the macOS overlay
-   grow that Adam flagged). The claude panes' MISSING bar is the alt-screen
-   half of item 14 — grilled separately, not a styling matter. */
+   grow that Adam flagged). Hover/drag are steps of steel, never a loud
+   color (Adam's verify: the bright rollover is out). */
 ::-webkit-scrollbar{width:8px;height:8px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--line2);border-radius:0}
-::-webkit-scrollbar-thumb:hover{background:var(--dim)}
+::-webkit-scrollbar-thumb:hover{background:#4a5468}
+::-webkit-scrollbar-thumb:active{background:#5a667e}
 ::-webkit-scrollbar-corner{background:transparent}
 /* …and the PANES: xterm v6 draws its own VS Code-style div scrollbar (the
    webkit rules above never touched it — Adam's "reviewer huge, coder
@@ -546,7 +547,9 @@ async function tryStartTty(seat){
 const CRATE_TERM_THEME={background:"#0b0e14",foreground:"#f1f3f6",cursor:"#e2a33c",cursorAccent:"#0b0e14",selectionBackground:"#32405a",
   // Backlog 14: xterm v6 draws its OWN scrollbar (a VS Code-style div, not
   // the native webkit bar) — themed here, sized by the CSS override below.
-  scrollbarSliderBackground:"#323a4b",scrollbarSliderHoverBackground:"#8b94a5",scrollbarSliderActiveBackground:"#e2a33c",
+  // SUBTLE THROUGHOUT (Adam's verify, 2026-08-14): hover and drag are one
+  // and two steps of steel above rest — the amber flash on rollover is out.
+  scrollbarSliderBackground:"#323a4b",scrollbarSliderHoverBackground:"#4a5468",scrollbarSliderActiveBackground:"#5a667e",
   black:"#1a202c",red:"#e4614d",green:"#57c489",yellow:"#e2a33c",blue:"#6ea3e0",magenta:"#b08ad0",cyan:"#5db8c2",white:"#c7cdd8",
   brightBlack:"#6b7488",brightRed:"#f07f6e",brightGreen:"#7cd8a6",brightYellow:"#f0b654",brightBlue:"#93bfee",brightMagenta:"#c9a9e2",brightCyan:"#84cdd6",brightWhite:"#f1f3f6"};
 function attachTty(seat,skipRefresh){

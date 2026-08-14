@@ -235,7 +235,13 @@ function piNodeBinDir(home) {
         return undefined; // no nvm — the system node carries it (or pi refuses honestly)
     }
 }
-const REPLAY_CAP = 256 * 1024;
+// Backlog 14 (Adam's verify, 2026-08-14): the SESSION owns its history, the
+// window is just a view — Ghostty's model, what cmux gives the same TUIs.
+// 256K held barely a screen of claude repaint traffic, so a fresh attach had
+// nothing to scroll INTO and the slider filled the lane. 2M ≈ the client's
+// 5000-line scrollback with ANSI overhead; replay is a one-time cost per
+// attach, not standing chatter (the storm law is untouched).
+const REPLAY_CAP = 2 * 1024 * 1024;
 const registry = new Map();
 const keyOf = (projectRoot, seat) => `${projectRoot}|${seat}`;
 export function liveTty(projectRoot, seat) {
@@ -312,6 +318,14 @@ export async function startSeatTty(opts) {
         ...seatEnv(projectRoot, seat),
         TERM: "xterm-256color",
         ...(walled ? { CRATE_WALLED: "1" } : {}),
+        // Backlog 14 (Adam's verify, 2026-08-14 — cmux is the reference): claude
+        // seats render INLINE, never the alt-screen TUI. Fullscreen draws the
+        // whole thread on the alternate screen, where scrollback cannot exist —
+        // the pane had no bar and nothing to scroll into. Claude made fullscreen
+        // the DEFAULT on 2026-05-06, so host settings.json drift ("tui":
+        // "fullscreen" landed on superman) must not decide pane physics; this
+        // pin overrides settings per-invocation and is inert for pi/codex.
+        ...(agent === "claude" ? { CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: "1" } : {}),
     };
     if (blended && agent === "pi") {
         // Live probe (superman, 2026-08-12): pi's TUI crashes at import under the
