@@ -27,16 +27,18 @@ test("the page exposes the copy bridge: NEWEST non-empty xterm selection wins, D
   assert.ok(fn.includes("getSelection"), "plain DOM selections still copy (chat text)");
 });
 
-test("the KEEPER: a no-gesture clear (alt-screen flip) puts the selection BACK, validated against the remembered text", () => {
+test("the KEEPER holds GHOSTTY'S LAW: a selection is a user-owned REGION — machine clears restore it, only click/typing releases it", () => {
   // root cause #3 (the coder/reviewer vs claude split): claude's TUI flips
-  // the alt screen during redraws; EVERY buffer switch clears the selection
-  // through a path the disable patch can't cover. pi/deepseek don't flip.
+  // the alt screen during redraws; every switch clears the selection through
+  // a path the disable patch can't cover. pi/deepseek don't flip. And the
+  // v1 keeper's TEXT validation died on claude's ticking timers — Ghostty
+  // validates nothing: the region persists, content under it may change.
   assert.ok(html.includes("t.selPos={s:p.start,e:p.end,n:0}"), "the selection RANGE is remembered, not just the text");
-  assert.ok(html.includes("pos.n>=10"), "restores are capped — never an infinite tug-of-war");
+  assert.ok(html.includes("pos.n>=500"), "a pathology bound only — resets on every new user selection");
   assert.ok(html.includes("t.lastDownAt&&Date.now()-t.lastDownAt<600"), "a deliberate click stays a deselect");
   assert.ok(html.includes("t.lastKeyAt&&Date.now()-t.lastKeyAt<600"), "typing stays an input-clear (terminal law)");
   assert.ok(html.includes("term.select(pos.s.x,pos.s.y,len)"), "the range is re-applied");
-  assert.ok(html.includes("term.getSelection()!==t.selText)term.clearSelection()"), "a wrong-content restore is cleared, never left to feed a copy");
+  assert.ok(!html.includes("term.getSelection()!==t.selText)term.clearSelection()"), "NO text validation — ticking content under a region is normal, never a reason to drop it");
 });
 
 test("the selection SURVIVES the TUI's mouse-mode re-asserts, and Cmd+C keeps a 20s memory", () => {

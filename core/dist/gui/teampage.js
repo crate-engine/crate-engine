@@ -587,22 +587,25 @@ function attachTty(seat,skipRefresh){
       try{const p=term.getSelectionPosition();if(p)t.selPos={s:p.start,e:p.end,n:0};}catch(err){}
       return;
     }
+    // GHOSTTY'S MODEL (Adam's cmux insight, 2026-08-14 — cmux panes hold
+    // selections through claude's redraws because Ghostty treats a
+    // selection as a screen REGION owned by the USER: machine events never
+    // clear it, content under it may change freely, copy takes what's
+    // there now. v1 of this keeper validated restores against the
+    // remembered TEXT — fatal in claude panes, where elapsed timers TICK
+    // inside the selected range: first tick → mismatch → gave up → the
+    // "stuck for a while, then vanished" Adam saw. No validation, no time
+    // window: the region persists until the USER clicks or types.
     const pos=t.selPos;
-    if(!pos||pos.n>=10)return;                                   // gave up — the memory belt still covers Cmd+C
+    if(!pos||pos.n>=500)return;                                  // pathology bound only — resets on every new user selection
     if(t.lastDownAt&&Date.now()-t.lastDownAt<600)return;         // user clicked — honor the deselect
     if(t.lastKeyAt&&Date.now()-t.lastKeyAt<600)return;           // user typed — terminals clear on input
-    if(!t.selAt||Date.now()-t.selAt>20000)return;                // stale — let it go
     pos.n++;
     setTimeout(()=>{try{
       if(term.hasSelection())return;                             // something restored it already
       const len=(pos.e.y-pos.s.y)*term.cols+(pos.e.x-pos.s.x);
-      if(len<=0)return;
-      term.select(pos.s.x,pos.s.y,len);
-      // validate: a mid-flip restore can grab the wrong content — clear it
-      // (which refires this keeper for another capped try) rather than let
-      // a WRONG highlight feed a copy
-      if(t.selText&&term.getSelection()!==t.selText)term.clearSelection();
-    }catch(err){}},60);
+      if(len>0)term.select(pos.s.x,pos.s.y,len);
+    }catch(err){}},30);
   });
   wrap.addEventListener("mousedown",()=>{t.selText=null;t.selPos=null;t.lastDownAt=Date.now();},true);
   // Clipboard (Adam, 2026-08-11; REWIRED 2026-08-13 — "still not working" in
