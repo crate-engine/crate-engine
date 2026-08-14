@@ -35,8 +35,9 @@ test("the KEEPER holds GHOSTTY'S LAW: a selection is a user-owned REGION — mac
   // validates nothing: the region persists, content under it may change.
   assert.ok(html.includes("t.selPos={s:p.start,e:p.end,n:0}"), "the selection RANGE is remembered, not just the text");
   assert.ok(html.includes("pos.n>=500"), "a pathology bound only — resets on every new user selection");
-  assert.ok(html.includes("t.lastDownAt&&Date.now()-t.lastDownAt<600"), "a deliberate click stays a deselect");
+  assert.ok(!/lastDownAt&&Date\.now\(\)[^;]*return;\s*\/\/ user clicked/.test(html), "NO mousedown gate in the keeper — it ate fast drag-releases; the mousedown listener's selPos wipe already handles real deselects");
   assert.ok(html.includes("t.lastKeyAt&&Date.now()-t.lastKeyAt<600"), "typing stays an input-clear (terminal law)");
+  assert.ok(html.includes("queueMicrotask"), "the restore lands SAME-FRAME, before paint — the highlight never visibly drops (the 30ms version flickered)");
   assert.ok(html.includes("term.select(pos.s.x,pos.s.y,len)"), "the range is re-applied");
   assert.ok(!html.includes("term.getSelection()!==t.selText)term.clearSelection()"), "NO text validation — ticking content under a region is normal, never a reason to drop it");
 });

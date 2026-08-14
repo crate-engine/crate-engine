@@ -596,16 +596,21 @@ function attachTty(seat,skipRefresh){
     // inside the selected range: first tick → mismatch → gave up → the
     // "stuck for a while, then vanished" Adam saw. No validation, no time
     // window: the region persists until the USER clicks or types.
+    // No mousedown gate here (Adam's quick-drag find): a deliberate click
+    // already wipes selPos in the mousedown listener, so a machine clear
+    // arriving right after a FAST drag-release must still restore — the old
+    // 600ms gate ate exactly those. And the restore rides a MICROTASK:
+    // same frame as the clear, before the browser paints — the highlight
+    // never visibly drops (the 30ms version flickered on rollover).
     const pos=t.selPos;
     if(!pos||pos.n>=500)return;                                  // pathology bound only — resets on every new user selection
-    if(t.lastDownAt&&Date.now()-t.lastDownAt<600)return;         // user clicked — honor the deselect
     if(t.lastKeyAt&&Date.now()-t.lastKeyAt<600)return;           // user typed — terminals clear on input
     pos.n++;
-    setTimeout(()=>{try{
+    queueMicrotask(()=>{try{
       if(term.hasSelection())return;                             // something restored it already
       const len=(pos.e.y-pos.s.y)*term.cols+(pos.e.x-pos.s.x);
       if(len>0)term.select(pos.s.x,pos.s.y,len);
-    }catch(err){}},30);
+    }catch(err){}});
   });
   wrap.addEventListener("mousedown",()=>{t.selText=null;t.selPos=null;t.lastDownAt=Date.now();},true);
   // Clipboard (Adam, 2026-08-11; REWIRED 2026-08-13 — "still not working" in
