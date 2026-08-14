@@ -50,6 +50,7 @@ function makeFakePty(seat: string, projectRoot: string, file: string): FakePty {
     agent: "claude",
     startedAtMs: Date.now(),
     outputBytesSince: () => 0, // quiet fake — the fixed-window verify contract
+    dropSizeProposal: () => {}, // inert — no views hold size proposals on a fake
     cols: 120,
     rows: 32,
     blended: true,

@@ -944,8 +944,57 @@ let POLLFAILS=0;
 let SELDRAG=false,SELHOLD=0;
 document.addEventListener("mousedown",e=>{if(e.target&&e.target.closest&&e.target.closest(".ttywrap"))SELDRAG=true;});
 document.addEventListener("mouseup",()=>{if(SELDRAG){SELDRAG=false;const any=Object.keys(TTYS).some(s=>TTYS[s].term&&TTYS[s].term.hasSelection());SELHOLD=any?Date.now():0;}});
+// ── Damage-tracked rendering (PDR quiet-cockpit, Adam's grill 2026-08-14):
+// the chrome now follows the two rules the panes already follow (tmux's):
+// draw only when something CHANGED, and only the region that changed. State
+// is truth, the DOM is a dirty-checked view — a QUIET cockpit performs ZERO
+// DOM writes. Region grain = the tile. High-frequency small values (gauge %,
+// live token count) patch IN PLACE on clean tiles, the same way tickWorking
+// already ticks the elapsed readout. The preservation belts below (typing,
+// focus, selection) STAY for one release as dormant safety nets — their
+// tests outlive them as "the cure holds" pins. Stage 2 (event-primary push,
+// poll demoted to a slow floor) comes separately.
+let RKEYS={};
+function rkDirty(region,key){if(RKEYS[region]===key)return false;RKEYS[region]=key;return true;}
+// The tile's dirty key: everything renderTile actually paints — and NOTHING
+// volatile it doesn't. Excluded on purpose: events[].raw (never rendered),
+// gauge + liveTokens (patched in place), FEEDS (SSE owns the feed and
+// patches it directly), the elapsed readout (tickWorking's job),
+// lastOutputAt (not rendered). Turn CONTENT rides the key only when the
+// SSE stream is down — the only time the poll paints feeds.
+function tileKey(s,i){
+  const turnsMeta=(s.turns||[]).map(t=>[t.ok,t.startedAtMs||0,t.startedAt||""]);
+  const feedSrc=(SSELIVE&&FEEDS[s.seat]&&FEEDS[s.seat].length)?0
+    :JSON.stringify((s.turns||[]).map(t=>[t.digest,t.live,(t.events||[]).map(e=>[e.kind,e.narrated])]));
+  const orch=s.seat==="orchestrator"?[CHAT,PENDING,GATES,GATEREL,SSELIVE]:0;
+  return JSON.stringify([i,lens,SCALES[s.seat]||1,!!TTYS[s.seat],!!(TTYS[s.seat]&&TTYS[s.seat].waiting),
+    s.title,s.agent,s.model,s.status,s.lastActivity,s.unread,s.attended,s.blended,s.responding,s.ptyStartedAt,
+    dotClass(s),turnsMeta,feedSrc,orch]);
+}
+// Clean-tile surgical patches (the tickWorking pattern): value writes only,
+// no tree mutation, and only when the value actually moved.
+function patchTileLive(s){
+  const tile=document.querySelector('.tile[data-seat="'+s.seat+'"]');if(!tile)return;
+  const g=tile.querySelector('.gauge[data-seat]');
+  if(g&&s.gauge){
+    const pct=Math.round(s.gauge.pct*100);
+    const cls="gauge "+s.gauge.band;
+    if(g.className!==cls)g.className=cls;
+    const gf=g.querySelector(".gfill"),gp=g.querySelector(".gpct");
+    const w=Math.max(3,pct)+"%";
+    if(gf&&gf.style.width!==w)gf.style.width=w;
+    if(gp&&gp.textContent!==pct+"%")gp.textContent=pct+"%";
+  }
+  const run=(s.turns||[]).find(t=>t.ok===null);
+  const w2=tile.querySelector(".working[data-start]");
+  if(w2&&run&&String(run.liveTokens||0)!==w2.dataset.tok)w2.dataset.tok=String(run.liveTokens||0);
+}
 async function refresh(){
-  if(SELDRAG||Date.now()-SELHOLD<5000)return;
+  // Gesture guard: the repaint yields while ANY grid gesture is live —
+  // selection (the 2026-08-13 hold), a seam drag, a header drag-swap (the
+  // previously UNGUARDED family member: a mid-drag repaint destroyed the
+  // drag-highlight classes and rebound handlers mid-gesture).
+  if(SELDRAG||GUTDRAG||SWAP||Date.now()-SELHOLD<5000)return;
   try{
     const [tr,gr,cr,pv,ps]=await Promise.all([
       fetch(api("/api/team"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()),
@@ -976,40 +1025,62 @@ async function refresh(){
     const dc=document.getElementById("downchip");
     if(dc&&ps&&ps.seats){
       const dead=ps.booted?ps.seats.filter(x=>!x.alive):[];
-      dc.hidden=dead.length===0;
-      if(dead.length)dc.textContent="⚠ "+dead.length+"/"+ps.seats.length+" seats DOWN ("+dead.map(x=>x.seat).join(", ")+") — Team menu → Boot/Resume";
+      const dtxt=dead.length?"⚠ "+dead.length+"/"+ps.seats.length+" seats DOWN ("+dead.map(x=>x.seat).join(", ")+") — Team menu → Boot/Resume":"";
+      if(rkDirty("downchip",dtxt)){dc.hidden=dead.length===0;if(dead.length)dc.textContent=dtxt;}
     }
-    syncPreviewTab();
-    if(document.getElementById("pvoverlay").classList.contains("open"))renderPreview();
-    if(document.getElementById("ctxoverlay").classList.contains("open"))renderConsole();
-    // preserve in-progress chat typing across the re-render
-    const cb=document.getElementById("chatbox");const chatVal=cb?cb.value:"";const chatFocused=document.activeElement===cb;
-    // …and the gate bar's half-typed phrase (the bar lives INSIDE the grid
-    // now — Adam's placement call — so the repaint would clobber it)
-    const gbi=document.getElementById("gbinput");const gbVal=gbi?gbi.value:"";const gbFocused=document.activeElement===gbi;
-    // Wheel focus (Adam's catch, 2026-08-11): the repaint re-seats the living
-    // terminal, which silently DROPS keyboard focus — 4-5 keystrokes then
-    // beeps. Remember which wheel held focus and hand it back after mount.
-    const ttyFocusSeat=(()=>{const ae=document.activeElement;if(!ae||!ae.closest)return null;
-      const w=ae.closest(".ttywrap");if(!w)return null;
-      for(const s in TTYS){if(TTYS[s].wrap===w)return s;}return null;})();
+    if(rkDirty("pvtab",String(PREVIEWS.length>0)))syncPreviewTab();
+    if(document.getElementById("pvoverlay").classList.contains("open")&&rkDirty("pvpanel",JSON.stringify([PREVIEWS,pvView])))renderPreview();
+    if(document.getElementById("ctxoverlay").classList.contains("open")&&rkDirty("ctxpanel",JSON.stringify(SEATSVIEW.map(s=>[s.seat,s.title,s.agent,s.model,s.gauge]))))renderConsole();
     // custom layout: tiles render in SLOT order (the user's arrangement),
     // seams ride along as drag handles
     const bySeat={};(tr.seats||[]).forEach(s=>bySeat[s.seat]=s);
-    document.getElementById("grid").innerHTML=
-      LAYOUT.slots.map((seat,i)=>{const s=bySeat[seat];return s?renderTile(s,i):'<div class="tile slot'+i+'" data-seat="'+esc(seat)+'"></div>';}).join("")
-      +'<div class="gut v v1" data-gut="v1" title="drag to resize · double-click resets"></div>'
-      +'<div class="gut v v2" data-gut="v2" title="drag to resize · double-click resets"></div>'
-      +'<div class="gut h" data-gut="h" title="drag to resize · double-click resets"></div>';
-    applyLayout();
-    wire();
-    const cb2=document.getElementById("chatbox");if(cb2){cb2.value=chatVal;if(chatFocused)cb2.focus();}
-    const gbi2=document.getElementById("gbinput");if(gbi2){if(gbVal)gbi2.value=gbVal;if(gbFocused)gbi2.focus();}
-    mountTtys(); // native seat access: re-seat the living terminals after the repaint
-    if(ttyFocusSeat&&TTYS[ttyFocusSeat]&&TTYS[ttyFocusSeat].term)TTYS[ttyFocusSeat].term.focus();
-    document.querySelectorAll(".feed").forEach(f=>{if(!f.hasAttribute("data-ttyhost"))f.scrollTop=f.scrollHeight;});
-    const cl=document.getElementById("chatlog");if(cl)cl.scrollTop=cl.scrollHeight;
-    POLLFAILS=0;document.body.classList.remove("dead");
+    // dirty set FIRST (recording keys), then structure: slot order or seat
+    // set changed (first paint, drag-swap, restaff) → the full grid rebuild
+    // — the ONLY whole-grid path left.
+    const dirtyTiles=LAYOUT.slots.filter(seat=>bySeat[seat]&&rkDirty("tile:"+seat,tileKey(bySeat[seat],LAYOUT.slots.indexOf(seat))));
+    const structDirty=rkDirty("grid-struct",JSON.stringify([LAYOUT.slots,(tr.seats||[]).map(s=>s.seat)]));
+    if(structDirty||dirtyTiles.length){
+      // preserve in-progress chat typing across the re-render
+      const cb=document.getElementById("chatbox");const chatVal=cb?cb.value:"";const chatFocused=document.activeElement===cb;
+      // …and the gate bar's half-typed phrase (the bar lives INSIDE the grid
+      // now — Adam's placement call — so the repaint would clobber it)
+      const gbi=document.getElementById("gbinput");const gbVal=gbi?gbi.value:"";const gbFocused=document.activeElement===gbi;
+      // Wheel focus (Adam's catch, 2026-08-11): the repaint re-seats the living
+      // terminal, which silently DROPS keyboard focus — 4-5 keystrokes then
+      // beeps. Remember which wheel held focus and hand it back after mount.
+      const ttyFocusSeat=(()=>{const ae=document.activeElement;if(!ae||!ae.closest)return null;
+        const w=ae.closest(".ttywrap");if(!w)return null;
+        for(const s in TTYS){if(TTYS[s].wrap===w)return s;}return null;})();
+      if(structDirty){
+        document.getElementById("grid").innerHTML=
+          LAYOUT.slots.map((seat,i)=>{const s=bySeat[seat];return s?renderTile(s,i):'<div class="tile slot'+i+'" data-seat="'+esc(seat)+'"></div>';}).join("")
+          +'<div class="gut v v1" data-gut="v1" title="drag to resize · double-click resets"></div>'
+          +'<div class="gut v v2" data-gut="v2" title="drag to resize · double-click resets"></div>'
+          +'<div class="gut h" data-gut="h" title="drag to resize · double-click resets"></div>';
+      }else{
+        // damage only: each dirty tile swaps in place; gutters + clean
+        // tiles keep their DOM identity (and the user's scroll positions)
+        dirtyTiles.forEach(seat=>{
+          const old=document.querySelector('.tile[data-seat="'+seat+'"]');if(!old)return;
+          const tpl=document.createElement("template");tpl.innerHTML=renderTile(bySeat[seat],LAYOUT.slots.indexOf(seat));
+          if(tpl.content.firstChild)old.replaceWith(tpl.content.firstChild);
+        });
+      }
+      wire();
+      const cb2=document.getElementById("chatbox");if(cb2){cb2.value=chatVal;if(chatFocused)cb2.focus();}
+      const gbi2=document.getElementById("gbinput");if(gbi2){if(gbVal)gbi2.value=gbVal;if(gbFocused)gbi2.focus();}
+      mountTtys(); // native seat access: re-seat the living terminals after the repaint
+      if(ttyFocusSeat&&TTYS[ttyFocusSeat]&&TTYS[ttyFocusSeat].term)TTYS[ttyFocusSeat].term.focus();
+      // pin ONLY repainted feeds — an untouched feed keeps the user's scroll
+      const pinned=structDirty?LAYOUT.slots:dirtyTiles;
+      pinned.forEach(seat=>{const f=document.querySelector('.tile[data-seat="'+seat+'"] .feed');if(f&&!f.hasAttribute("data-ttyhost"))f.scrollTop=f.scrollHeight;});
+      const cl=document.getElementById("chatlog");if(cl&&pinned.indexOf("orchestrator")>=0)cl.scrollTop=cl.scrollHeight;
+    }
+    if(rkDirty("layout",JSON.stringify(LAYOUT)))applyLayout();
+    // clean tiles: surgical in-place value patches, never tree rebuilds
+    (tr.seats||[]).forEach(s=>{if(!structDirty&&dirtyTiles.indexOf(s.seat)<0)patchTileLive(s);});
+    POLLFAILS=0;
+    if(document.body.classList.contains("dead"))document.body.classList.remove("dead");
   }catch(e){
     // PHASE-B #1: a dead server must LOOK dead. Two consecutive failed polls
     // (~4s) flips the offline banner; the stale page greys out underneath.
