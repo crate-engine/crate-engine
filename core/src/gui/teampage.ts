@@ -1538,15 +1538,23 @@ async function renderHealth(){
   panel.innerHTML=h;
   // W3 (audit K2): "Update now" ends with the app BACK — update, then the
   // server restarts itself and we follow it to the fresh URL. No homework.
-  const ub=document.getElementById("hupd");if(ub)ub.onclick=async()=>{ub.textContent="…";
-    const r=await fetch(api("/api/update"),{method:"POST",headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()).catch(()=>null);
-    if(!r||r.error){await uiNotice("Update: "+((r&&r.error)||"failed — see logs"));renderHealth();return;}
-    const flg=(r.flagged&&r.flagged.length)?r.flagged.map(f=>"⚑ "+f.note).join("\\n"):"All your customizations are compatible.";
-    if(!(await uiConfirm("Updated "+String(r.before).slice(0,7)+" → "+String(r.after).slice(0,7)+" (fast-forward).\\n"+flg+"\\n\\nRestart the app now to finish?","Restart now"))){renderHealth();return;}
-    const rr=await fetch(api("/api/restart"),{method:"POST",headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()).catch(()=>null);
-    if(rr&&rr.url)location.href=rr.url;else await uiNotice("The app is restarting — if this window goes quiet, reopen with: crate open");
-  };
+  const ub=document.getElementById("hupd");if(ub)ub.onclick=()=>runEngineUpdate(ub);
 }
+// ONE update routine, two doors (Adam, 2026-08-15): the Health panel button
+// and the native UPDATE menu both land here. Runs on the ENGINE HOST via the
+// API (correct for remote topologies); the native shell separately fans out
+// to the window machine's own engine when the topology is remote.
+async function runEngineUpdate(btn){
+  if(btn)btn.textContent="…";
+  const r=await fetch(api("/api/update"),{method:"POST",headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()).catch(()=>null);
+  if(!r||r.error){await uiNotice("Update: "+((r&&r.error)||"failed — see logs"));renderHealth();return;}
+  if(r.before===r.after){await uiNotice("Already current — engine "+String(r.after).slice(0,7)+".");renderHealth();return;}
+  const flg=(r.flagged&&r.flagged.length)?r.flagged.map(f=>"⚑ "+f.note).join("\\n"):"All your customizations are compatible.";
+  if(!(await uiConfirm("Updated "+String(r.before).slice(0,7)+" → "+String(r.after).slice(0,7)+" (fast-forward).\\n"+flg+"\\n\\nRestart the app now to finish?","Restart now"))){renderHealth();return;}
+  const rr=await fetch(api("/api/restart"),{method:"POST",headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()).catch(()=>null);
+  if(rr&&rr.url)location.href=rr.url;else await uiNotice("The app is restarting — if this window goes quiet, reopen with: crate open");
+}
+window.crateUpdate=()=>runEngineUpdate(document.getElementById("hupd"));
 // ── T7-2: the Team menu — loop state + Abandon (headless verb). Boot/Resume +
 // per-seat Relaunch light up when the GUI owns the team lifecycle (T7-3). ──
 async function renderTeamMenu(){

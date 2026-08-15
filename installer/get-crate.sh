@@ -251,11 +251,48 @@ if [ "$FOUND_READY" = "0" ]; then
   say "signs in its own way, once — Crate Engine never touches your accounts)."
 fi
 
+# ── the NATIVE app (Adam, 2026-08-15: best-in-class installs end with a real
+# desktop app on BOTH platforms, not a terminal habit) ───────────────────────
+step "The native app"
+NATIVE_APP=0
+if [ "$OS" = "Darwin" ]; then
+  if command -v swiftc >/dev/null 2>&1; then
+    if bash "$ENGINE_DIR/apps/mac-shell/build.sh" >/dev/null 2>&1; then
+      say "Crate Engine.app installed — ${GREEN}⚡ in /Applications and the Dock${RESET}"
+      NATIVE_APP=1
+    else
+      say "native app build ${AMBER}failed${RESET} — the browser window still works; retry later with: bash ~/.crate/engine/apps/mac-shell/build.sh"
+    fi
+  else
+    say "native app needs Apple's command line tools (one-time): ${AMBER}xcode-select --install${RESET}"
+    say "then: bash ~/.crate/engine/apps/mac-shell/build.sh — the browser window works meanwhile"
+  fi
+elif [ "$OS" = "Linux" ]; then
+  if python3 -c 'import gi; gi.require_version("Gtk","3.0"); gi.require_version("WebKit2","4.1")' >/dev/null 2>&1; then
+    if bash "$ENGINE_DIR/apps/linux-shell/install.sh" >/dev/null 2>&1; then
+      say "Crate Engine installed — ${GREEN}in your app launcher${RESET}"
+      NATIVE_APP=1
+    else
+      say "native app install ${AMBER}failed${RESET} — the browser window still works; retry later with: bash ~/.crate/engine/apps/linux-shell/install.sh"
+    fi
+  else
+    say "native app needs GTK's python bindings (one-time, distro parts):"
+    say "  Debian/Ubuntu: ${AMBER}sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-webkit2-4.1${RESET}"
+    say "then: bash ~/.crate/engine/apps/linux-shell/install.sh — the browser window works meanwhile"
+  fi
+fi
+
 # ── hand off to the app ──────────────────────────────────────────────────────
 step "Installed. Launching the app…"
-say "(the app opens in its own window — a chromeless ⚡ Crate Engine window)"
 if [ "$NO_OPEN" = "1" ]; then
   say "(--no-open) start it yourself with:  crate open"
+elif [ "$NATIVE_APP" = "1" ] && [ "$OS" = "Darwin" ]; then
+  say "(the ⚡ Crate Engine app opens — it's in your Dock from here on)"
+  open -a "Crate Engine" || exec "$BIN_DIR/crate" open
+elif [ "$NATIVE_APP" = "1" ] && [ "$OS" = "Linux" ]; then
+  say "(the ⚡ Crate Engine app opens — it's in your app launcher from here on)"
+  { gtk-launch crate-engine >/dev/null 2>&1 || nohup python3 "$HOME/.local/lib/crate-shell/main.py" >/dev/null 2>&1 & } || exec "$BIN_DIR/crate" open
 else
+  say "(the app opens in its own window — a chromeless ⚡ Crate Engine window)"
   exec "$BIN_DIR/crate" open
 fi

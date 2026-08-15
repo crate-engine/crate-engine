@@ -346,6 +346,30 @@ final class PanelActions: NSObject, NSMenuItemValidation {
     }
     cockpit()?.evaluateJavaScript("window.crateOpenStudio && window.crateOpenStudio()", completionHandler: nil)
   }
+  /// UPDATE menu (Adam, 2026-08-15): one click updates BOTH sides. The page
+  /// bridge runs the engine-host update through the API (correct for remote
+  /// topologies — the engine lives where the repos live) with the existing
+  /// compat report + restart confirm; and when the topology IS remote, this
+  /// machine's own engine copy + app bundle need the same update (the
+  /// by-hand fan-out ritual, made a door) — run local `crate update` too.
+  @objc func updateNow(_ sender: Any?) {
+    cockpit()?.evaluateJavaScript("window.crateUpdate && window.crateUpdate()", completionHandler: nil)
+    let remote = readRemoteHost()
+    if !remote.isEmpty {
+      DispatchQueue.global(qos: .utility).async {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: home + "/.local/bin/crate")
+        p.arguments = ["update"]
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "\(home)/.local/bin:/usr/local/bin:/opt/homebrew/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+        p.environment = env
+        try? p.run()
+        p.waitUntilExit()
+      }
+    }
+  }
+  @objc func checkUpdates(_ sender: Any?) { open("health") }
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { cockpit() != nil }
 }
 
@@ -387,6 +411,15 @@ let studioMenuItem = NSMenuItem(title: "Design Studio", action: #selector(PanelA
 studioMenuItem.target = PanelActions.shared
 viewMenu.addItem(studioMenuItem)
 viewItem.submenu = viewMenu
+let updateItem = NSMenuItem(); mainMenu.addItem(updateItem)
+let updateMenu = NSMenu(title: "Update")
+let updNowItem = NSMenuItem(title: "Update Engine Now", action: #selector(PanelActions.updateNow(_:)), keyEquivalent: "u")
+updNowItem.target = PanelActions.shared
+updateMenu.addItem(updNowItem)
+let updCheckItem = NSMenuItem(title: "Check for Updates", action: #selector(PanelActions.checkUpdates(_:)), keyEquivalent: "")
+updCheckItem.target = PanelActions.shared
+updateMenu.addItem(updCheckItem)
+updateItem.submenu = updateMenu
 app.mainMenu = mainMenu
 
 let delegate = AppDelegate()

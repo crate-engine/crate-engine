@@ -43,3 +43,26 @@ test("cockpitReady flips only on the MAIN webview finishing a loopback load — 
   assert.ok(fn.includes("webView == self.webView"), "satellite loads never flip the flag");
   assert.ok(fn.includes('"127.0.0.1"') && fn.includes('"localhost"'), "only the engine's loopback door counts");
 });
+
+// ── the UPDATE menu (Adam, 2026-08-15): one click updates BOTH sides ──
+test("UPDATE is a top-level menu on both shells: Update Engine Now (cmd/ctrl+U) drives ONE page routine; remote topologies fan out locally", () => {
+  const pyShell = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "apps", "linux-shell", "main.py"), "utf8");
+  assert.ok(html.includes("window.crateUpdate=") && html.includes("async function runEngineUpdate"), "one routine, two doors — Health button and menu share it");
+  assert.ok(html.includes('if(r.before===r.after){await uiNotice("Already current'), "an already-current update says so plainly");
+  assert.ok(shell.includes('NSMenu(title: "Update")') && shell.includes('"Update Engine Now"') && shell.includes('keyEquivalent: "u"'), "mac: top-level Update menu, cmd-U");
+  assert.ok(shell.includes("window.crateUpdate && window.crateUpdate()"), "mac: the menu drives the page bridge (engine-host update)");
+  const macUpd = shell.slice(shell.indexOf("@objc func updateNow"), shell.indexOf("@objc func checkUpdates"));
+  assert.ok(macUpd.includes("readRemoteHost()") && macUpd.includes('["update"]'), "mac: remote topology also runs LOCAL crate update — the by-hand fan-out is a door now");
+  assert.ok(pyShell.includes('label="Update"') && pyShell.includes('"Update Engine Now"') && pyShell.includes("Gdk.KEY_u"), "linux: same menu, ctrl-U");
+  assert.ok(pyShell.includes("window.crateUpdate && window.crateUpdate()") && pyShell.includes("read_remote_host()"), "linux: same bridge + same fan-out");
+});
+
+test("the installer ends with a NATIVE APP on both platforms — plain-words fallbacks, never sudo", () => {
+  const inst = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "installer", "get-crate.sh"), "utf8");
+  assert.ok(inst.includes("apps/mac-shell/build.sh") && inst.includes("xcode-select --install"), "mac: builds the app when swiftc exists, names the one-time step when not");
+  assert.ok(inst.includes("apps/linux-shell/install.sh") && inst.includes("gir1.2-webkit2-4.1"), "linux: installs the GTK app when deps exist, names them when not");
+  assert.ok(inst.includes('open -a "Crate Engine"') && inst.includes("gtk-launch crate-engine"), "the finale launches the NATIVE app, browser window only as fallback");
+  assert.ok(!/^sudo /m.test(inst), "the installer suggests sudo (inside hint strings), never runs it");
+});
