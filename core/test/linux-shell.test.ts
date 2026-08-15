@@ -26,7 +26,7 @@ test("main.py parses (python3 ast) and pins its GI versions — the Gdk 3.0 pin 
 test("the Mac shell's paid-for lessons all cross over", () => {
   assert.ok(py.includes('"window.crateShell=true"') || py.includes("'window.crateShell=true'"), "the page's shell detection");
   assert.ok(py.includes("set_javascript_can_open_windows_automatically(True)"), "non-gesture window.open (the studio menu/watcher bug, learned once)");
-  assert.ok(py.includes("crate-retry://") && assert && py.includes("crate-ext://"), "retry + external-browser schemes");
+  assert.ok(py.includes("crate-retry://") && py.includes("crate-ext://"), "retry + external-browser schemes");
   assert.ok(py.includes("crateOpenPanel") && py.includes("crateOpenStudio"), "View menu drives the same page bridges");
   assert.ok(py.includes("crateCopySelection"), "the copy bridge — WebKit's copy only knows DOM selections, xterm paints its own");
   assert.ok(py.includes("looks_asleep"), "the asleep-server morning screen with Retry");

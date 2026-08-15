@@ -132,6 +132,51 @@ export function makeDir(rawParent: string | undefined, name: string, opts: { hom
   return listDirs(target, opts);
 }
 
+// ── Clone from GitHub (backlog 15, absorbed by the attach card — PDR
+// cockpit-first-onboarding S1): git clone into a jailed destination, then the
+// normal attach runs on the clone. Plain-chars URL validation so a hostile
+// string can never smuggle git options or shell syntax. ──────────────────────
+
+export function validCloneUrl(url: string): boolean {
+  if (url.startsWith("-")) return false;
+  return /^https:\/\/[\w.-]+\/[\w.~-]+(\/[\w.~-]+)+(\.git)?$/.test(url) || /^git@[\w.-]+:[\w.~-]+(\/[\w.~-]+)+(\.git)?$/.test(url);
+}
+
+/** The folder a clone of this URL lands in (repo basename, .git stripped). */
+export function cloneDirNameFor(url: string): string {
+  const last = url.replace(/\/+$/, "").split(/[/:]/).pop() ?? "";
+  return last.replace(/\.git$/, "");
+}
+
+/**
+ * Clone a repo into destDir (same picker jail as listDirs) and return the
+ * clone's path — the attach card runs the normal plan/execute on it next.
+ */
+export async function cloneRepo(
+  url: string,
+  destDir: string | undefined,
+  opts: { home?: string; roots?: string[] } = {},
+): Promise<{ target: string; project: string }> {
+  if (!validCloneUrl(url)) {
+    throw new AttachError("that doesn't look like a git URL — https://github.com/you/repo or git@github.com:you/repo");
+  }
+  const dest = listDirs(destDir, opts).path; // resolves + enforces the jail
+  const project = cloneDirNameFor(url);
+  if (project === "") throw new AttachError("could not read a repo name from that URL");
+  const target = join(dest, project);
+  if (existsSync(target)) throw new AttachError(`"${project}" already exists in ${dest} — attach it directly instead`);
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  try {
+    await promisify(execFile)("git", ["clone", "--", url, target], { timeout: 300_000, encoding: "utf8" });
+  } catch (e) {
+    const err = e as { stderr?: string; message?: string };
+    const tail = (err.stderr ?? "").trim().split("\n").slice(-2).join(" ");
+    throw new AttachError(`git clone failed — ${tail || err.message || e}`);
+  }
+  return { target, project };
+}
+
 // ── the plan (what the disclosure screen shows) ───────────────────────────────
 
 export type WriteKind = "committed" | "local";

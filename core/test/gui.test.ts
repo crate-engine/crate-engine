@@ -70,12 +70,12 @@ test("token gate: no token → 403; wrong token → 403; pages need it too", asy
   assert.equal(wrong.status, 403);
 });
 
-test("pages render with the token (welcome carries the title)", async () => {
-  const r = await fetch(`http://127.0.0.1:${gui.port}/?token=${gui.token}`);
-  assert.equal(r.status, 200);
-  const text = await r.text();
-  assert.match(text, /Crate Engine/);
-  assert.match(text, /Staff your team/);
+test("cockpit-first (S1+S3): THE PAGES ARE DEAD — /, the whole wizard journey, and the W1 relics all land in the cockpit", async () => {
+  for (const p of ["/", "/welcome", "/staffing", "/attach", "/start", "/arm", "/check", "/health"]) {
+    const r = await fetch(`http://127.0.0.1:${gui.port}${p}?token=${gui.token}`, { redirect: "manual" });
+    assert.equal(r.status, 302, p);
+    assert.match(r.headers.get("location") ?? "", /^\/team\?token=/, p);
+  }
 });
 
 test("W2: brand fonts are self-hosted, tokenless, and whitelisted", async () => {
@@ -88,15 +88,9 @@ test("W2: brand fonts are self-hosted, tokenless, and whitelisted", async () => 
   }
 });
 
-test("W1: /start renders the preflight; the retired arm/check/health screens redirect to it", async () => {
-  const r = await fetch(`http://127.0.0.1:${gui.port}/start?token=${gui.token}`);
-  assert.equal(r.status, 200);
-  assert.match(await r.text(), /Start the engine/);
-  for (const p of ["/arm", "/check", "/health"]) {
-    const rr = await fetch(`http://127.0.0.1:${gui.port}${p}?token=${gui.token}`, { redirect: "manual" });
-    assert.equal(rr.status, 302, p);
-    assert.match(rr.headers.get("location") ?? "", /^\/start\?token=/);
-  }
+test("S3: the card can be SUMMONED over a working cockpit (?card=1), dismissable back to the rig", async () => {
+  const t = await (await fetch(`http://127.0.0.1:${gui.port}/team?token=${gui.token}&card=1`)).text();
+  assert.match(t, /const CARD=\{"machine":.*"dismissable":/);
 });
 
 test("staffing catalog: five seats + the first-party-only Claude law (no Claude-via-Pi, ever)", async () => {
@@ -284,29 +278,32 @@ test("a --project that was never attached is REFUSED; the app falls back to the 
   }
 });
 
-test("welcome resumes: attached project shown with a Continue → Start CTA; the gui landing is /start", async () => {
+test("day-2 resume (S1): / lands straight in the attached project's cockpit — no wizard detour", async () => {
   const g3 = await startGuiServer({ home: HOME });
   try {
     assert.equal(g3.state.project, join(scratch, "exec-repo")); // persisted across "restarts"
-    const t = await (await fetch(`http://127.0.0.1:${g3.port}/?token=${g3.token}`)).text();
-    assert.match(t, /Continue where you left off/);
+    const t = await (await fetch(`http://127.0.0.1:${g3.port}/?token=${g3.token}`)).text(); // follows the 302
     assert.match(t, /exec-repo/);
+    assert.match(t, /const CARD=null;/); // attached = no card
   } finally {
     g3.server.close();
   }
 });
 
-test("fresh account: no resume card on welcome; /team redirects to the wizard (W3, X3)", async () => {
+test("fresh account (S1): the cockpit opens with the ONE irreducible card — never a redirect out of the room", async () => {
   const home3 = join(scratch, "home3");
   mkdirSync(home3, { recursive: true });
   const g3 = await startGuiServer({ home: home3 });
   try {
     assert.equal(g3.state.project, undefined);
-    const t = await (await fetch(`http://127.0.0.1:${g3.port}/?token=${g3.token}`)).text();
-    assert.doesNotMatch(t, /Continue where you left off/);
-    const r = await fetch(`http://127.0.0.1:${g3.port}/team?token=${g3.token}`, { redirect: "manual" });
-    assert.equal(r.status, 302);
-    assert.match(r.headers.get("location") ?? "", /^\/\?token=/);
+    const r = await fetch(`http://127.0.0.1:${g3.port}/team?token=${g3.token}`);
+    assert.equal(r.status, 200);
+    const t = await r.text();
+    assert.match(t, /const CARD=\{"machine":/); // card mode ON — carries whose disk the picker browses
+    assert.match(t, /What are we building\?/);
+    assert.match(t, /Where does the code live\?/);
+    assert.match(t, /Add a server/);
+    assert.match(t, /\.agents\//); // the one-sentence trust disclosure
   } finally {
     g3.server.close();
   }

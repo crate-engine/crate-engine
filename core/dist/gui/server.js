@@ -19,7 +19,6 @@ import { discoverPiModels } from "../pidiscovery.js";
 import { loadUserDefaults, orderCatalog, parseRigConf, resolveSeatDetailed, RIG_PREFIX, updateRigStaffing } from "../staffing.js";
 import { appUrlPath, readLastProject, seedDefaultsIfAbsent, tierPaths, updateEngine, writeLastProject } from "../usertier.js";
 import { dirname, join } from "node:path";
-import { attachPage, staffingPage, startPage, welcomePage } from "./pages.js";
 // ── the staffing catalog (P0-5 EVIDENCE + the ladder-proven verified defaults) ──
 // verified = what passed that seat's battle-test ladder (P1–P3). Everything
 // else is selectable but labeled "untested for this seat" by the page.
@@ -461,13 +460,18 @@ export async function startGuiServer(opts = {}) {
             switch (route) {
                 // ── pages ──
                 case "GET /":
-                    return html(res, welcomePage(engineVersion(state.home).version, state.project));
+                case "GET /welcome":
                 case "GET /staffing":
-                    return html(res, staffingPage());
                 case "GET /attach":
-                    return html(res, attachPage());
-                case "GET /start":
-                    return html(res, startPage());
+                case "GET /start": {
+                    // Cockpit-first onboarding S3 (PDR): THE PAGES ARE DEAD. The app
+                    // has exactly one room — every old journey route (and bookmark,
+                    // and muscle memory) lands in the cockpit. Attach lives on the
+                    // card, staffing lives in the panes, the start preflight lives in
+                    // the Team panel.
+                    res.writeHead(302, { Location: `/team?token=${encodeURIComponent(token)}` });
+                    return res.end();
+                }
                 case "GET /studio": {
                     // Design Studio glass (backlog 10, PDR dev/pdr/design-studio.md):
                     // one page, framed mobile or desktop by query — pure glass, no
@@ -478,21 +482,26 @@ export async function startGuiServer(opts = {}) {
                 case "GET /arm":
                 case "GET /check":
                 case "GET /health": {
-                    // W1: Arm/Check/Boot are ONE Start-engine preflight now — the old
-                    // screens redirect (bookmarks, muscle memory, the handshake file).
-                    res.writeHead(302, { Location: `/start?token=${encodeURIComponent(token)}` });
+                    // W1 retired these into /start; S3 retired /start into the cockpit.
+                    res.writeHead(302, { Location: `/team?token=${encodeURIComponent(token)}` });
                     return res.end();
                 }
                 case "GET /team": {
                     // PHASE-8 T2: the thin viewer. Reads the headless artifacts of the
-                    // attached project read-only. W3 (audit X3): no project → the wizard,
-                    // not an empty grid.
+                    // attached project read-only. Cockpit-first S1: no project → the
+                    // SAME cockpit with the one irreducible card ("What are we
+                    // building?") front and center — never a redirect out of the room.
                     const proj = url.searchParams.get("project") ?? state.project;
-                    if (!proj) {
-                        res.writeHead(302, { Location: `/?token=${encodeURIComponent(token)}` });
-                        return res.end();
-                    }
                     const { teamPage } = await import("./teampage.js");
+                    // ?card=1 (S3): the Team panel's "New / attach a rig" door — the
+                    // card is the ONE attach surface, so a working cockpit can summon
+                    // it center-room to start or join another repo.
+                    if (!proj || url.searchParams.get("card") === "1") {
+                        const { hostname, platform } = await import("node:os");
+                        const machine = platform() === "darwin" ? "This Mac" : hostname();
+                        // dismissable iff there is a rig to go back to (the summoned form)
+                        return html(res, teamPage({ project: "", seats: [] }, { attachCard: { machine, dismissable: Boolean(state.project) } }));
+                    }
                     const { readTeamView } = await import("./teamview.js");
                     return html(res, teamPage(readTeamView(proj)));
                 }
@@ -841,12 +850,12 @@ export async function startGuiServer(opts = {}) {
                     stopSeatTty(proj, seat);
                     const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
                     const tp = teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home));
-                    let relaunched = false;
-                    if (tp.booted) {
-                        tp.relaunch(seat);
-                        relaunched = true;
-                    }
-                    return json(res, 200, { ok: true, relaunched });
+                    // Cockpit-first S2 (PDR decision 6): STAFFING A SEAT BOOTS IT
+                    // IMMEDIATELY — no separate start step. The first staffed seat
+                    // brings the rig live; each subsequent staff joins; a restaff on a
+                    // running seat is the same relaunch it always was.
+                    tp.relaunch(seat);
+                    return json(res, 200, { ok: true, relaunched: true, booted: tp.booted });
                 }
                 case "GET /api/tty/stream-all": {
                     // Five-wheels freeze (Adam, 2026-08-11): browsers allow ~6
@@ -1129,6 +1138,72 @@ export async function startGuiServer(opts = {}) {
                     // the picker's New-folder button (same jail; steps into the result)
                     const body = await readBody(req);
                     return json(res, 200, makeDir(body.path, String(body.name ?? ""), { home: state.home, roots: await pickerRoots(state) }));
+                }
+                case "POST /api/attach/clone": {
+                    // Clone from GitHub (backlog 15, absorbed by the attach card): the
+                    // clone lands inside the picker jail; the card attaches it next.
+                    const { cloneRepo } = await import("../attach.js");
+                    const body = await readBody(req);
+                    const r = await cloneRepo(String(body.url ?? "").trim(), body.dest ? String(body.dest) : undefined, {
+                        home: state.home,
+                        roots: await pickerRoots(state),
+                    });
+                    return json(res, 200, r);
+                }
+                // ── remote engines (cockpit-first S1: the "+ Add a server" chips) ──
+                case "GET /api/remotes": {
+                    const { listRemotes, remoteJob } = await import("./remotes.js");
+                    const { hostname, platform } = await import("node:os");
+                    return json(res, 200, {
+                        machine: platform() === "darwin" ? "This Mac" : hostname(),
+                        remotes: listRemotes(state.home).map((e) => {
+                            const j = remoteJob(e.host);
+                            return { ...e, ...(j ? { phase: j.phase, note: j.note } : {}) };
+                        }),
+                    });
+                }
+                case "POST /api/remotes/probe": {
+                    // The add flow's FIRST step — before any consent dialog: is the
+                    // host reachable over the user's own ssh, and is an engine there?
+                    const { probeRemote, validRemoteHost } = await import("./remotes.js");
+                    const body = await readBody(req);
+                    const host = String(body.host ?? "").trim();
+                    if (!validRemoteHost(host))
+                        return json(res, 400, { error: "give a plain ssh destination — an alias from ~/.ssh/config, or user@host" });
+                    return json(res, 200, await probeRemote(host));
+                }
+                case "POST /api/remotes/connect": {
+                    // An engine is already there — connect with no dialog (Adam's call).
+                    const { startConnect, validRemoteHost } = await import("./remotes.js");
+                    const body = await readBody(req);
+                    const host = String(body.host ?? "").trim();
+                    if (!validRemoteHost(host))
+                        return json(res, 400, { error: "bad ssh destination" });
+                    const j = startConnect(state.home, host);
+                    return json(res, 200, { phase: j.phase, note: j.note });
+                }
+                case "POST /api/remotes/install": {
+                    // CONSENT GIVEN — the page's one plain dialog clicked [Install
+                    // engine]. The server offers no path here without that click.
+                    const { startInstall, validRemoteHost } = await import("./remotes.js");
+                    const body = await readBody(req);
+                    const host = String(body.host ?? "").trim();
+                    if (!validRemoteHost(host))
+                        return json(res, 400, { error: "bad ssh destination" });
+                    const j = startInstall(state.home, host);
+                    return json(res, 200, { phase: j.phase, note: j.note });
+                }
+                case "GET /api/remotes/status": {
+                    const { remoteJob } = await import("./remotes.js");
+                    const j = remoteJob(url.searchParams.get("host") ?? "");
+                    if (!j)
+                        return json(res, 404, { error: "no live connect/install for that host" });
+                    return json(res, 200, j);
+                }
+                case "POST /api/remotes/remove": {
+                    const { removeRemote } = await import("./remotes.js");
+                    const body = await readBody(req);
+                    return json(res, 200, { remotes: removeRemote(state.home, String(body.host ?? "")) });
                 }
                 case "POST /api/attach/plan": {
                     const body = await readBody(req);

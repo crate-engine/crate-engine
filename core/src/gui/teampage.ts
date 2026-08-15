@@ -322,8 +322,54 @@ grid-template-rows:var(--r1,1fr) 1px var(--r2,1fr)}
 .ttywrap{flex:1;min-width:0;min-height:0}
 .ttywait{color:var(--faint);font:12px/1.6 var(--mono);padding:14px}
 .xterm .xterm-viewport{background:transparent!important}
-.dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:6px}
-.dot.ok{background:var(--ok)}.dot.run{background:var(--amber);animation:pulse 1.2s infinite}.dot.bad{background:var(--bad)}.dot.idle{background:var(--faint)}
+/* ── Cockpit-first onboarding S1 (PDR): the ONE irreducible card, center-
+   cockpit when no project is attached. Zero wizard — the card carries the
+   physics' only demand (where does the code live, which repo) + one honest
+   trust line. Brand: graphite panel, amber accent, stencil mono eyebrows. */
+.cardwrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:40;background:rgba(7,9,14,.55)}
+.acard{width:min(640px,94vw);max-height:88vh;overflow-y:auto;background:var(--panel);border:1px solid var(--line2);box-shadow:0 18px 60px rgba(0,0,0,.6);padding:26px 30px 22px}
+.aeyebrow{font:600 10.5px/1 var(--mono);letter-spacing:.22em;text-transform:uppercase;color:var(--amber)}
+.ahead{font-size:21px;font-weight:650;letter-spacing:-.015em;margin:8px 0 2px}
+.abeat{margin-top:20px}
+.albl{font:600 10.5px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin-bottom:9px}
+.mchips{display:flex;flex-wrap:wrap;gap:8px}
+.mchip{display:inline-flex;align-items:center;gap:7px;background:var(--panel2);border:1px solid var(--line2);border-radius:0;color:var(--fg);padding:9px 14px;font:600 12.5px/1 var(--body);cursor:pointer}
+.mchip:hover{border-color:var(--dim)}
+.mchip.active{border-color:var(--amber);color:var(--amber)}
+.mchip.add{color:var(--dim);border-style:dashed}
+.mchip .mx{color:var(--faint);margin-left:2px;font-size:13px;line-height:1}
+.mchip .mx:hover{color:var(--bad)}
+.doorrow{display:flex;gap:8px;flex-wrap:wrap}
+.door{flex:1;min-width:160px;text-align:left;background:var(--panel2);border:1px solid var(--line2);border-radius:0;color:var(--fg);padding:12px 14px;cursor:pointer}
+.door:hover{border-color:var(--amber)}
+.door b{display:block;font:600 13px/1.3 var(--body)}
+.door span{display:block;font:400 11px/1.4 var(--body);color:var(--dim);margin-top:3px}
+.acbody{margin-top:14px}
+.acbody label{display:block;font:400 12.5px/1.5 var(--body);color:var(--dim)}
+.acbody input[type=text]{width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--line2);border-radius:0;padding:9px 11px;font:400 13px var(--mono);outline:none;margin-top:6px}
+.acbody input[type=text]:focus{border-color:var(--amber)}
+.acrow{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
+.acgo{background:var(--amber);color:#151109;border:0;border-radius:0;padding:10px 18px;font:600 13px/1 var(--body);cursor:pointer}
+.acgo:hover{background:var(--amber-hi)}
+.acgo:disabled{opacity:.4;cursor:default}
+.acquiet{background:transparent;border:1px solid var(--line2);border-radius:0;color:var(--dim);padding:9px 13px;font:600 11px/1 var(--body);cursor:pointer}
+.acquiet:hover{color:var(--fg);border-color:var(--dim)}
+.acnote{font:400 11.5px/1.6 var(--mono);color:var(--faint);margin-top:8px;word-break:break-all}
+.aprog{display:none;align-items:center;gap:9px;margin-top:10px;font:500 11.5px/1.5 var(--mono);color:var(--amber)}
+.aprog.on{display:flex}
+.aprog .wd{width:6px;height:6px;border-radius:50%;background:var(--amber);animation:pulse 1.1s infinite;flex:0 0 auto}
+.aerr{color:var(--bad);font:400 12px/1.5 var(--body);margin-top:10px;white-space:pre-wrap}
+.trust{margin-top:22px;padding-top:13px;border-top:1px solid var(--line);font:400 11px/1.7 var(--mono);color:var(--faint)}
+.trust b{color:var(--dim)}
+/* Cockpit-first S2 (Adam's minimalism law — chrome carries only what the
+   pane cannot say itself): the engine-drawn colored status dots are GONE. A
+   staffed, signed-in seat is CLEAN; a working seat's own TUI spinner is the
+   truth. The ONE piece of chrome left in the grid is the amber INVITATION on
+   an unstaffed seat — gently pulsing, an invitation, not a status. */
+.invite{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--amber);margin-left:9px;vertical-align:1px;animation:pulse 2.4s infinite}
+.tile.unstaffed .tname{color:var(--dim)}
+.tile.unstaffed .feed,.tile.unstaffed .ttyhost,.tile.unstaffed .chat{opacity:.55}
+.staffdoor{color:var(--amber)!important}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 @media (max-width:820px){main{display:flex;flex-direction:column;overflow-y:auto}.gut{display:none}.tile{min-height:320px;flex:0 0 auto}}
 `;
@@ -368,7 +414,10 @@ function pickFolder(title){return new Promise(res=>{
   }
   go("~/Projects");
 })}
-function dotClass(t){const last=t.turns&&t.turns[0];if(!last)return"idle";if(last.ok===null)return"run";return last.ok?"ok":"bad"}
+// Cockpit-first S2: a seat is UNSTAFFED when nothing runs it — no live
+// runner, no runner started this boot, no live blended PTY. (A runner that
+// started and DIED is distress, not an invitation — the downchip carries it.)
+function seatUnstaffed(s){return !s._alive&&!s._started&&!s.ptyStartedAt;}
 let CHAT=[];
 let GATES=[];
 let PREVIEWS=[];
@@ -480,9 +529,22 @@ async function restaffDialog(seat){
     return head+'<button class="pkrow" data-i="'+i+'"><span style="flex:1;text-align:left">'+esc(m.display)+'</span>'
       +(v?'<span class="pktag">verified</span>':'')+'</button>'; // no tag = no claim — quality is the operator's judgment (Adam)
   }).join('')||'<div style="padding:14px 20px;color:var(--faint);font-size:12.5px">no ready agents detected on this machine</div>';
-  const d=uiDialog('<h3>Restaff '+esc(seat)+'</h3>'
-    +'<div class="m" style="font-size:11.5px;color:var(--faint)">Applies to THIS project. A running seat relaunches with the new agent and a fresh session; an open wheel on it closes. "verified" = battle-tested for this seat.</div>'
-    +'<div class="pklist">'+rows+'</div><div class="btns"><button id="rsc">Cancel</button></div>');
+  // S2 (PDR decision 5): the picker carries the old Welcome page's honesty
+  // INLINE — the ready rows above are the green tier; the bench below shows
+  // every supported agent that is not offerable, amber (installed, one
+  // sign-in away — with the one command) or grey (not installed).
+  const bench=(cat.agents||[]).filter(a=>!a.ready).map(a=>
+    '<div class="pkrow" style="cursor:default"><span style="flex:1;color:'+(a.installed?'var(--warn)':'var(--faint)')+'">'+esc(a.label)+'</span>'
+    +'<span style="font:600 9px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:'+(a.installed?'var(--warn)':'var(--faint)')+'">'+(a.installed?'not signed in':'not installed')+'</span></div>'
+    +(a.fix?'<div style="padding:4px 20px 10px;color:var(--faint);font:400 10.5px/1.5 var(--mono);border-bottom:1px solid var(--line)">'+esc(a.fix)+'</div>':'')
+  ).join('');
+  const sv=SEATSVIEW.find(x=>x.seat===seat);
+  const fresh=sv?seatUnstaffed(sv):false;
+  const d=uiDialog('<h3>'+(fresh?'Staff ':'Restaff ')+esc(seat)+'</h3>'
+    +'<div class="m" style="font-size:11.5px;color:var(--faint)">'+(fresh
+      ?'Applies to THIS project. Picking an agent boots this seat immediately — no separate start step. "verified" = battle-tested for this seat.'
+      :'Applies to THIS project. A running seat relaunches with the new agent and a fresh session; an open wheel on it closes. "verified" = battle-tested for this seat.')+'</div>'
+    +'<div class="pklist">'+rows+bench+'</div><div class="btns"><button id="rsc">Cancel</button></div>');
   const done=()=>d.remove();
   d.querySelector("#rsc").onclick=done;
   d.addEventListener("click",e=>{if(e.target===d)done();});
@@ -901,6 +963,14 @@ function gaugeHtml(g,seat){
     +'<span class="gpct">'+pct+'%</span></span>';
 }
 function tileHead(s){
+  if(seatUnstaffed(s)){
+    // Cockpit-first S2 (PDR decisions 4/5/7): an empty seat INVITES — one
+    // amber dot beside the role name, and the corner label (the SAME door as
+    // the restaff picker — one home for one control) reads "＋ staff this
+    // seat". Picking an agent boots the seat immediately.
+    return '<div class="thead"><span class="tname">'+esc(s.title)+'<span class="invite" title="This seat is not staffed yet — staffing boots it immediately"></span></span>'
+      +'<span class="thead-r"><span class="tagent staffdoor" data-restaff="'+s.seat+'" title="Staff this seat — it boots the moment you pick">＋ staff this seat<span class="tcaret">▾</span></span></span></div>';
+  }
   if(s.blended){
     // Blended pane (PDR S2): no wheel button, no paused chip — nothing holds
     // this seat, the pane IS its live session and typing is always allowed.
@@ -914,7 +984,8 @@ function tileHead(s){
     const agent='<span class="tagent" data-restaff="'+s.seat+'" title="Change this seat\\'s agent (applies to this project)">'+esc(s.agent)+(s.model?"/"+esc(s.model.split("/").pop()):"")+'<span class="tcaret">▾</span></span>';
     // No BLENDED tag (Adam, 2026-08-12): when the pane IS the agent,
     // announcing it is noise — the absence of a wheel button says it all.
-    return '<div class="thead"><span class="tname"><span class="dot '+(s.responding?"run":(s.ptyStartedAt?"ok":"idle"))+'"></span>'+esc(s.title)+'</span>'
+    // No status dot either (S2, Adam's minimalism law): the live TUI is the truth.
+    return '<div class="thead"><span class="tname">'+esc(s.title)+'</span>'
       +'<span class="thead-r">'+q+gaugeHtml(s.gauge,s.seat)+act+agent+'</span></div>';
   }
   const run=s.turns&&s.turns.find(t=>t.ok===null);
@@ -932,7 +1003,7 @@ function tileHead(s){
   const keys='<button class="keysbtn'+(keysOn?" on":"")+'" data-keys="'+s.seat+'" title="'
     +(keysOn?'Hand back the wheel — the engine resumes deliveries to this seat':'Take the wheel — open the real '+esc(s.agent)+' session in this pane; the team holds its deliveries while you drive')+'">'
     +(keysOn?'YOUR WHEEL · hand back':'TAKE THE WHEEL')+'</button>';
-  return '<div class="thead"><span class="tname"><span class="dot '+dotClass(s)+'"></span>'+esc(s.title)+'</span>'
+  return '<div class="thead"><span class="tname">'+esc(s.title)+'</span>'
     +'<span class="thead-r">'+paused+gaugeHtml(s.gauge,s.seat)+right+keys+'</span></div>';
 }
 function tickWorking(){
@@ -1012,7 +1083,7 @@ async function releaseFromBar(){
   else err.textContent=(r&&r.out)||"release failed — the server did not answer";
 }
 function renderTile(s,slot){
-  const cls=" slot"+(slot||0);
+  const cls=" slot"+(slot||0)+(seatUnstaffed(s)?" unstaffed":"");
   // Native seat access: while the human holds this seat's keys, the pane IS
   // the agent's terminal (the head stays; the living xterm node re-mounts
   // after each repaint via mountTty).
@@ -1044,11 +1115,14 @@ function renderTile(s,slot){
       +'<div class="chatin"><input id="chatbox" placeholder="'+ph+'" autocomplete="off"><button id="chatsend">Send</button></div></div></div>';
   }
   if(s.blended){
-    // Flagged but no live PTY yet (team not booted): say so honestly instead
-    // of rendering a phantom feed — the pane goes live at boot. The
+    // Flagged but no live PTY yet: say so honestly instead of rendering a
+    // phantom feed. S2: an unstaffed seat points at ITS OWN staffing door —
+    // picking boots it; a staffed-but-spawning seat goes live by itself. The
     // orchestrator still carries the gate bar: a release needs no live team.
+    const wait=seatUnstaffed(s)?'an empty seat — ＋ staff this seat (top right) boots it the moment you pick'
+      :'blended pane — the live session opens when the seat boots';
     return '<div class="tile'+cls+'" data-seat="'+s.seat+'">'+tileHead(s)
-      +'<div class="ttyhost"><div class="ttywait">blended pane — the live session opens when the team boots (Team menu → Boot / Resume)</div></div>'
+      +'<div class="ttyhost"><div class="ttywait">'+wait+'</div></div>'
       +(s.seat==="orchestrator"?gateBarHtml():"")+'</div>';
   }
   const status=s.status?'<div class="tstatus"><b>'+esc(s.status)+'</b> · '+esc(s.lastActivity||"")+'</div>':'';
@@ -1086,7 +1160,7 @@ function renderTile(s,slot){
   }).join("")}
   return '<div class="tile'+cls+'" data-seat="'+s.seat+'" style="--tscale:'+(SCALES[s.seat]||1)+'">'+tileHead(s)+status+'<div class="feed '+(lens==="engineer"?"eng":"")+'">'+feed+'</div></div>';
 }
-let POLLFAILS=0;
+let POLLFAILS=0,ALIVEMAP={};
 // ── STAGE 2 (quiet-cockpit PDR): EVENT-PRIMARY. The stream drives the
 // refresh; the poll demotes to a liveness + reconciliation FLOOR. Any
 // stream event (a state poke, a turn line) schedules ONE refresh through a
@@ -1136,7 +1210,7 @@ function tileKey(s,i){
   const orch=s.seat==="orchestrator"?[CHAT,PENDING,GATES,GATEREL,SSELIVE]:0;
   return JSON.stringify([i,lens,SCALES[s.seat]||1,!!TTYS[s.seat],!!(TTYS[s.seat]&&TTYS[s.seat].waiting),
     s.title,s.agent,s.model,s.status,s.lastActivity,s.unread,s.attended,s.blended,s.responding,s.ptyStartedAt,
-    dotClass(s),turnsMeta,feedSrc,orch]);
+    s._alive,s._started,turnsMeta,feedSrc,orch]);
 }
 // Clean-tile surgical patches (the tickWorking pattern): value writes only,
 // no tree mutation, and only when the value actually moved.
@@ -1171,6 +1245,11 @@ async function refresh(){
       fetch(api("/api/team/status"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()).catch(()=>null),
     ]);
     CHAT=cr.messages||[];GATES=gr.gates||[];SEATSVIEW=tr.seats||[];PREVIEWS=pv.previews||[];
+    // S2 (staffing-in-pane): fold runner liveness into each seat so the head
+    // can tell UNSTAFFED (invite) from live/dead. The map persists across a
+    // failed status poll — a blip must never flip five panes to "unstaffed".
+    if(ps&&ps.seats)ps.seats.forEach(x=>{ALIVEMAP[x.seat]={a:x.alive,s:!!x.startedAt};});
+    (tr.seats||[]).forEach(s=>{const m=ALIVEMAP[s.seat]||{};s._alive=!!m.a;s._started=!!m.s;});
     if(!GATES.length)GATEREL={}; // gate consumed (DEPLOYED) — clear the client-side release memory
     if(!PREVIEWS.length)PVSRC={}; // previews clear at close — a fresh registration re-points the proxy
     // Blended panes auto-attach (PDR S2): the SERVER owns the PTY lifecycle;
@@ -1219,8 +1298,13 @@ async function refresh(){
         const w=ae.closest(".ttywrap");if(!w)return null;
         for(const s in TTYS){if(TTYS[s].wrap===w)return s;}return null;})();
       if(structDirty){
+        // S2 (PDR decision 4): THE FIVE NAMED PANES ARE ALWAYS THERE. With no
+        // team data yet (card mode / a fresh cockpit) the placeholders carry
+        // their role names, dimmed — the shape IS the product's proposition.
+        const TITLES={orchestrator:"Orchestrator",coder:"Coder",reviewer:"Reviewer",designer:"Designer",tester:"QA"};
         document.getElementById("grid").innerHTML=
-          LAYOUT.slots.map((seat,i)=>{const s=bySeat[seat];return s?renderTile(s,i):'<div class="tile slot'+i+'" data-seat="'+esc(seat)+'"></div>';}).join("")
+          LAYOUT.slots.map((seat,i)=>{const s=bySeat[seat];return s?renderTile(s,i)
+            :'<div class="tile slot'+i+' unstaffed" data-seat="'+esc(seat)+'"><div class="thead"><span class="tname">'+esc(TITLES[seat]||seat)+'</span></div></div>';}).join("")
           +'<div class="gut v v1" data-gut="v1" title="drag to resize · double-click resets"></div>'
           +'<div class="gut v v2" data-gut="v2" title="drag to resize · double-click resets"></div>'
           +'<div class="gut h" data-gut="h" title="drag to resize · double-click resets"></div>';
@@ -1555,6 +1639,82 @@ async function runEngineUpdate(btn){
   if(rr&&rr.url)location.href=rr.url;else await uiNotice("The app is restarting — if this window goes quiet, reopen with: crate open");
 }
 window.crateUpdate=()=>runEngineUpdate(document.getElementById("hupd"));
+// ── S3: the whole-team preflight, absorbed from the dead /start page into
+// the Team panel (PDR cockpit-first-onboarding). One press: heavy seat tools
+// install with a live clock, the doctor's ambers surface (never block), crew
+// sign-ins gate HARD with the honest fix, then the boot with a live seat
+// count. Failures hold their row open with Retry — everything underneath is
+// idempotent, so Retry simply re-runs the ladder. ──
+async function bootWithPreflight(){
+  const panel=document.getElementById("teampanel");if(!panel)return;
+  const NAMES={tools:"Tools your seats need",wiring:"Wiring check",crew:"Crew sign-ins",boot:"Boot the team"};
+  panel.innerHTML='<h3>Team</h3><div class="csub">Preflight &amp; boot — honest ambers, plain refusals</div>'
+    +Object.keys(NAMES).map(id=>'<div class="crow"><span class="wsdot idle" id="pf-'+id+'"></span>'
+      +'<div style="flex:1"><div style="font:600 12px/1.3 var(--body)">'+NAMES[id]+'</div>'
+      +'<div style="font:400 10.5px/1.5 var(--mono);color:var(--faint)" id="pfn-'+id+'"></div></div></div>').join("")
+    +'<div class="cactions" id="pfacts"></div>';
+  const set=(id,cls,note)=>{const d=document.getElementById("pf-"+id);if(d)d.className="wsdot "+cls;
+    const n=document.getElementById("pfn-"+id);if(n&&note!==undefined)n.innerHTML=note;};
+  const hold=()=>{document.getElementById("pfacts").innerHTML='<button id="pfretry">Retry</button><button id="pfback">Back</button>';
+    document.getElementById("pfretry").onclick=bootWithPreflight;
+    document.getElementById("pfback").onclick=renderTeamMenu;};
+  const get=p=>fetch(api(p),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());
+  // 1. tools — one at a time, live clock (the old Arm screen's honesty)
+  set("tools","live","checking…");
+  let deps=null;
+  try{deps=await get("/api/deps");}catch(e){}
+  if(!deps||deps.error){set("tools","gone",esc((deps&&deps.error)||"engine unreachable"));hold();return;}
+  for(const d of deps){
+    const t0=Date.now();
+    set("tools","live","<b>"+esc(d.name)+"</b> downloading… <span id=\\"pfclock\\">0s</span> (one-time)");
+    const tick=setInterval(()=>{const c=document.getElementById("pfclock");if(c)c.textContent=Math.round((Date.now()-t0)/1000)+"s";},1000);
+    let r=null;
+    try{r=await fetch(api("/api/deps/install-one"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({name:d.name})}).then(r=>r.json());}catch(e){}
+    clearInterval(tick);
+    if(!r||!r.ok){set("tools","gone",esc(d.name)+" failed — "+esc((r&&r.detail)||"engine unreachable")+" (a seat that needs it refuses to boot and names it)");hold();return;}
+  }
+  set("tools","live",deps.length?"armed — these downloads never repeat on this machine":"everything your seats need is already in the box");
+  // 2. wiring — ambers surface, never block
+  set("wiring","live","checking…");
+  try{
+    const doc=await get("/api/doctor");
+    const attn=(Array.isArray(doc)?doc:[]).filter(x=>x.status!=="ok"&&x.status!=="info");
+    if(attn.length)set("wiring","idle",attn.map(x=>esc(x.name)+(x.fix?" — fix: "+esc(x.fix):"")).join("<br>")+"<br>nothing here blocks the boot");
+    else set("wiring","live","all wiring green");
+  }catch(e){set("wiring","idle","doctor unavailable — booting anyway");}
+  // 3. crew sign-ins — the HARD gate (the old up() refusal, client-visible)
+  set("crew","live","verifying…");
+  let ag=null;
+  try{ag=await get("/api/agents");}catch(e){}
+  if(!ag||ag.error){set("crew","gone",esc((ag&&ag.error)||"engine unreachable"));hold();return;}
+  const out=ag.filter(a=>!a.ready);
+  if(out.length){
+    set("crew","gone",out.map(a=>"<b>"+esc(a.label)+"</b> ("+(a.installed?"not signed in":"not installed")+")"+(a.fix?" — "+esc(a.fix):"")).join("<br>")
+      +"<br>restaff from a pane's corner, or sign in and Retry");
+    hold();return;
+  }
+  set("crew","live",ag.map(a=>esc(a.label)).join(" · ")+" — signed in and ready");
+  // 4. boot — live seat count until all five answer
+  set("boot","live","spawning seat runners…");
+  try{const r=await fetch(api("/api/team/boot"),{method:"POST",headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());if(r.error)throw new Error(r.error);}
+  catch(e){set("boot","gone",esc(e.message||"boot failed"));hold();return;}
+  const t0=Date.now();
+  while(Date.now()-t0<90000){
+    let st=null;
+    try{st=await get("/api/team/status");}catch(e){}
+    if(st&&st.seats){
+      const alive=st.seats.filter(s=>s.alive).length;
+      set("boot","live",alive+"/"+st.seats.length+" seats live…");
+      if(alive===st.seats.length&&alive>0){
+        set("boot","live","all seats live in "+Math.max(1,Math.round((Date.now()-t0)/1000))+"s");
+        refresh();setTimeout(renderTeamMenu,900);return;
+      }
+    }
+    await new Promise(r=>setTimeout(r,1500));
+  }
+  set("boot","gone","some seats did not come up in 90s — Retry is safe (live seats are left alone); per-seat Relaunch lives on the Team panel.");
+  hold();refresh();
+}
 // ── T7-2: the Team menu — loop state + Abandon (headless verb). Boot/Resume +
 // per-seat Relaunch light up when the GUI owns the team lifecycle (T7-3). ──
 async function renderTeamMenu(){
@@ -1589,14 +1749,13 @@ async function renderTeamMenu(){
   h+='<div class="cactions">'+(ps.booted
     ?'<button id="tstop">Stop team</button><button id="tabandon">Abandon loop</button>'
     :'<button id="tboot">Boot / Resume team</button><button id="tabandon">Abandon loop</button>')+'</div>';
-  // Flaw 3 (2026-08-10): the cockpit must never be a dead end — the setup
-  // screens stay reachable (staffing also lives on each pane's agent name).
-  h+='<div class="cactions"><button id="tstaffing">Staffing screen</button><button id="tattach">Attach a repo</button></div>';
-  h+='<div class="cpolicy">Boot / Resume spawns one supervised runner per seat (headless, no cmux). Resume is automatic — runners re-orient from state files. Relaunch restarts exactly one seat.</div>';
+  // S3: the wizard pages are dead — staffing lives on each pane's corner,
+  // and the CARD is the one attach surface (summoned center-cockpit).
+  h+='<div class="cactions"><button id="tattach">New / attach a rig</button></div>';
+  h+='<div class="cpolicy">Boot / Resume runs the whole-team preflight (tools → wiring → crew sign-ins → boot), then spawns one supervised runner per seat. Resume is automatic — runners re-orient from state files. Relaunch restarts exactly one seat. Staffing lives on each pane\\'s top-right corner.</div>';
   panel.innerHTML=h;
-  const stf=document.getElementById("tstaffing");if(stf)stf.onclick=()=>{location.href="/staffing?token="+TOKEN;};
-  const att=document.getElementById("tattach");if(att)att.onclick=()=>{location.href="/attach?token="+TOKEN;};
-  const bootB=document.getElementById("tboot");if(bootB)bootB.onclick=async()=>{bootB.textContent="Booting…";const r=await fetch(api("/api/team/boot"),{method:"POST",headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());if(r.error)await uiNotice(r.error);renderTeamMenu();refresh();};
+  const att=document.getElementById("tattach");if(att)att.onclick=()=>{location.href="/team?token="+TOKEN+"&card=1";};
+  const bootB=document.getElementById("tboot");if(bootB)bootB.onclick=bootWithPreflight;
   const stopB=document.getElementById("tstop");if(stopB)stopB.onclick=async()=>{if(!(await uiConfirm("Stop the whole team? Runners exit; the loop resumes from state files on the next boot.","Stop team",true)))return;await fetch(api("/api/team/stop"),{method:"POST",headers:{"X-Crate-Token":TOKEN}});renderTeamMenu();refresh();};
   panel.querySelectorAll("[data-relaunch]").forEach(b=>{b.onclick=async()=>{const seat=b.getAttribute("data-relaunch");b.textContent="…";await fetch(api("/api/team/relaunch"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat})});renderTeamMenu();refresh();};});
   const ab=document.getElementById("tabandon");if(ab)ab.onclick=async()=>{
@@ -1693,13 +1852,234 @@ if(window.crateShell){["teambtn","ctxbtn","healthbtn"].forEach(id=>{const b=docu
 loadWorkspaces();
 setLens(lens);setInterval(pollTick,2000);setInterval(tickWorking,1000); // stage 2: the tick is the FLOOR, the stream drives
 // gate bar wiring lives in wire() — the bar repaints with the grid (Pack 4)
-startStream(); // 2c: the SSE push channel — the poll above stays as the floor
+if(!CARD)startStream(); // 2c: the SSE push channel — with no project there is no stream; the card owns the room
 anchorPanels();
 `;
 
-export function teamPage(view: TeamView): string {
+// ── Cockpit-first onboarding S1 (PDR dev/pdr/cockpit-first-onboarding.md):
+// the attach card's client. Runs only when the server rendered the page in
+// card mode (no project attached) — CARD carries the machine label so the
+// card can SAY whose disk the picker browses (the PDR's honest-limits note).
+const CARD_JS = `
+if(CARD){
+(function(){
+  const cw=document.createElement("div");cw.className="cardwrap";cw.id="cardwrap";
+  cw.innerHTML='<div class="acard">'
+    +(CARD.dismissable?'<button class="acquiet" id="acdismiss" style="float:right;margin:-4px -8px 0 0" title="Back to your rig">×</button>':'')
+    +'<p class="aeyebrow">New rig</p><h2 class="ahead">What are we building?</h2>'
+    +'<div class="abeat"><div class="albl">Where does the code live?</div>'
+    +'<div class="mchips" id="acmachines"></div>'
+    +'<div class="aprog" id="acmprog"><span class="wd"></span><span id="acmnote"></span></div></div>'
+    +'<div class="abeat"><div class="albl">Which repo? <span style="letter-spacing:.04em;text-transform:none;color:var(--faint)">— on '+esc(CARD.machine)+'</span></div>'
+    +'<div class="doorrow">'
+    +'<button class="door" id="acbrowse"><b>Browse…</b><span>pick a repo on '+esc(CARD.machine)+'</span></button>'
+    +'<button class="door" id="acnew"><b>New project</b><span>a fresh folder, git init, starter docs</span></button>'
+    +'<button class="door" id="acclone"><b>Clone from GitHub</b><span>git clone, then the team joins it</span></button>'
+    +'</div><div class="acbody" id="acbody"></div><div class="aerr" id="acerr"></div></div>'
+    +'<div class="trust">Attaching writes ONE wiring folder — <b>.agents/</b> (engine symlinks, state, a managed gitignore block so none of it is ever committed). Your code is untouched.</div>'
+    +'</div>';
+  document.body.appendChild(cw);
+  const dm=document.getElementById("acdismiss");
+  if(dm)dm.onclick=()=>{location.href="/team?token="+TOKEN;};
+  const acerr=()=>document.getElementById("acerr");
+  function acFail(m){acerr().textContent=m;}
+  function acClear(){acerr().textContent="";}
+  // ── the jail picker, card edition (post-jail-fix: starts where rigs live,
+  // jump chips for every root, type-a-path) — /api/fs/dirs underneath ──
+  function acPicker(title){return new Promise(res=>{
+    let cur="";
+    const d=uiDialog('<h3>'+esc(title)+'</h3>'
+      +'<div class="m mono" id="acpk-path" style="font-size:11.5px;color:var(--faint)"></div>'
+      +'<div id="acpk-roots" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px"></div>'
+      +'<div style="display:flex;gap:8px;margin-top:8px"><input type="text" id="acpk-type" placeholder="…or type a path" style="flex:1;background:var(--bg);color:var(--fg);border:1px solid var(--line2);padding:7px 9px;font:400 12px var(--mono)">'
+      +'<button class="acquiet" id="acpk-go">Go</button></div>'
+      +'<div class="pklist" id="acpk-list"></div>'
+      +'<div class="m" id="acpk-err" style="color:var(--bad);font-size:11.5px"></div>'
+      +'<div class="btns"><button id="acpk-up">↑ Up</button><span id="acpk-newrow"><button id="acpk-new">＋ New folder</button></span>'
+      +'<span style="flex:1"></span><button id="acpk-c">Cancel</button><button class="pri" id="acpk-use">Use this folder</button></div>');
+    const done=v=>{d.remove();res(v);};
+    d.querySelector("#acpk-c").onclick=()=>done(null);
+    d.querySelector("#acpk-use").onclick=()=>done(cur);
+    d.addEventListener("click",e=>{if(e.target===d)done(null);});
+    let parent=null;
+    d.querySelector("#acpk-up").onclick=()=>{if(parent)go(parent);};
+    d.querySelector("#acpk-go").onclick=()=>{const v=d.querySelector("#acpk-type").value.trim();if(v)go(v);};
+    d.querySelector("#acpk-type").onkeydown=e=>{if(e.key==="Enter"){const v=e.target.value.trim();if(v)go(v);}};
+    d.querySelector("#acpk-new").onclick=()=>{
+      // in-app input, never a native prompt (W3 audit I2's law)
+      const row=d.querySelector("#acpk-newrow");
+      row.innerHTML='<input type="text" id="acpk-name" placeholder="folder name" style="width:150px;background:var(--bg);color:var(--fg);border:1px solid var(--line2);padding:7px 9px;font:400 12px var(--mono)"> <button id="acpk-mk">Create</button>';
+      const make=async()=>{
+        try{
+          const r=await fetch(api("/api/fs/mkdir"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({path:cur,name:d.querySelector("#acpk-name").value})}).then(r=>r.json());
+          if(r.error)throw new Error(r.error);
+          paint(r); // step into the new folder
+        }catch(e){d.querySelector("#acpk-err").textContent=e.message;}
+      };
+      d.querySelector("#acpk-mk").onclick=make;
+      const inp=d.querySelector("#acpk-name");inp.focus();
+      inp.onkeydown=e=>{if(e.key==="Enter")make();};
+    };
+    function paint(r){
+      cur=r.path;parent=r.parent||null;
+      d.querySelector("#acpk-path").textContent=r.path;
+      d.querySelector("#acpk-err").textContent="";
+      d.querySelector("#acpk-roots").innerHTML=(r.roots&&r.roots.length>1?r.roots:[]).map(x=>'<button class="acquiet" data-r="'+esc(x)+'" style="font-size:10px">'+esc(x)+'</button>').join("");
+      d.querySelectorAll("#acpk-roots [data-r]").forEach(b=>b.onclick=()=>go(b.getAttribute("data-r")));
+      d.querySelector("#acpk-list").innerHTML=(r.dirs||[]).map(x=>'<button class="pkrow" data-d="'+esc(x.name)+'"><span style="flex:1">'+esc(x.name)+'</span>'+(x.isRepo?'<span class="pktag">git</span>':'')+'</button>').join("")
+        ||'<div style="padding:14px 20px;color:var(--faint);font-size:12.5px">no folders in here yet</div>';
+      d.querySelectorAll("#acpk-list .pkrow").forEach(b=>b.onclick=()=>go(cur+"/"+b.getAttribute("data-d")));
+    }
+    async function go(p){
+      try{
+        const r=await fetch(api("/api/fs/dirs"+(p?"?path="+encodeURIComponent(p):"")),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());
+        if(r.error){d.querySelector("#acpk-err").textContent=r.error;return;}
+        paint(r);
+      }catch(e){d.querySelector("#acpk-err").textContent="engine unreachable";}
+    }
+    go("");
+  })}
+  // ── attach: plan (for the honest gitInit ask) → execute → into the cockpit ──
+  async function acAttach(target,create,extra){
+    acClear();
+    let plan=null;
+    try{plan=await fetch(api("/api/attach/plan"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({target,create})}).then(r=>r.json());}catch(e){}
+    if(!plan||plan.error){acFail((plan&&plan.error)||"engine unreachable");return;}
+    const body=document.getElementById("acbody");
+    body.innerHTML='<div class="acnote">'+(plan.mode==="create"?"Creating":"Attaching")+': <b>'+esc(plan.project)+'</b> — '+esc(plan.projectRoot||target)+'</div>'
+      +(plan.needsGit&&plan.mode==="attach"?'<label style="margin-top:8px"><input type="checkbox" id="acgit" checked> This folder isn\\'t a git repo — initialize git (recommended)</label>':'')
+      +(extra&&extra.gh?'<label style="margin-top:8px"><input type="checkbox" id="acgh"> Also create a private GitHub repo and push (needs the gh CLI signed in)</label>':'')
+      +'<div class="acrow"><button class="acgo" id="acdo">Attach the team</button><button class="acquiet" id="acback">Back</button></div>';
+    document.getElementById("acback").onclick=()=>{body.innerHTML="";acClear();};
+    document.getElementById("acdo").onclick=async()=>{
+      const btn=document.getElementById("acdo");btn.disabled=true;btn.textContent="Attaching\\u2026";
+      const gi=document.getElementById("acgit"),gh=document.getElementById("acgh");
+      const r=await fetch(api("/api/attach/execute"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},
+        body:JSON.stringify({target,create,gitInit:gi?gi.checked:false,githubRepo:gh?gh.checked:false})}).then(r=>r.json()).catch(()=>null);
+      if(!r||r.error){btn.disabled=false;btn.textContent="Attach the team";acFail((r&&r.error)||"attach failed — engine unreachable");return;}
+      location.href="/team?token="+TOKEN+"&project="+encodeURIComponent(r.project);
+    };
+  }
+  // ── the three repo doors ──
+  document.getElementById("acbrowse").onclick=async()=>{
+    const p=await acPicker("Choose your project folder — browsing "+CARD.machine+"'s disk");
+    if(p)acAttach(p,false);
+  };
+  document.getElementById("acnew").onclick=()=>{
+    const body=document.getElementById("acbody");acClear();
+    body.innerHTML='<label>Name your project</label><input type="text" id="acname" placeholder="my-app" autocomplete="off">'
+      +'<div class="acnote" id="acwhere"></div>'
+      +'<div class="acrow"><button class="acgo" id="acmk" disabled>Create it</button><button class="acquiet" id="acloc">Change location</button><button class="acquiet" id="acback">Back</button></div>';
+    let dest="~/Projects";
+    const sync=()=>{const n=document.getElementById("acname").value.trim();
+      document.getElementById("acwhere").textContent="set up for you at "+dest+"/"+(n||"\\u2026");
+      document.getElementById("acmk").disabled=!n;};
+    document.getElementById("acname").addEventListener("input",sync);sync();
+    document.getElementById("acname").focus();
+    document.getElementById("acloc").onclick=async()=>{const p=await acPicker("Where should the new project live? — on "+CARD.machine);if(p){dest=p;sync();}};
+    document.getElementById("acback").onclick=()=>{body.innerHTML="";};
+    document.getElementById("acmk").onclick=()=>{const n=document.getElementById("acname").value.trim();if(n)acAttach(dest.replace(/\\/+$/,"")+"/"+n,true,{gh:true});};
+  };
+  document.getElementById("acclone").onclick=()=>{
+    const body=document.getElementById("acbody");acClear();
+    body.innerHTML='<label>Repo URL</label><input type="text" id="acurl" placeholder="https://github.com/you/repo" autocomplete="off">'
+      +'<div class="acnote" id="acwhere2"></div>'
+      +'<div class="acrow"><button class="acgo" id="acdoclone" disabled>Clone &amp; attach</button><button class="acquiet" id="acloc2">Change location</button><button class="acquiet" id="acback">Back</button></div>';
+    let dest="";
+    const sync=()=>{document.getElementById("acwhere2").textContent="clones into "+(dest||"where your rigs live")+" on "+CARD.machine;
+      document.getElementById("acdoclone").disabled=!document.getElementById("acurl").value.trim();};
+    document.getElementById("acurl").addEventListener("input",sync);sync();
+    document.getElementById("acurl").focus();
+    document.getElementById("acloc2").onclick=async()=>{const p=await acPicker("Where should the clone live? — on "+CARD.machine);if(p){dest=p;sync();}};
+    document.getElementById("acback").onclick=()=>{body.innerHTML="";};
+    document.getElementById("acdoclone").onclick=async()=>{
+      const btn=document.getElementById("acdoclone");btn.disabled=true;btn.textContent="Cloning\\u2026";
+      const r=await fetch(api("/api/attach/clone"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},
+        body:JSON.stringify({url:document.getElementById("acurl").value.trim(),dest:dest||undefined})}).then(r=>r.json()).catch(()=>null);
+      if(!r||r.error){btn.disabled=false;btn.textContent="Clone & attach";acFail((r&&r.error)||"clone failed — engine unreachable");return;}
+      acAttach(r.target,false);
+    };
+  };
+  // ── machine chips: this machine + remembered servers + "+ Add a server" ──
+  let REMOTES=[];
+  function paintChips(){
+    const m=document.getElementById("acmachines");
+    m.innerHTML='<button class="mchip active">\\u2302 '+esc(CARD.machine)+'</button>'
+      +REMOTES.map(r=>'<button class="mchip" data-h="'+esc(r.host)+'">\\u26a1 '+esc(r.host)+'<span class="mx" data-x="'+esc(r.host)+'" title="Forget this server">\\u00d7</span></button>').join("")
+      +'<button class="mchip add" id="acaddsrv">\\uff0b Add a server</button>';
+    m.querySelectorAll("[data-h]").forEach(b=>b.onclick=e=>{if(e.target.closest("[data-x]"))return;connectRemote(b.getAttribute("data-h"),"connect");});
+    m.querySelectorAll("[data-x]").forEach(x=>x.onclick=async e=>{e.stopPropagation();
+      await fetch(api("/api/remotes/remove"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({host:x.getAttribute("data-x")})});loadRemotes();});
+    document.getElementById("acaddsrv").onclick=addServer;
+  }
+  async function loadRemotes(){
+    try{const r=await fetch(api("/api/remotes"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());REMOTES=r.remotes||[];}catch(e){REMOTES=[];}
+    paintChips();
+  }
+  function mprog(on,note){const p=document.getElementById("acmprog");p.classList.toggle("on",!!on);document.getElementById("acmnote").textContent=note||"";}
+  // connect/install → poll the one honest progress line → the window moves to
+  // the server's own cockpit (its card browses ITS disk, labeled by hostname)
+  async function connectRemote(host,kind){
+    acClear();mprog(true,"reaching "+host+" over ssh\\u2026");
+    const r=await fetch(api("/api/remotes/"+kind),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({host})}).then(r=>r.json()).catch(()=>null);
+    if(!r||r.error){mprog(false);acFail((r&&r.error)||"engine unreachable");return;}
+    const tick=async()=>{
+      let j=null;
+      try{j=await fetch(api("/api/remotes/status?host="+encodeURIComponent(host)),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());}catch(e){}
+      if(!j||j.error){mprog(false);acFail("lost the connect job — retry");return;}
+      if(j.phase==="connected"){mprog(true,"connected — opening "+host+"\\u2026");location.href=j.url;return;}
+      if(j.phase==="failed"){mprog(false);acFail(j.note);
+        if(j.log&&j.log.length){const a=document.createElement("a");a.href="#";a.textContent="Show the log";a.style.color="var(--amber)";a.style.marginLeft="8px";
+          a.onclick=e=>{e.preventDefault();uiNotice(j.log.join("\\n"));};acerr().appendChild(a);}
+        return;}
+      mprog(true,j.note);setTimeout(tick,1500);
+    };
+    setTimeout(tick,800);
+  }
+  // "+ Add a server": probe FIRST; an engine already there connects with no
+  // dialog; no engine → the ONE plain consent dialog (Adam: automation yes,
+  // silent no) — then install → boot → connected, one honest line throughout.
+  function addServer(){
+    const d=uiDialog('<h3>Add a server</h3>'
+      +'<div class="m" style="font-size:12.5px">Point me at an ssh destination you can already reach with keys — an alias from ~/.ssh/config, or user@host. The engine runs where the repo lives; I\\'ll check what\\'s there first.</div>'
+      +'<div style="margin-top:10px"><input type="text" id="acsrv" placeholder="my-server" style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--line2);padding:9px 11px;font:400 13px var(--mono)"></div>'
+      +'<div class="m" id="acsrverr" style="color:var(--bad);font-size:11.5px;margin-top:6px"></div>'
+      +'<div class="btns"><button id="acsrvc">Cancel</button><button class="pri" id="acsrvgo">Check the server</button></div>');
+    const done=()=>d.remove();
+    d.querySelector("#acsrvc").onclick=done;
+    d.addEventListener("click",e=>{if(e.target===d)done();});
+    d.querySelector("#acsrv").focus();
+    const go=async()=>{
+      const host=d.querySelector("#acsrv").value.trim();if(!host)return;
+      const btn=d.querySelector("#acsrvgo");btn.disabled=true;btn.textContent="Checking\\u2026";
+      const p=await fetch(api("/api/remotes/probe"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({host})}).then(r=>r.json()).catch(()=>null);
+      btn.disabled=false;btn.textContent="Check the server";
+      if(!p||p.error){d.querySelector("#acsrverr").textContent=(p&&p.error)||"engine unreachable";return;}
+      if(!p.reachable){d.querySelector("#acsrverr").textContent=p.note||"ssh could not reach that host";return;}
+      done();
+      if(p.engine){connectRemote(host,"connect");return;}
+      if(await uiConfirm("No engine on "+host+" yet.\\n\\nInstall Crate Engine there? This runs the standard installer over your own ssh connection: everything lands in ~/.crate on "+host+" (its own folder — no sudo, nothing system-wide) plus the crate command in ~/.local/bin.","Install engine")){
+        connectRemote(host,"install");
+      }
+    };
+    d.querySelector("#acsrvgo").onclick=go;
+    d.querySelector("#acsrv").onkeydown=e=>{if(e.key==="Enter")go();};
+  }
+  loadRemotes();
+})();
+}
+`;
+
+export function teamPage(view: TeamView, opts: { attachCard?: { machine: string; dismissable?: boolean } } = {}): string {
   const badge = ""; // headless is the only mode — no badge needed (Adam)
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Crate Engine — ${view.project} team</title>
+  // Cockpit-first S1: card mode = no project attached — the same cockpit,
+  // with the one irreducible card rendered by CARD_JS over the (empty) grid.
+  // S3: the Team panel can SUMMON the card over a working cockpit (?card=1);
+  // that form is dismissable back to the attached rig.
+  const card = opts.attachCard
+    ? JSON.stringify({ machine: opts.attachCard.machine, dismissable: Boolean(opts.attachCard.dismissable) })
+    : "null";
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Crate Engine — ${view.project ? `${view.project} team` : "new rig"}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/assets/xterm.css">
 <style>${VIEW_STYLE}</style></head>
@@ -1737,6 +2117,6 @@ export function teamPage(view: TeamView): string {
 <script src="/assets/xterm.js"></script>
 <script src="/assets/addon-fit.js"></script>
 <script src="/assets/addon-webgl.js"></script>
-<script>${VIEW_JS}</script>
+<script>const CARD=${card};${VIEW_JS}${CARD_JS}</script>
 </body></html>`;
 }

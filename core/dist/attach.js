@@ -89,6 +89,47 @@ export function makeDir(rawParent, name, opts = {}) {
     mkdirSync(target);
     return listDirs(target, opts);
 }
+// ── Clone from GitHub (backlog 15, absorbed by the attach card — PDR
+// cockpit-first-onboarding S1): git clone into a jailed destination, then the
+// normal attach runs on the clone. Plain-chars URL validation so a hostile
+// string can never smuggle git options or shell syntax. ──────────────────────
+export function validCloneUrl(url) {
+    if (url.startsWith("-"))
+        return false;
+    return /^https:\/\/[\w.-]+\/[\w.~-]+(\/[\w.~-]+)+(\.git)?$/.test(url) || /^git@[\w.-]+:[\w.~-]+(\/[\w.~-]+)+(\.git)?$/.test(url);
+}
+/** The folder a clone of this URL lands in (repo basename, .git stripped). */
+export function cloneDirNameFor(url) {
+    const last = url.replace(/\/+$/, "").split(/[/:]/).pop() ?? "";
+    return last.replace(/\.git$/, "");
+}
+/**
+ * Clone a repo into destDir (same picker jail as listDirs) and return the
+ * clone's path — the attach card runs the normal plan/execute on it next.
+ */
+export async function cloneRepo(url, destDir, opts = {}) {
+    if (!validCloneUrl(url)) {
+        throw new AttachError("that doesn't look like a git URL — https://github.com/you/repo or git@github.com:you/repo");
+    }
+    const dest = listDirs(destDir, opts).path; // resolves + enforces the jail
+    const project = cloneDirNameFor(url);
+    if (project === "")
+        throw new AttachError("could not read a repo name from that URL");
+    const target = join(dest, project);
+    if (existsSync(target))
+        throw new AttachError(`"${project}" already exists in ${dest} — attach it directly instead`);
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    try {
+        await promisify(execFile)("git", ["clone", "--", url, target], { timeout: 300_000, encoding: "utf8" });
+    }
+    catch (e) {
+        const err = e;
+        const tail = (err.stderr ?? "").trim().split("\n").slice(-2).join(" ");
+        throw new AttachError(`git clone failed — ${tail || err.message || e}`);
+    }
+    return { target, project };
+}
 const LINK_PARTS = ["bin", "config", "adapters"];
 const DOC_SEEDS = ["AGENTS.md", "PROGRESS.md", "ISSUES.md"];
 const GI_BEGIN = "# >>> crate-engine managed (symlinks + live state) - do not edit between markers >>>";

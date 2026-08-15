@@ -52,6 +52,20 @@ export declare function makeDir(rawParent: string | undefined, name: string, opt
     home?: string;
     roots?: string[];
 }): DirListing;
+export declare function validCloneUrl(url: string): boolean;
+/** The folder a clone of this URL lands in (repo basename, .git stripped). */
+export declare function cloneDirNameFor(url: string): string;
+/**
+ * Clone a repo into destDir (same picker jail as listDirs) and return the
+ * clone's path — the attach card runs the normal plan/execute on it next.
+ */
+export declare function cloneRepo(url: string, destDir: string | undefined, opts?: {
+    home?: string;
+    roots?: string[];
+}): Promise<{
+    target: string;
+    project: string;
+}>;
 export type WriteKind = "committed" | "local";
 export type WriteAction = "create" | "heal" | "keep";
 export interface PlannedWrite {
