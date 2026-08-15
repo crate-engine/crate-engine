@@ -31,13 +31,10 @@ export declare function pidAlive(pid: number): boolean;
  * runner does NOT start turns; mail queues and drains on release. */
 export declare function attendedFile(projectRoot: string, seat: string): string;
 export declare function isAttended(projectRoot: string, seat: string, isAlive?: (pid: number) => boolean): boolean;
-/**
- * Acknowledgment / "standing by" chatter that must NOT wake a turn — otherwise
- * two seats ping-pong acks forever after a loop closes (the drive-3 flaw:
- * orchestrator 27 turns / coder 22 for one tiny feature). A message that is
- * ONLY an ack is absorbed (marked read) without invoking the agent; real
- * requests never match this and still wake a turn.
- */
+/** The matched ack phrase, or undefined when the message is not absorbable —
+ * exported so absorb stamps can NAME what matched (a silent classifier is
+ * undiagnosable from turns.log; this one cost 35 live minutes to find). */
+export declare function ackPhrase(body: string): string | undefined;
 export declare function isAck(body: string): boolean;
 /**
  * Resolve + cache a seat's wall AT BOOT (so the first turn reuses it — one

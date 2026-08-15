@@ -152,8 +152,27 @@ function loadSession(projectRoot: string, seat: string, agent: string): string |
  * ONLY an ack is absorbed (marked read) without invoking the agent; real
  * requests never match this and still wake a turn.
  */
+/** A true ack is SHORT. Ticket #8 postmortem (2026-08-15): the coder's 4.4KB
+ * scope report ended "all hard rails acknowledged" — ONE incidental word
+ * classified the whole message as absorbable noise, the questions inside it
+ * never reached the orchestrator, and the coder held for a [SCOPE_OK] that
+ * could never come (the operator saw a frozen rig). Same trap W4 finding #4
+ * hit from the operator side. The costs are wildly asymmetric — absorbing
+ * substance stalls a rig; delivering a verbose ack wastes one wake — so
+ * LENGTH caps the classifier before any phrase gets a vote. */
+const ACK_MAX_CHARS = 400;
+
+/** The matched ack phrase, or undefined when the message is not absorbable —
+ * exported so absorb stamps can NAME what matched (a silent classifier is
+ * undiagnosable from turns.log; this one cost 35 live minutes to find). */
+export function ackPhrase(body: string): string | undefined {
+  if (body.length > ACK_MAX_CHARS) return undefined;
+  const m = /\b(standing by|no further action|ack(nowledged| processed)|loop closed|no new (testing|action)|already (idle|closed|approved|deployed)|still (idle|standing)|nothing (to do|further)|no action (needed|required))\b/i.exec(body);
+  return m ? m[1] : undefined;
+}
+
 export function isAck(body: string): boolean {
-  return /\b(standing by|no further action|ack(nowledged| processed)|loop closed|no new (testing|action)|already (idle|closed|approved|deployed)|still (idle|standing)|nothing (to do|further)|no action (needed|required))\b/i.test(body);
+  return ackPhrase(body) !== undefined;
 }
 
 // The wall is rendered ONCE per seat per process (launch-time semantics, like
@@ -196,9 +215,10 @@ export async function runTurn(opts: RunTurnOpts): Promise<TurnResult> {
   // the loop-breaker exists for seat-to-seat chatter only.
   if (mail.every((m) => m.from !== "operator" && isAck(m.body))) {
     complete(inboxRoot, seat, mail);
+    const phrases = mail.map((m) => `"${ackPhrase(m.body)}"`).join(",");
     appendFileSync(
       join(turnsDir(projectRoot, seat), "turns.log"),
-      `${localIsoOffset()} | absorbed | ${mail.length} ack(s), no turn\n`,
+      `${localIsoOffset()} | absorbed | ${mail.length} ack(s) [matched ${phrases}], no turn\n`,
     );
     return { ok: true, idle: true };
   }

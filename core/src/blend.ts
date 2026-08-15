@@ -35,7 +35,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { complete, localIsoOffset, readNew, type Message } from "./mailbox.js";
-import { attendedFile, isAck, runnerLoop, sessionFile, turnsDir, type RunnerLoopOpts, type TurnResult } from "./runner.js";
+import { ackPhrase, attendedFile, isAck, runnerLoop, sessionFile, turnsDir, type RunnerLoopOpts, type TurnResult } from "./runner.js";
 import { claudeProjectDir } from "./ptyseat.js";
 import { RIG_PREFIX } from "./staffing.js";
 import type { Seat } from "./manifest.js";
@@ -924,7 +924,8 @@ export async function blendedTurn(o: BlendedTurnOpts): Promise<TurnResult> {
   // absorbed (W4 finding #4 — the human's one input must always land).
   if (mail.every((m) => m.from !== "operator" && isAck(m.body))) {
     complete(inboxRoot, seat, mail);
-    stampTurns(projectRoot, seat, `absorbed | ${mail.length} ack(s), no delivery`);
+    const phrases = mail.map((m) => `"${ackPhrase(m.body)}"`).join(",");
+    stampTurns(projectRoot, seat, `absorbed | ${mail.length} ack(s) [matched ${phrases}], no delivery`);
     return { ok: true, idle: true };
   }
 

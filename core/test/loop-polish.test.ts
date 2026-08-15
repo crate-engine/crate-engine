@@ -134,3 +134,14 @@ test("the port-watch nag skips browser tooling — chrome/agent-browser/playwrig
   assert.ok(/chrom\|agent-browser\|headless_shell\|playwright/.test(nag), "the tooling patterns are filtered");
   assert.ok(nag.indexOf("agent-browser") < nag.indexOf("const key ="), "the filter runs BEFORE the dedup marker — tooling never even burns its key");
 });
+
+// ── the ack absorber (ticket #8 postmortem, 2026-08-15) ──
+test("a LONG message is never an ack — one incidental 'acknowledged' can't absorb a scope report (the #8 freeze)", async () => {
+  const { isAck, ackPhrase } = await import("../src/runner.js");
+  assert.equal(isAck("ACK — noted, standing by."), true, "short true acks still absorb (the loop-breaker lives)");
+  assert.equal(ackPhrase("ACK — noted, standing by."), "standing by", "the stamp can NAME what matched");
+  const scopeReport = "SCOPE_ACK — Ticket #8. Scouted the repo.\n" + "=== SCOUT REPORT ===\n" + "detail line\n".repeat(40) +
+    "Three questions sent to the orchestrator: (1)… (2)… (3)…\nHolding for [SCOPE_OK]. All hard rails acknowledged — no real emails.";
+  assert.equal(isAck(scopeReport), false, "4KB of substance with an incidental 'acknowledged' DELIVERS — absorbing it froze the rig");
+  assert.equal(isAck("x".repeat(500) + " standing by"), false, "the length cap gates before any phrase gets a vote");
+});
