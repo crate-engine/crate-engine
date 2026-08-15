@@ -157,6 +157,28 @@ switch (command) {
                     console.log("native shell: rebuild FAILED — run it by hand: bash ~/.crate/engine/apps/mac-shell/build.sh");
                 }
             }
+            // The Linux twin of the same law (native linux shell, 2026-08-15): the
+            // GTK shell is an installed COPY of apps/linux-shell/main.py — engine
+            // updates reach the cockpit free, but a shell-source change needs the
+            // reinstall nobody will remember. Updates stay ONE command.
+            if (r.before !== r.after && process.platform === "linux") {
+                try {
+                    const { execFileSync: exf3 } = await import("node:child_process");
+                    const engineDir = join(HOME, ".crate", "engine");
+                    const touched = exf3("git", ["diff", "--name-only", `${r.before}..${r.after}`], {
+                        cwd: engineDir, encoding: "utf8", timeout: 15000,
+                    }).includes("apps/linux-shell/");
+                    const shellInstalled = existsSync(join(HOME, ".local", "lib", "crate-shell", "main.py"));
+                    const installSh = join(engineDir, "apps", "linux-shell", "install.sh");
+                    if (touched && shellInstalled && existsSync(installSh)) {
+                        exf3("bash", [installSh], { stdio: "pipe", timeout: 60_000 });
+                        console.log("native shell: Crate Engine (GTK) refreshed (this update changed the shell) — relaunch it to get the new frame");
+                    }
+                }
+                catch {
+                    console.log("native shell: refresh FAILED — run it by hand: bash ~/.crate/engine/apps/linux-shell/install.sh");
+                }
+            }
             // Run #14 (Adam): he updated mid-session, pressed a button in the STILL-
             // RUNNING app, and got pre-update behavior — a running process keeps the
             // code it loaded at launch (the /login lesson, app edition). Say so.
