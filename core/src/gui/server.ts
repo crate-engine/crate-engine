@@ -619,7 +619,7 @@ export async function startGuiServer(
           const { pendingPreviews, deriveStudioState } = await import("./teamctl.js");
           const proj = url.searchParams.get("project") ?? state.project;
           const previews = proj ? pendingPreviews(proj) : [];
-          const first = previews[0];
+          const first = previews[previews.length - 1]; // newest wins the slot (LESSONS #7)
           let probeOk = false;
           if (first) {
             if (first.url.startsWith("http://")) state.previewTarget = first.url;

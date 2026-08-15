@@ -349,6 +349,19 @@ export function nagUnregistered(proj: string, view: ServersView, graceSecs = 120
     for (const row of view.servers) {
       if (row.kind !== "discovered") continue;
       if (row.ageSecs === null || row.ageSecs < graceSecs) continue;
+      // LESSONS #7 (2026-08-14, the rig's own note: "engine port-watch nags:
+      // curl the port first — chrome /json/version or agent-browser title =
+      // tooling, dismiss"): browser tooling inside the wall binds
+      // project-owned listeners that are never previews; nagging them taught
+      // the orchestrator to waste a turn dismissing. Tooling never nags.
+      try {
+        const cmd = execFileSync("ps", ["-o", "command=", "-p", String(row.pid)], {
+          encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+        });
+        if (/chrom|agent-browser|headless_shell|playwright/i.test(cmd)) continue;
+      } catch {
+        /* pid gone — the row prunes on the next registry read */
+      }
       const key = `${loopKey}:${row.port}`;
       if (marker[key]) continue;
       const mins = Math.max(1, Math.round(row.ageSecs / 60));

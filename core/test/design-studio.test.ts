@@ -36,9 +36,9 @@ test("the slot is derived: free slot, dead server, and live design are three dis
   }
 });
 
-test("one slot at a time: previews[0] holds it; a non-http target passes through un-proxied", () => {
-  const live = deriveStudioState([pv(), pv({ url: "http://other:3000", label: "queued" })], true, 4646);
-  if (live.mode === "live") assert.equal(live.label, "Garage hub", "the first registration holds the slot — the second queues");
+test("one slot at a time — the NEWEST registration holds it (LESSONS #7: designers append per revision); non-http passes un-proxied", () => {
+  const live = deriveStudioState([pv(), pv({ url: "http://other:3000", label: "rev 2" })], true, 4646);
+  if (live.mode === "live") assert.equal(live.label, "rev 2", "the latest revision IS the design under review — oldest-first served #7 a stale label all round");
   const ext = deriveStudioState([pv({ url: "https://staging.example.com" })], true, 4646);
   if (ext.mode === "live") assert.equal(ext.proxyPort, undefined, "https passes through — the proxy is for loopback dev servers");
 });

@@ -316,7 +316,7 @@ export function chatHistory(projectRoot, limit = 40) {
     return msgs.slice(-limit);
 }
 export function deriveStudioState(previews, probeOk, proxyPort) {
-    const p = previews[0];
+    const p = previews[previews.length - 1];
     if (!p)
         return { mode: "waiting", reason: "awaiting the next design task" };
     if (!probeOk)

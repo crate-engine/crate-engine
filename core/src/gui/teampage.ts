@@ -1341,7 +1341,7 @@ window.crateOpenStudio=()=>{openStudioFrame("mobile");openStudioFrame("desktop")
 // stealing focus. A frame Adam closed mid-task stays closed for THAT task
 // (respected via the closed-flags); the next design task re-deploys it.
 function studioAutoDeploy(){
-  const key=PREVIEWS.length?(PREVIEWS[0].url+"|"+(PREVIEWS[0].route||"/")):"";
+  const p=PREVIEWS[PREVIEWS.length-1];const key=p?(p.url+"|"+(p.route||"/")):""; // newest registration IS the design under review (LESSONS #7)
   if(key!==STUDIOKEY){
     STUDIOKEY=key;STUDIOCLOSED.mobile=false;STUDIOCLOSED.desktop=false;
     if(key)["mobile","desktop"].forEach(k=>{if(!STUDIO[k]||STUDIO[k].closed)openStudioFrame(k);});
@@ -1361,7 +1361,7 @@ async function renderPreview(){
   // buttons were a second, contradicting door). The card shows the slot and
   // holds the two doors: Open Design Studio + the explicit Launch in Chrome.
   const w=document.getElementById("pvwrap");if(!w||!PREVIEWS.length)return;
-  const p=PREVIEWS[0];const src=await pointPreview(p);
+  const p=PREVIEWS[PREVIEWS.length-1];const src=await pointPreview(p); // newest wins (LESSONS #7)
   let st=null;
   try{st=await fetch(api("/api/studio/state")).then(r=>r.json());}catch(e){}
   const live=st&&st.mode==="live";

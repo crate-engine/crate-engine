@@ -661,6 +661,31 @@ def join_verdicts(task):
                 v[actor] = result
     return v
 
+def last_code_ready_commit(task):
+    """The commit= of this task's most recent CODE_READY, or None (round 1).
+    Feeds the PAPERWORK GATE: round 2+ deltas must touch PROGRESS.md."""
+    if not os.path.exists(LOG):
+        return None
+    sha = None
+    with open(LOG, encoding="utf-8") as fh:
+        for raw in fh:
+            if raw.lstrip().startswith("#"):
+                continue
+            toks = raw.split()
+            evt = toks[1] if len(toks) > 1 else ""
+            if evt != "CODE_READY":
+                continue
+            row_task, commit = None, None
+            for t in toks:
+                if t.startswith("task="): row_task = t.split("=", 1)[1]
+                elif t.startswith("branch=") and row_task is None: row_task = t.split("=", 1)[1]
+                elif t.startswith("commit="): commit = t.split("=", 1)[1]
+            if task and row_task is not None and row_task != task:
+                continue
+            if commit:
+                sha = commit
+    return sha
+
 # ── WORKFLOW TIERING (2026-07-25; PDR dev/pdr/workflow-tiering.md, grilled +
 #    locked with Adam): the orchestrator declares ONE tier at start_impl
 #    (tier=chore|bug|feature); code enforces its meaning and double-checks it.
@@ -1282,6 +1307,15 @@ def main():
                 actor = args[i + 1]; i += 2; continue
             if "=" in a: kv.append(a)
             i += 1
+        if actor == "?":
+            # LESSONS #7 (2026-08-14, banked by the rig itself): a silent '?'
+            # breaks the ledger's one-truth grammar (grep-by-actor misses the
+            # line; a JOIN was rejected mid-loop over it). The runner already
+            # stamps the caller's TRUE identity (CRATE_SEAT) — default from
+            # it. A badge-less operator terminal stays '?' exactly as before.
+            badge = seat_identity()
+            if badge:
+                actor = badge
         ho = load_handoffs().get(name)
         transition = ho["transition"] if ho else name
         signal = ho["signal"] if ho else ""
@@ -1349,6 +1383,29 @@ def main():
                     "      bash .agents/bin/nm-gate <branch>\n"
                     "  Then re-emit code_ready. (Emergency human bypass: prefix NMGATE_OVERRIDE=1 -- logged.)"
                     % detail)
+        if transition == "code_ready":
+            # ── THE PAPERWORK GATE (LESSONS #7, 2026-08-14) ──────────────────
+            # Round 3 of ticket #7 existed ONLY because round 2's remediation
+            # never touched PROGRESS.md ("rounds that add scope outrun the
+            # docs"). The lesson becomes physics: a ROUND-2+ code_ready whose
+            # delta since the previous round leaves PROGRESS.md untouched is
+            # refused before it reaches review. Round 1 stays free (the
+            # reviewer owns first-round doc judgment); no PROGRESS.md in the
+            # repo = no gate; an unreachable prev sha (rebase) = no gate —
+            # the gate only ever fires on the exact failure it names.
+            kvmap = dict(p.split("=", 1) for p in kv if "=" in p)
+            _br = kvmap.get("branch") or kvmap.get("task") or ""
+            _prev = last_code_ready_commit(_br)
+            if _prev and os.path.exists("PROGRESS.md"):
+                _r = subprocess.run(["git", "diff", "--name-only", "%s..HEAD" % _prev, "--", "PROGRESS.md"],
+                                    capture_output=True, text=True)
+                if _r.returncode == 0 and _r.stdout.strip() == "":
+                    append("[%s] REJECTED event=code_ready actor=%s reason=stale_docs prev=%s"
+                           % (now(), actor, _prev[:7]))
+                    die("REJECTED: round-2+ code_ready but PROGRESS.md is untouched since the previous "
+                        "round (%s) — record what this round changed and why (rulings, unlocks, "
+                        "escalations included), commit it, then re-emit. The three-doc law is physics "
+                        "now (LESSONS 2026-08-14). Nothing was sent." % _prev[:7])
         # ── WORKFLOW TIERING (2026-07-25): the ONE recorded tier call ────────
         # Declared at start_impl, validated here; its meaning is enforced at
         # code_ready (routing) and the join (verdict requirements) below.
