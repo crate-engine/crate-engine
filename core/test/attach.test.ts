@@ -320,3 +320,23 @@ test("create + GitHub: gh not signed in → the attach itself still SUCCEEDS, wi
     process.env.PATH = oldPath;
   }
 });
+
+test("listDirs: the headless-era jail — extra roots browse, the picker STARTS where rigs live, outside-all still refuses (Adam's ↑Up find, 2026-08-15)", () => {
+  const home = mkdtempSync(join(tmpdir(), "crate2-pick2-"));
+  const rigsRoot = mkdtempSync(join(tmpdir(), "crate2-rigs-"));
+  mkdirSync(join(rigsRoot, "site-rig", ".git"), { recursive: true });
+  const opts = { home, roots: [rigsRoot] };
+
+  const root = listDirs(rigsRoot, opts);
+  assert.equal(root.parent, undefined, "a projects root is a jail root — ↑Up stops there, never wanders the system");
+  assert.ok(root.dirs.some((d) => d.name === "site-rig" && d.isRepo), "rigs are browsable and badged");
+  assert.equal(root.roots?.length, 2, "both roots surface for the picker's jump chips");
+
+  assert.equal(listDirs(undefined, opts).path, root.path, "no path = start where rigs LIVE, not home");
+  assert.ok(listDirs(join(rigsRoot, "site-rig"), opts).parent, "a child inside the root has a parent");
+  assert.equal(listDirs(home, opts).parent, undefined, "home stays a browsable jail root too");
+  assert.throws(() => listDirs("/private/tmp", opts), /inside your home/); // an EXISTING outside path refuses (a vanished one falls back, pinned above)
+
+  const made = makeDir(rigsRoot, "fresh-rig", opts);
+  assert.ok(made.path.endsWith("fresh-rig"), "New-folder works inside the projects root");
+});

@@ -521,7 +521,14 @@ function openPicker(title, startPath, onChoose) {
       pk.innerHTML = '<div class="overlay"><div class="pickpanel">' +
         '<div class="pickhead"><p class="eyebrow" style="margin-bottom:6px">' + esc(title) + '</p>' +
         '<div class="row"><span class="mono grow" style="font-size:12px">' + esc(l.path) + '</span>' +
-        (l.parent ? '<button class="quiet" id="pk-up">↑ Up</button>' : '') + '</div></div>' +
+        (l.parent ? '<button class="quiet" id="pk-up">↑ Up</button>' : '') + '</div>' +
+        // Headless-era amendments (Adam's live finds, 2026-08-15): jump chips
+        // for every browse root (rigs live outside home on a server), and a
+        // type-a-path field — the operator often HAS the path in hand.
+        (l.roots && l.roots.length > 1 ? '<div class="row" style="flex-wrap:wrap;gap:6px;margin-top:8px">' +
+          l.roots.map(r => '<button class="quiet pk-root" data-r="' + esc(r) + '" style="font-size:11px">' + esc(r) + '</button>').join('') + '</div>' : '') +
+        '<div class="row" style="margin-top:8px"><input type="text" id="pk-path" placeholder="…or type a path" style="flex:1;font-size:12px">' +
+        '<button class="quiet" id="pk-go">Go</button></div></div>' +
         '<div class="picklist">' + (l.dirs.length ? l.dirs.map(d =>
           '<button class="pickrow" data-d="' + esc(d.name) + '"><span class="grow">' + esc(d.name) + '</span>' +
           (d.isRepo ? '<span class="tag" style="color:var(--ok);border-color:var(--ok)">git</span>' : '') + '</button>').join('')
@@ -532,6 +539,9 @@ function openPicker(title, startPath, onChoose) {
         '<button id="pk-use">Use this folder</button></div></div>' +
         '<div id="pk-err" class="bad" style="padding:0 16px 12px;font-size:12.5px"></div></div></div>';
       if (el('pk-up')) el('pk-up').onclick = () => go(l.parent);
+      pk.querySelectorAll('.pk-root').forEach(b => b.onclick = () => go(b.dataset.r));
+      el('pk-go').onclick = () => { if (el('pk-path').value.trim()) go(el('pk-path').value.trim()); };
+      el('pk-path').onkeydown = e => { if (e.key === 'Enter' && el('pk-path').value.trim()) go(el('pk-path').value.trim()); };
       pk.querySelectorAll('[data-d]').forEach(b => b.onclick = () => go(l.path + '/' + b.dataset.d));
       el('pk-cancel').onclick = close;
       el('pk-use').onclick = () => { close(); onChoose(l.path); };
@@ -549,7 +559,12 @@ function openPicker(title, startPath, onChoose) {
         el('pk-mk').onclick = make;
         el('pk-name').addEventListener('keydown', ev => { if (ev.key === 'Enter') make(); });
       };
-    } catch (e) { close(); el('msg').innerHTML = '<span class="bad">' + esc(e.message) + '</span>'; }
+    } catch (e) {
+      // a typo'd path shows its refusal IN the picker; only a first-open
+      // failure (no picker yet) falls back to closing with the page banner
+      if (el('pk-err')) { el('pk-err').textContent = e.message; }
+      else { close(); el('msg').innerHTML = '<span class="bad">' + esc(e.message) + '</span>'; }
+    }
   }
   go(startPath && startPath.trim() ? startPath : '~/Projects');
 }

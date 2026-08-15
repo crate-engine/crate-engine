@@ -263,7 +263,8 @@ test("thin law: /api/fs/dirs is object-equal with core listDirs (the attach pick
   mkdirSync(join(HOME, "Projects", "sample"), { recursive: true });
   const viaApi = await call("GET", `/api/fs/dirs?path=${encodeURIComponent(join(HOME, "Projects"))}`);
   assert.equal(viaApi.status, 200);
-  const direct = listDirs(join(HOME, "Projects"), { home: HOME });
+  const { pickerRoots } = await import("../src/gui/server.js");
+  const direct = listDirs(join(HOME, "Projects"), { home: HOME, roots: await pickerRoots(gui.state) });
   assert.deepEqual(viaApi.body, JSON.parse(JSON.stringify(direct)));
   // the jail refuses plainly through the API too
   const out = await call("GET", "/api/fs/dirs?path=/private/tmp");

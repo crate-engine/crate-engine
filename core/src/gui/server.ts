@@ -18,7 +18,7 @@ import { loadLoadout, loadoutPath, SEATS, type Seat } from "../manifest.js";
 import { discoverPiModels } from "../pidiscovery.js";
 import { loadUserDefaults, orderCatalog, parseRigConf, resolveSeatDetailed, RIG_PREFIX, updateRigStaffing } from "../staffing.js";
 import { appUrlPath, readLastProject, seedDefaultsIfAbsent, tierPaths, updateEngine, writeLastProject } from "../usertier.js";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { attachPage, staffingPage, startPage, welcomePage } from "./pages.js";
 
 export interface GuiState {
@@ -366,6 +366,27 @@ export interface GuiServer {
 /** Pack 4: per-pane typed-line buffers for the pane-phrase honor (keyed
  * `project|seat`). Server-lifetime state, epsilon-sized (64-char cap each). */
 const paneLineBuf = new Map<string, string>();
+
+// The picker's browse roots beyond home: the parents of every registered
+// workspace plus the attached project's parent — the engine already knows
+// where rigs live; the picker should too (headless-era jail amendment).
+export async function pickerRoots(state: Pick<GuiState, "home" | "project">): Promise<string[]> {
+  const roots: string[] = [];
+  try {
+    const { listWorkspaces } = await import("./workspaces.js");
+    for (const w of listWorkspaces(state.home)) {
+      const p = dirname(w.path);
+      if (!roots.includes(p)) roots.push(p);
+    }
+  } catch {
+    /* no registry yet — home alone */
+  }
+  if (state.project) {
+    const p = dirname(state.project);
+    if (!roots.includes(p)) roots.push(p);
+  }
+  return roots;
+}
 
 // Design Studio liveness probe (backlog 10): is the slot's target answering?
 // Cached briefly — two frames poll every ~4s and must never hammer the rig's
@@ -1074,13 +1095,16 @@ export async function startGuiServer(
           const body = await readBody(req);
           return json(res, 200, writeDefaults(state, body.seats as Record<string, { agent: string; model: string }>));
         }
-        case "GET /api/fs/dirs":
-          // the attach picker (jailed to home; folders only — see listDirs)
-          return json(res, 200, listDirs(url.searchParams.get("path") ?? undefined, { home: state.home }));
+        case "GET /api/fs/dirs": {
+          // the attach picker. Jail = home + where rigs live (derived from
+          // the registered workspaces — the headless-era amendment; Adam's
+          // "↑Up does nothing" live find, 2026-08-15).
+          return json(res, 200, listDirs(url.searchParams.get("path") ?? undefined, { home: state.home, roots: await pickerRoots(state) }));
+        }
         case "POST /api/fs/mkdir": {
           // the picker's New-folder button (same jail; steps into the result)
           const body = await readBody(req);
-          return json(res, 200, makeDir(body.path as string | undefined, String(body.name ?? ""), { home: state.home }));
+          return json(res, 200, makeDir(body.path as string | undefined, String(body.name ?? ""), { home: state.home, roots: await pickerRoots(state) }));
         }
         case "POST /api/attach/plan": {
           const body = await readBody(req);

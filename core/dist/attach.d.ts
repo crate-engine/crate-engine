@@ -22,17 +22,25 @@ export interface DirEntry {
 }
 export interface DirListing {
     path: string;
-    /** Absent at the jail root (the user's home). */
+    /** Absent at a jail root. */
     parent?: string;
+    /** Every browse root the picker may jump to (home + where rigs live). */
+    roots?: string[];
     dirs: DirEntry[];
 }
 /**
- * List the sub-FOLDERS of a path for the attach screen's picker. Jailed to
- * the user's home (the app browses projects, not the system); hidden folders
- * are skipped; a missing/blank path falls back to home.
+ * List the sub-FOLDERS of a path for the attach screen's picker. The jail
+ * law, amended for the headless era (Adam's live find, 2026-08-15: on the
+ * server, rigs live at /mnt/data/projects — OUTSIDE the Mac-era home jail,
+ * so ↑Up did nothing and the right folder was unreachable): the jail is now
+ * home PLUS the caller-supplied roots (the server derives them from where
+ * registered workspaces already live — the engine's own knowledge, zero
+ * config). With no path given, the picker STARTS where rigs live. Hidden
+ * folders are skipped; the browse stays projects, never the system.
  */
 export declare function listDirs(rawPath: string | undefined, opts?: {
     home?: string;
+    roots?: string[];
 }): DirListing;
 /**
  * Create ONE new folder inside a picker path (run #6 finding: making a folder
@@ -42,6 +50,7 @@ export declare function listDirs(rawPath: string | undefined, opts?: {
  */
 export declare function makeDir(rawParent: string | undefined, name: string, opts?: {
     home?: string;
+    roots?: string[];
 }): DirListing;
 export type WriteKind = "committed" | "local";
 export type WriteAction = "create" | "heal" | "keep";

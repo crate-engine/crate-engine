@@ -35,24 +35,41 @@ export function resolveTarget(arg, opts = {}) {
     return { projectRoot, project: basename(projectRoot), exists: existsSync(projectRoot) };
 }
 /**
- * List the sub-FOLDERS of a path for the attach screen's picker. Jailed to
- * the user's home (the app browses projects, not the system); hidden folders
- * are skipped; a missing/blank path falls back to home.
+ * List the sub-FOLDERS of a path for the attach screen's picker. The jail
+ * law, amended for the headless era (Adam's live find, 2026-08-15: on the
+ * server, rigs live at /mnt/data/projects — OUTSIDE the Mac-era home jail,
+ * so ↑Up did nothing and the right folder was unreachable): the jail is now
+ * home PLUS the caller-supplied roots (the server derives them from where
+ * registered workspaces already live — the engine's own knowledge, zero
+ * config). With no path given, the picker STARTS where rigs live. Hidden
+ * folders are skipped; the browse stays projects, never the system.
  */
 export function listDirs(rawPath, opts = {}) {
     const home = opts.home ?? homedir();
-    const expanded = rawPath && rawPath.trim() !== "" ? (rawPath.startsWith("~/") ? join(home, rawPath.slice(2)) : rawPath) : home;
+    const realRoots = [];
+    for (const r of [home, ...(opts.roots ?? [])]) {
+        try {
+            const rr = realpathSync(r);
+            if (!realRoots.includes(rr))
+                realRoots.push(rr);
+        }
+        catch {
+            /* a vanished root simply isn't offered */
+        }
+    }
+    const fallback = realRoots[1] ?? realRoots[0]; // rigs' root when one exists, else home
+    const expanded = rawPath && rawPath.trim() !== "" ? (rawPath.startsWith("~/") ? join(home, rawPath.slice(2)) : rawPath) : fallback;
     const candidate = resolve(expanded);
-    const realHome = realpathSync(home);
-    const real = existsSync(candidate) ? realpathSync(candidate) : realHome;
-    if (real !== realHome && !real.startsWith(realHome + sep)) {
-        throw new AttachError("the folder browser stays inside your home folder");
+    const real = existsSync(candidate) ? realpathSync(candidate) : fallback;
+    const inRoot = realRoots.some((r) => real === r || real.startsWith(r + sep));
+    if (!inRoot) {
+        throw new AttachError("the folder browser stays inside your home folder and the projects roots");
     }
     const dirs = readdirSync(real, { withFileTypes: true })
         .filter((d) => d.isDirectory() && !d.name.startsWith("."))
         .map((d) => ({ name: d.name, isRepo: existsSync(join(real, d.name, ".git")) }))
         .sort((a, b) => a.name.localeCompare(b.name));
-    return { path: real, ...(real === realHome ? {} : { parent: dirname(real) }), dirs };
+    return { path: real, ...(realRoots.includes(real) ? {} : { parent: dirname(real) }), roots: realRoots, dirs };
 }
 /**
  * Create ONE new folder inside a picker path (run #6 finding: making a folder

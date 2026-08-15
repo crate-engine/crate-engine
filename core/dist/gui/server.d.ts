@@ -53,6 +53,7 @@ export interface GuiServer {
     previewProxy?: Server;
     previewProxyPort?: number;
 }
+export declare function pickerRoots(state: Pick<GuiState, "home" | "project">): Promise<string[]>;
 export declare function startGuiServer(opts?: {
     home?: string;
     project?: string;

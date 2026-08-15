@@ -70,31 +70,48 @@ export interface DirEntry {
 
 export interface DirListing {
   path: string;
-  /** Absent at the jail root (the user's home). */
+  /** Absent at a jail root. */
   parent?: string;
+  /** Every browse root the picker may jump to (home + where rigs live). */
+  roots?: string[];
   dirs: DirEntry[];
 }
 
 /**
- * List the sub-FOLDERS of a path for the attach screen's picker. Jailed to
- * the user's home (the app browses projects, not the system); hidden folders
- * are skipped; a missing/blank path falls back to home.
+ * List the sub-FOLDERS of a path for the attach screen's picker. The jail
+ * law, amended for the headless era (Adam's live find, 2026-08-15: on the
+ * server, rigs live at /mnt/data/projects — OUTSIDE the Mac-era home jail,
+ * so ↑Up did nothing and the right folder was unreachable): the jail is now
+ * home PLUS the caller-supplied roots (the server derives them from where
+ * registered workspaces already live — the engine's own knowledge, zero
+ * config). With no path given, the picker STARTS where rigs live. Hidden
+ * folders are skipped; the browse stays projects, never the system.
  */
-export function listDirs(rawPath: string | undefined, opts: { home?: string } = {}): DirListing {
+export function listDirs(rawPath: string | undefined, opts: { home?: string; roots?: string[] } = {}): DirListing {
   const home = opts.home ?? homedir();
+  const realRoots: string[] = [];
+  for (const r of [home, ...(opts.roots ?? [])]) {
+    try {
+      const rr = realpathSync(r);
+      if (!realRoots.includes(rr)) realRoots.push(rr);
+    } catch {
+      /* a vanished root simply isn't offered */
+    }
+  }
+  const fallback = realRoots[1] ?? realRoots[0]!; // rigs' root when one exists, else home
   const expanded =
-    rawPath && rawPath.trim() !== "" ? (rawPath.startsWith("~/") ? join(home, rawPath.slice(2)) : rawPath) : home;
+    rawPath && rawPath.trim() !== "" ? (rawPath.startsWith("~/") ? join(home, rawPath.slice(2)) : rawPath) : fallback;
   const candidate = resolve(expanded);
-  const realHome = realpathSync(home);
-  const real = existsSync(candidate) ? realpathSync(candidate) : realHome;
-  if (real !== realHome && !real.startsWith(realHome + sep)) {
-    throw new AttachError("the folder browser stays inside your home folder");
+  const real = existsSync(candidate) ? realpathSync(candidate) : fallback;
+  const inRoot = realRoots.some((r) => real === r || real.startsWith(r + sep));
+  if (!inRoot) {
+    throw new AttachError("the folder browser stays inside your home folder and the projects roots");
   }
   const dirs: DirEntry[] = readdirSync(real, { withFileTypes: true })
     .filter((d) => d.isDirectory() && !d.name.startsWith("."))
     .map((d) => ({ name: d.name, isRepo: existsSync(join(real, d.name, ".git")) }))
     .sort((a, b) => a.name.localeCompare(b.name));
-  return { path: real, ...(real === realHome ? {} : { parent: dirname(real) }), dirs };
+  return { path: real, ...(realRoots.includes(real) ? {} : { parent: dirname(real) }), roots: realRoots, dirs };
 }
 
 /**
@@ -103,7 +120,7 @@ export function listDirs(rawPath: string | undefined, opts: { home?: string } = 
  * the name must be a single plain component; an existing folder refuses.
  * Returns the created folder's listing so the picker can step into it.
  */
-export function makeDir(rawParent: string | undefined, name: string, opts: { home?: string } = {}): DirListing {
+export function makeDir(rawParent: string | undefined, name: string, opts: { home?: string; roots?: string[] } = {}): DirListing {
   const parent = listDirs(rawParent, opts).path; // resolves + enforces the jail
   const clean = name.trim();
   if (clean === "" || clean === "." || clean === ".." || clean.includes("/") || clean.startsWith(".")) {
