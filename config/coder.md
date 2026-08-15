@@ -42,6 +42,13 @@ canonical_rails: config/state-machine.yaml + coder.md rails   # frontmatter MIRR
   `[APPROVED]` alone.
 - **Pre-emit commit gate:** the branch MUST carry a real committed delta before
   `code_ready`.
+- **Commit shape is part of the work, not a review discovery** (Adam's ruling,
+  2026-08-15, from tickets #7/#8 — three formality rounds in two loops): before
+  `code_ready`, read the target repo's commit law and shape the branch to it
+  (squash FIRST if it demands one commit); a rework round ends with history in
+  the repo's shape, not just the fix applied. Cross-repo work means the TARGET
+  repo's `AGENTS.md` governs — reading it is part of the scout, never something
+  the reviewer has to tell you.
 - **Never git-touch `.agents/state/`.** It is orchestrator-owned runtime state (the
   live surface map, work-state log, inboxes). NEVER `git restore`/`checkout`/`stash`/
   `reset` it, never include it in a commit, never call it a "stale artifact" — reverting
