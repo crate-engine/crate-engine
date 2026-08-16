@@ -2083,7 +2083,7 @@ export function teamPage(view, opts = {}) {
   <div style="display:flex;align-items:center;gap:14px">
     <button class="railbtn" id="railbtn" title="Workspaces"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
     <span class="mark">CRATE<svg class="bolt" viewBox="0 0 24 24" aria-hidden="true"><path d="M13.2 2 4.8 13.4h5L8.6 22l10.6-13.2h-6.2L13.2 2z"/></svg>ENGINE</span>
-    <span class="ver">2.1 <b>BETA</b></span>
+    <span class="ver">CE-<b>2.2</b></span>
     <span class="proj" id="projlabel">${escHtml(view.project)}</span>
     <span class="downchip" id="downchip" hidden></span>
   </div>
