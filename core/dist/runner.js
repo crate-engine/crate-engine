@@ -18,9 +18,38 @@ import { buildHeadlessInvocation, composeTurnPrompt, parseSessionId, parseUsage 
 import { normalizeAgent, resolveHeadlessWall } from "./wall.js";
 const DEFAULT_TURN_TIMEOUT_MS = 15 * 60 * 1000;
 export function turnsDir(projectRoot, seat) {
-    const d = join(projectRoot, ".agents", "state", "turns", seat);
+    const parent = join(projectRoot, ".agents", "state", "turns");
+    const d = join(parent, seat);
     mkdirSync(d, { recursive: true });
+    ensureTurnsIgnored(parent);
     return d;
+}
+/** Make `.agents/state/turns/` ignore ITSELF (CE-014, 2026-08-17).
+ *
+ * This directory holds per-seat machine plumbing: session ids, turn logs, and
+ * now pane.raw — the scrollback mirror, up to ~4MB of raw ANSI per seat. It was
+ * never gitignored (confirmed with `git check-ignore` against a live rig), so
+ * once the engine starts writing pane.raw a rig is one `git add -A` away from
+ * committing a seat's entire terminal history.
+ *
+ * attach's managed .gitignore block now covers it, but that only reaches a rig
+ * when attach RE-RUNS there — and the engine starts writing the mirror the
+ * moment it updates. A self-ignoring directory needs no operator action and no
+ * coordination with attach's writer: `turns/.gitignore` containing `*` is the
+ * standard git idiom, is idempotent, and fixes EXISTING rigs on first touch.
+ *
+ * Best-effort by construction — a rig that cannot take this file still runs. */
+export function ensureTurnsIgnored(turnsRoot) {
+    const f = join(turnsRoot, ".gitignore");
+    try {
+        if (existsSync(f))
+            return;
+        writeFileSync(f, "# per-seat runtime: session ids, turn logs, pane.raw scrollback.\n" +
+            "# Machine-local plumbing, never content (CE-014).\n*\n");
+    }
+    catch {
+        /* never fatal: losing the guard costs hygiene, wedging a turn costs work */
+    }
 }
 export function sessionFile(projectRoot, seat) {
     return join(turnsDir(projectRoot, seat), "session.json");

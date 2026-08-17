@@ -18,6 +18,22 @@ export interface TurnResult {
     error?: string;
 }
 export declare function turnsDir(projectRoot: string, seat: string): string;
+/** Make `.agents/state/turns/` ignore ITSELF (CE-014, 2026-08-17).
+ *
+ * This directory holds per-seat machine plumbing: session ids, turn logs, and
+ * now pane.raw — the scrollback mirror, up to ~4MB of raw ANSI per seat. It was
+ * never gitignored (confirmed with `git check-ignore` against a live rig), so
+ * once the engine starts writing pane.raw a rig is one `git add -A` away from
+ * committing a seat's entire terminal history.
+ *
+ * attach's managed .gitignore block now covers it, but that only reaches a rig
+ * when attach RE-RUNS there — and the engine starts writing the mirror the
+ * moment it updates. A self-ignoring directory needs no operator action and no
+ * coordination with attach's writer: `turns/.gitignore` containing `*` is the
+ * standard git idiom, is idempotent, and fixes EXISTING rigs on first touch.
+ *
+ * Best-effort by construction — a rig that cannot take this file still runs. */
+export declare function ensureTurnsIgnored(turnsRoot: string): void;
 export declare function sessionFile(projectRoot: string, seat: string): string;
 /** Native-seat-access (PDR): a live turn's marker — the TTY door refuses to
  * open mid-turn (two doors, one room: never two writers on one session). */

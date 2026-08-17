@@ -46,12 +46,19 @@ operator and pollute the human's chat thread.
 The command's own output is the receipt. You must see BOTH lines:
 
     INBOX: recorded for <role> (state/inbox/<role>.md) — the durable copy.
-    QUEUED: <role>'s runner wakes on it (state/inbox/<role>/new/<file>).
+    QUEUED for <role>: state/inbox/<role>/new/<file> — durable; a runner consumes it on its next wake.
 
 If the command errored or the QUEUED line is missing (and the target is not
 `operator` — the operator has no runner, INBOX alone is complete), the
 delivery did NOT happen: say so in your state file and STOP — a silently-lost
 report is the worst outcome. Never end a task without delivering.
+
+**Read the third line too (CE-103).** Under QUEUED, the receipt says what it can
+actually prove about the target's runner. `WARNING — NOT DELIVERED TO ANYONE YET`
+means no runner has ever taken a turn as that seat in this project: your mail is
+safe on disk but nobody is going to read it, so do NOT sit waiting for a reply —
+report the situation upward instead. A `last turn N h ago` note on a seat you
+expected to be live is the same warning, one degree softer.
 
 ## Rules
 

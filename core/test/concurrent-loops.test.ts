@@ -212,7 +212,9 @@ test("deliver: queues the runner wake WITHOUT any COORDINATION flag (fresh-rig r
   const rig = mkRig(CONC); // note: no COORDINATION line — the fresh-attach shape
   const r = ctl(rig, "deliver", "reviewer", "--from", "coder", "[CODE_READY] branch=x");
   assert.equal(r.code, 0);
-  assert.match(r.out, /QUEUED: reviewer's runner wakes on it/);
+  // CE-103: the receipt no longer ASSERTS a runner exists — it states the durable
+  // queue fact, then reports what it can actually prove about the seat.
+  assert.match(r.out, /QUEUED for reviewer: state\/inbox\/reviewer\/new\/.+ — durable/);
   const mail = readNew(join(rig, ".agents", "state", "inbox"), "reviewer");
   assert.equal(mail.length, 1);
   assert.equal(mail[0]!.from, "coder");

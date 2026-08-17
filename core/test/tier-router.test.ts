@@ -290,3 +290,58 @@ test("DESIGNER FLOOR stands down when design_locked already happened this loop",
   assert.doesNotMatch(r.out, /DESIGNER FLOOR/);
   assert.equal(mails(rig, "designer"), 0, "the Designer already had its pass this loop");
 });
+
+// ── CE-119: the SHA-tie stands, but it EXPLAINS itself ─────────────────────
+// The rig filed this as "the tier router measures the WORKING TREE, not the
+// coder's branch range", after uncommitted orchestrator bootstrap edits appeared
+// to trip escalation. That diagnosis is wrong — every tier measurement is
+// `git diff base...HEAD`, committed history only, and the two tests below prove
+// it. What actually happened is the third one: bootstrap edits got COMMITTED on
+// top of the gated SHA, which voids the gate proof, and the message named only
+// "no gate_pass on file for HEAD <sha>" — true, but unreadable. A chore
+// escalating for an invisible reason is what produced a wrong ledger entry.
+test("tier: an UNCOMMITTED dirty tree does not move the tier (CE-119)", () => {
+  const rig = makeRig("ce119-dirty");
+  writeFileSync(join(rig, "app.txt"), "hello\nsmall change\n");
+  commitAll(rig);
+  ctl(rig, "emit", "boot", "--actor", "orchestrator");
+  ctl(rig, "emit", "start_impl", "--actor", "orchestrator", "tier=chore");
+  gatePass(rig);
+  // A big, guardrail-touching, NEW-source-file mess — all uncommitted.
+  writeFileSync(join(rig, "AGENTS.md"), "guardrail edit\n");
+  writeFileSync(join(rig, "brand-new.ts"), Array.from({ length: 200 }, (_, i) => `// ${i}`).join("\n"));
+  const r = ctl(rig, "emit", "code_ready", "--actor", "coder");
+  assert.ok(r.ok, r.out);
+  assert.match(r.out, /TIER: chore/, "uncommitted noise is invisible to the router — by design");
+  assert.doesNotMatch(r.out, /TIER ESCALATED/);
+});
+
+test("tier: the SAME changes COMMITTED do escalate (CE-119 — it is the range, not the tree)", () => {
+  const rig = makeRig("ce119-committed");
+  ctl(rig, "emit", "boot", "--actor", "orchestrator");
+  ctl(rig, "emit", "start_impl", "--actor", "orchestrator", "tier=chore");
+  writeFileSync(join(rig, "AGENTS.md"), "guardrail edit\n");
+  commitAll(rig);
+  gatePass(rig);
+  const r = ctl(rig, "emit", "code_ready", "--actor", "coder");
+  assert.match(r.out, /TIER ESCALATED/);
+  assert.match(r.out, /guardrail file \(never a chore\): AGENTS\.md/);
+});
+
+test("gate proof: a commit landing on a GATED sha says 'HEAD moved', not just 'no gate_pass' (CE-119)", () => {
+  const rig = makeRig("ce119-superseded");
+  writeFileSync(join(rig, "app.txt"), "hello\ntiny\n");
+  commitAll(rig);
+  ctl(rig, "emit", "boot", "--actor", "orchestrator");
+  ctl(rig, "emit", "start_impl", "--actor", "orchestrator", "tier=chore");
+  gatePass(rig);
+  const gated = git(rig, "rev-parse", "HEAD");
+  // The orchestrator lands notes on top — the gate proof is now void.
+  writeFileSync(join(rig, "notes.md"), "bootstrap notes\n");
+  commitAll(rig);
+  const r = ctl(rig, "emit", "code_ready", "--actor", "coder");
+  assert.match(r.out, /TIER ESCALATED/, "a void gate proof still escalates — the SHA-tie is absolute");
+  assert.match(r.out, new RegExp(`branch WAS gated at ${gated.slice(0, 9)}`), "it names the sha that WAS gated");
+  assert.match(r.out, /1 commit\(s\) landed on top since/, "and how far HEAD has moved");
+  assert.match(r.out, /re-gate the branch/, "and the fix");
+});

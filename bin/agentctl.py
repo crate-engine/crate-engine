@@ -138,6 +138,290 @@ def queue_message(role, sender, msg):
     os.rename(tmp_p, os.path.join(new_dir, name))
     return name
 
+def seat_runner_evidence(role):
+    """(kind, detail) — what this process can PROVE about <role>'s runner.
+
+    CE-103: `deliver` used to print "QUEUED: <role>'s runner wakes on it"
+    unconditionally, so a dispatch to a seat that has no runner at all read as a
+    success and the sender waited on a reply nobody would ever send. The maildir
+    IS durable — queueing is genuinely not a failure — so the fix is honesty
+    about the second half of the claim, not a refusal.
+
+    agentctl is a separate process from the engine, and the TTY registry lives in
+    the engine's memory, so liveness is inferred from what the runner leaves on
+    disk: turns/<seat>/active.lock (a live pid = mid-turn) and turns.log's mtime
+    (when this seat last took a turn). "never" is the one that matters — it means
+    nothing has ever run as this seat in this project.
+    """
+    tdir = os.path.join(A, "state", "turns", role)
+    log = os.path.join(tdir, "turns.log")
+    if seat_mid_turn(role):
+        return "mid_turn", "mid-turn right now — it will see this when the turn ends"
+    if not os.path.exists(log):
+        return "never", "no runner has EVER taken a turn as this seat in this project"
+    try:
+        age = time.time() - os.path.getmtime(log)
+    except OSError:
+        return "unknown", "turns.log unreadable"
+    if age < 1800:
+        return "idle_recent", "last turn %d min ago" % max(1, int(age // 60))
+    hours = age / 3600.0
+    return "idle_stale", ("last turn %.1f h ago — if the seat is not staffed, this mail waits "
+                          "indefinitely" % hours)
+
+def print_queue_receipt(role, name, label="QUEUED"):
+    """The honest receipt for one queued mail (CE-103): the queue fact and the
+    runner EVIDENCE, kept separate. Shared by `deliver` and the handoff signals,
+    which both used to assert "its runner wakes on it" with nothing checked."""
+    print("%s for %s: state/inbox/%s/new/%s — durable; a runner consumes it on its next wake."
+          % (label, role, role, name))
+    kind, detail = seat_runner_evidence(role)
+    if kind == "never":
+        print("  WARNING — NOT DELIVERED TO ANYONE YET: %s. The file waits durably, but\n"
+              "  nothing will read it until that seat is staffed and running. If you are\n"
+              "  waiting on a reply, staff the seat (cockpit Team panel) or send elsewhere."
+              % detail)
+    elif kind == "idle_stale":
+        print("  NOTE: %s (%s)." % (role, detail))
+    else:
+        print("  %s: %s." % (role, detail))
+
+
+# ── RETRY STATE AS A COMMAND, NOT A HAND-EDIT (CE-121) ───────────────────────
+# state/retries.yaml is a nested, schema'd file the ORCHESTRATOR updates every
+# round. On 2026-07-04 an ad-hoc regex edit corrupted it — the predictable end of
+# asking a language model to patch structured YAML in place, and the same class of
+# bug that made `sed -i` on rig.conf die silently on macOS (cured by conf-set).
+# So the writes belong to code: parse into a model, mutate the model, RE-EMIT the
+# whole file deterministically. There is no partial write to get wrong, and the
+# emitter also normalises formatting drift.
+#
+# Deliberately narrow: this owns exactly the documented schema
+# (config/orchestrator.md "(e) Retry tracking"). Unknown top-level keys are
+# preserved verbatim so a future field is never silently dropped.
+RETRIES = os.path.join(A, "state", "retries.yaml")
+ESCALATION_STATES = ("none", "diagnosing", "surgical_applied", "human")
+ROUND_TYPES = ("symptom_brief", "surgical", "diagnostic")
+ROUND_RESULTS = ("changes_needed", "approved", "bugs_found", "abandoned")
+
+def _rq(v):
+    """Quote a scalar only when YAML needs it — keeps hand-written files stable."""
+    t = str(v)
+    if t == "":
+        return '""'
+    if re.match(r"^[A-Za-z0-9_.\-/]+$", t):
+        return t
+    return '"%s"' % t.replace("\\", "\\\\").replace('"', '\\"')
+
+def load_retries():
+    """(active_task, tasks, resolved) — tasks/resolved map name -> dict.
+
+    A deliberately small reader for the ONE documented shape: two-space task
+    keys, four-space scalar fields, `history:` as a list of flow-mapping rows.
+    Anything it cannot understand raises, because guessing at a corrupted
+    counter file is how a bad escalation decision gets made.
+    """
+    active, tasks, resolved = "", {}, {}
+    if not os.path.exists(RETRIES):
+        return active, tasks, resolved
+    section, cur = None, None
+    for n, raw in enumerate(open(RETRIES, encoding="utf-8"), 1):
+        line = raw.rstrip("\n")
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent == 0:
+            key, _, val = s.partition(":")
+            key, val = key.strip(), val.strip()
+            if key == "active_task":
+                active = val.strip('"').strip("'")
+                section = None
+            elif key in ("tasks", "resolved"):
+                section = key
+                if val in ("{}", "{ }"):
+                    section = None
+            else:
+                section = None
+            cur = None
+            continue
+        if section is None:
+            continue
+        target = tasks if section == "tasks" else resolved
+        if indent == 2:
+            name = s.rstrip(":").strip().strip('"')
+            cur = {"history": []}
+            target[name] = cur
+            continue
+        if cur is None:
+            raise ValueError("retries.yaml:%d — field outside any task: %r" % (n, s))
+        if s.startswith("- "):
+            row = s[2:].strip().strip("{}")
+            item = {}
+            for part in row.split(","):
+                if ":" not in part:
+                    continue
+                k, v = part.split(":", 1)
+                item[k.strip()] = v.strip().strip('"')
+            cur["history"].append(item)
+            continue
+        k, _, v = s.partition(":")
+        k, v = k.strip(), v.strip()
+        if k == "history":
+            continue
+        cur[k] = v.strip('"')
+    return active, tasks, resolved
+
+def _emit_task(name, t, out):
+    out.append("  %s:" % _rq(name))
+    for k in ("defect_signature", "attempts", "same_defect_streak", "total_rounds", "escalation_state"):
+        if k in t:
+            out.append("    %s: %s" % (k, _rq(t[k])))
+    for k in sorted(x for x in t if x not in
+                    ("defect_signature", "attempts", "same_defect_streak",
+                     "total_rounds", "escalation_state", "history")):
+        out.append("    %s: %s" % (k, _rq(t[k])))
+    if t.get("history"):
+        out.append("    history:")
+        for h in t["history"]:
+            cells = ", ".join("%s: %s" % (k, _rq(v)) for k, v in h.items())
+            out.append("      - {%s}" % cells)
+
+def save_retries(active, tasks, resolved):
+    """Deterministic full-file rewrite — the whole point of CE-121."""
+    out = ["# Per-project retry/escalation state. Gitignored; checkpoint-captured.",
+           "# WRITTEN BY `agentctl.py retry ...` — do not hand-edit (CE-121: an ad-hoc",
+           "# regex edit corrupted this file once already). Read it freely.",
+           "active_task: %s" % _rq(active)]
+    if tasks:
+        out.append("tasks:")
+        for name in tasks:
+            _emit_task(name, tasks[name], out)
+    else:
+        out.append("tasks: {}")
+    if resolved:
+        out.append("resolved:")
+        for name in resolved:
+            _emit_task(name, resolved[name], out)
+    else:
+        out.append("resolved: {}")
+    os.makedirs(os.path.dirname(RETRIES), exist_ok=True)
+    tmp = RETRIES + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(out) + "\n")
+    os.replace(tmp, RETRIES)   # atomic: a crash mid-write never truncates counters
+
+def _same_defect(a, b):
+    """Streak continuity. The doctrine says signatures are compared BY MEANING,
+    which is the orchestrator's judgment — so code compares them only after
+    normalising whitespace/case, and the orchestrator states the signature it
+    means. Passing the same --defect string is how it says 'same defect'."""
+    norm = lambda x: " ".join(str(x or "").lower().split())
+    return norm(a) == norm(b) and norm(a) != ""
+
+def cmd_retry(args):
+    sub = args[1] if len(args) > 1 else "show"
+    active, tasks, resolved = load_retries()
+
+    def flag(name, default=None):
+        if name in args:
+            i = args.index(name)
+            if i + 1 < len(args):
+                return args[i + 1]
+        return default
+
+    if sub == "show":
+        who = args[2] if len(args) > 2 and not args[2].startswith("--") else None
+        print("active_task: %s" % (active or "(none)"))
+        for name, t in tasks.items():
+            mark = " <- active" if name == active else ""
+            if who and name != who:
+                continue
+            print("  %s%s" % (name, mark))
+            print("    attempts=%s streak=%s rounds=%s escalation=%s"
+                  % (t.get("attempts", 0), t.get("same_defect_streak", 0),
+                     t.get("total_rounds", 0), t.get("escalation_state", "none")))
+            if t.get("defect_signature"):
+                print("    defect: %s" % t["defect_signature"])
+            for h in t.get("history", []):
+                print("    round %s: %s -> %s%s"
+                      % (h.get("round", "?"), h.get("type", "?"), h.get("result", "?"),
+                         (" (%s)" % h["sha"]) if h.get("sha") else ""))
+        if resolved:
+            print("resolved: %s" % ", ".join(resolved))
+        return
+
+    if sub == "round":
+        if len(args) < 3 or args[2].startswith("--"):
+            die("usage: retry round <task> --type %s --result %s [--sha X] [--defect \"...\"] "
+                "[--escalation %s]" % ("|".join(ROUND_TYPES), "|".join(ROUND_RESULTS),
+                                       "|".join(ESCALATION_STATES)))
+        task = args[2]
+        rtype = flag("--type", "symptom_brief")
+        result = flag("--result", "")
+        sha = flag("--sha", "")
+        defect = flag("--defect")
+        esc = flag("--escalation")
+        if rtype not in ROUND_TYPES:
+            die("retry: --type must be one of %s (got %r)" % ("|".join(ROUND_TYPES), rtype))
+        if result not in ROUND_RESULTS:
+            die("retry: --result must be one of %s (got %r)" % ("|".join(ROUND_RESULTS), result))
+        if esc is not None and esc not in ESCALATION_STATES:
+            die("retry: --escalation must be one of %s (got %r)" % ("|".join(ESCALATION_STATES), esc))
+        t = tasks.setdefault(task, {"attempts": 0, "same_defect_streak": 0,
+                                    "total_rounds": 0, "escalation_state": "none",
+                                    "history": []})
+        prev_defect = t.get("defect_signature", "")
+        t["attempts"] = int(t.get("attempts", 0) or 0) + 1
+        t["total_rounds"] = int(t.get("total_rounds", 0) or 0) + 1
+        if defect is not None:
+            # A repeated signature CONTINUES the streak; a new one resets it to 1
+            # (this round is the first sighting of that defect, not zero).
+            t["same_defect_streak"] = (int(t.get("same_defect_streak", 0) or 0) + 1
+                                       if _same_defect(prev_defect, defect) else 1)
+            t["defect_signature"] = defect
+        elif result == "approved":
+            t["same_defect_streak"] = 0
+        if esc is not None:
+            t["escalation_state"] = esc
+        row = {"round": t["total_rounds"], "type": rtype, "result": result}
+        if sha:
+            row["sha"] = sha[:9]
+        t.setdefault("history", []).append(row)
+        active = active or task
+        save_retries(active, tasks, resolved)
+        print("RETRY: %s round %s (%s -> %s) — attempts=%s streak=%s escalation=%s"
+              % (task, t["total_rounds"], rtype, result, t["attempts"],
+                 t.get("same_defect_streak", 0), t.get("escalation_state", "none")))
+        streak = int(t.get("same_defect_streak", 0) or 0)
+        if streak >= 3:
+            print("  LADDER: %d consecutive rounds on the SAME defect — see "
+                  "procedures/escalation-ladder.md; a third repeat is the human's cue." % streak)
+        return
+
+    if sub == "active":
+        if len(args) < 3:
+            die("usage: retry active <task>")
+        active = args[2]
+        save_retries(active, tasks, resolved)
+        print("RETRY: active_task = %s" % active)
+        return
+
+    if sub == "resolve":
+        if len(args) < 3:
+            die("usage: retry resolve <task>")
+        task = args[2]
+        if task not in tasks:
+            die("retry: no live task %r (live: %s)" % (task, ", ".join(tasks) or "none"))
+        resolved[task] = tasks.pop(task)
+        if active == task:
+            active = ""
+        save_retries(active, tasks, resolved)
+        print("RETRY: %s archived to resolved — its counts cannot bleed into the next task." % task)
+        return
+
+    die("usage: retry <show|round|active|resolve> ...")
+
 def now():
     """ONE CLOCK (Pack 5, 2026-08-12; FLAWS 'events.log mixes two clocks'):
     local ISO seconds WITH the UTC offset (2026-08-12T13:39:05-05:00) — the
@@ -686,6 +970,41 @@ def last_code_ready_commit(task):
                 sha = commit
     return sha
 
+def scope_ok_on_record(task):
+    """Did the orchestrator record a SCOPE_OK for this loop's current round?
+
+    CE-113. The scope checkpoint (P7-T4) exists so a wrong file plan is caught
+    while it is still ONE message. The coder's stall guard let it self-authorize
+    after ~2 minutes — and an orchestrator mid-turn is routinely quiet far
+    longer than that, so in practice the checkpoint almost never fired and
+    nobody could tell an approved plan from a timed-out one after the fact.
+
+    A SCOPE_OK only counts for the round it belongs to: the scan resets at each
+    START_IMPL / CHANGES_NEEDED for the task, so last round's approval cannot
+    vouch for this round's plan.
+    """
+    if not os.path.exists(LOG):
+        return False
+    seen = False
+    with open(LOG, encoding="utf-8") as fh:
+        for raw in fh:
+            if raw.lstrip().startswith("#"):
+                continue
+            toks = raw.split()
+            evt = toks[1] if len(toks) > 1 else ""
+            if evt not in ("SCOPE_OK", "START_IMPL", "CHANGES_NEEDED"):
+                continue
+            row_task = None
+            for t in toks:
+                if t.startswith("task="):
+                    row_task = t.split("=", 1)[1]
+                elif t.startswith("branch=") and row_task is None:
+                    row_task = t.split("=", 1)[1]
+            if task and row_task is not None and row_task != task:
+                continue
+            seen = evt == "SCOPE_OK"   # a new round wipes the previous approval
+    return seen
+
 # ── WORKFLOW TIERING (2026-07-25; PDR dev/pdr/workflow-tiering.md, grilled +
 #    locked with Adam): the orchestrator declares ONE tier at start_impl
 #    (tier=chore|bug|feature); code enforces its meaning and double-checks it.
@@ -1120,16 +1439,42 @@ def hotdoc_sweep():
 def gate_ok_for_head():
     """True iff events.log holds a GATE_PASS tied to the current HEAD SHA. The SHA
     uniquely identifies the code state, so an older pass for the same SHA is still
-    valid proof; any new commit invalidates it (forces a re-gate)."""
+    valid proof; any new commit invalidates it (forces a re-gate).
+
+    CE-119: the SHA-tie stands, but it now EXPLAINS itself. A gate_pass on an
+    ANCESTOR of HEAD means the branch was gated and then somebody committed on
+    top — often doc or bootstrap noise, not code. The old message ("no gate_pass
+    on file for HEAD abc123def") gave no hint of that, and a chore escalating for
+    an invisible reason got misdiagnosed in the ledger as the tier router reading
+    the working tree. It does not: every tier measurement is `git diff
+    base...HEAD`, committed history only. The failure is 'HEAD moved', so say so.
+    """
     head = git_head_sha()
     if not head:
         return False, "HEAD (unresolvable -- run from the repo root of a git checkout)"
     short = head[:9]
+    passed = []
     if os.path.exists(LOG):
         with open(LOG, encoding="utf-8") as fh:
             for raw in fh:
-                if "GATE_PASS" in raw and ("sha=%s" % head) in raw:
+                if "GATE_PASS" not in raw:
+                    continue
+                if ("sha=%s" % head) in raw:
                     return True, "HEAD %s" % short
+                for tok in raw.split():
+                    if tok.startswith("sha="):
+                        passed.append(tok.split("=", 1)[1])
+    # Was an ANCESTOR gated? Then the honest complaint is "HEAD moved", with the
+    # count, so the fix ("re-gate the branch") is obvious instead of mysterious.
+    for sha in reversed(passed):
+        if not sha or sha == head:
+            continue
+        if run_git(["merge-base", "--is-ancestor", sha, head]) is None:
+            continue  # not an ancestor (or unresolvable) — no claim to make
+        ahead = run_git(["rev-list", "--count", "%s..HEAD" % sha]) or "?"
+        return False, ("HEAD %s -- the branch WAS gated at %s, but %s commit(s) landed on top "
+                       "since (a gate_pass is tied to one SHA; re-gate the branch)"
+                       % (short, sha[:9], ahead.strip()))
     return False, "HEAD %s" % short
 
 def main():
@@ -1239,6 +1584,9 @@ def main():
         ok = ev in always or (froms is not None and cur in froms)
         print("legal" if ok else "ILLEGAL (state=%s)" % cur)
         sys.exit(0 if ok else 1)
+    if cmd == "retry":
+        cmd_retry(args)
+        return
     if cmd == "deliver":
         # deliver <role> <message...> — the DELIVERY QUEUE (P7-T6 task-0;
         # headless-only since T8: the cmux pane nudge is gone, and delivery
@@ -1296,7 +1644,10 @@ def main():
         name = queue_message(role, sender, msg)
         print("INBOX: recorded for %s (state/inbox/%s.md) — the durable copy." % (role, role))
         if name:
-            print("QUEUED: %s's runner wakes on it (state/inbox/%s/new/%s)." % (role, role, name))
+            # CE-103: say what is TRUE (the file is queued and durable) and,
+            # separately, what is only EVIDENCE (whether anything is there to
+            # read it). The old line asserted both as one fact.
+            print_queue_receipt(role, name)
         return
     if cmd == "emit":
         if len(args) < 2: die("emit needs a handoff or transition name")
@@ -1581,6 +1932,22 @@ def main():
         # a verdict the branch is FROZEN (coder.md law); `approved` verifies it.
         post_append = []
         if transition == "code_ready":
+            # ── THE SCOPE STAMP (CE-113) ─────────────────────────────────────
+            # Every code_ready says, on the record, whether the plan behind it
+            # was ever approved. Not a wall: a rig whose orchestrator does not
+            # yet emit scope_ok would wedge, and the checkpoint's value is
+            # AUDITABILITY — a reviewer must be able to see "this diff's scope
+            # was never confirmed" without reading two mailboxes.
+            if not any(a.startswith("scope=") for a in kv):
+                if scope_ok_on_record(cur_task):
+                    kv.append("scope=ok")
+                else:
+                    kv.append("scope=unconfirmed")
+                    print("SCOPE UNCONFIRMED: no scope_ok is on record for this round, so this "
+                          "code_ready is stamped scope=unconfirmed.\n"
+                          "  The reviewer will see that the file plan was never approved. If you "
+                          "proceeded on a stall,\n"
+                          "  say so in your report and name what you deliberately did NOT touch.")
             sha = git_head_sha()
             if sha:
                 write_pin(sha, git_branch(), pin_path_for(cur_task))
@@ -1680,7 +2047,7 @@ def main():
                 qname = queue_message("coder", "operator",
                                       "[MERGE] %s — the operator typed \"merge go\"; the gate is "
                                       "released. Merge into main now and emit deployed." % target)
-                print("SIGNAL QUEUED for coder (state/inbox/coder/new/%s) — its runner wakes on it." % qname)
+                print_queue_receipt("coder", qname, "SIGNAL QUEUED")
             else:
                 # honest no-op: the release is ON RECORD but ordered no merge —
                 # the gate was never armed (no approved on file), and a
@@ -1717,7 +2084,7 @@ def main():
                 if tr in ROLES or tr == "operator":
                     qname = queue_message(tr, actor, msg)
                     if qname:
-                        print("SIGNAL QUEUED for %s (state/inbox/%s/new/%s) — its runner wakes on it." % (tr, tr, qname))
+                        print_queue_receipt(tr, qname, "SIGNAL QUEUED")
                     else:
                         print("SIGNAL RECORDED for the operator (state/inbox/operator.md — the GUI chat).")
                 else:

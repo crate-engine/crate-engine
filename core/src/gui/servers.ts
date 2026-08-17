@@ -18,6 +18,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
+import { confValue, resolveDevPorts } from "../devport.js";
 import { parseRigConf } from "../staffing.js";
 
 export interface ServerRow {
@@ -130,6 +131,21 @@ export function parseEtime(s: string): number | null {
 /** Standing-infra ports from rig.conf — shown, tagged, never killable. */
 function systemPorts(proj: string): Set<number> {
   const ports = new Set<number>();
+  // CE-106: the resolved dev + preview ports come from the ONE resolution, so a
+  // port declared only in .agents/dev.conf is tagged standing-infra here too
+  // (it used to read rig.conf alone and show that server as a killable orphan).
+  // Only when the project actually DECLARES a dev port: resolveDevPorts defaults
+  // to 3000 for anything, and inventing standing infra out of a default would
+  // make a stranger's :3000 unkillable from the panel.
+  try {
+    if (confValue(proj, "DEV_PORT") || confValue(proj, "DEV_URL") || confValue(proj, "PREVIEW_DEV_PORT")) {
+      const { port, previewPort } = resolveDevPorts(proj);
+      ports.add(port);
+      ports.add(previewPort);
+    }
+  } catch {
+    /* resolution unavailable — fall through to the raw conf read below */
+  }
   try {
     const conf = parseRigConf(readFileSync(join(proj, ".agents", "rig.conf"), "utf8"));
     for (const p of [conf.DEV_PORT, conf.PREVIEW_DEV_PORT]) {

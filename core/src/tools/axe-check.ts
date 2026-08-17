@@ -6,10 +6,10 @@
 // being unavailable must never fail a QA run; QA reports the degrade instead.
 // Exit: 1 iff violations were found; 0 on clean or degrade.
 import { createRequire } from "node:module";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
-import { findChromium, resolveBase, routesFromAgentsMd } from "./qa-sweep.js";
+import { findChromium, resolveBase, resolveRoutes } from "./qa-sweep.js";
 
 interface AxeViolation {
   id: string;
@@ -38,12 +38,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  let routes = (arg("--routes") ?? "").split(",").map((r) => r.trim()).filter(Boolean);
-  if (routes.length === 0) {
-    const agents = join(project, "AGENTS.md");
-    if (existsSync(agents)) routes = routesFromAgentsMd(readFileSync(agents, "utf8"));
-    if (routes.length === 0) routes = ["/"];
-  }
+  // CE-112: one shared resolver with qa-sweep, and the degraded case says so.
+  const src = resolveRoutes(arg("--routes"), project);
+  const routes = src.routes;
+  console.log(`axe-check: routes from ${src.origin}`);
 
   // Degrade-don't-fail: resolve the two heavy pieces up front, honestly.
   let axeSource: string;
@@ -91,7 +89,10 @@ async function main(): Promise<void> {
   }
   await browser.close();
 
-  writeFileSync(join(out, "axe-check.json"), JSON.stringify({ base, routes, results }, null, 2));
+  writeFileSync(
+    join(out, "axe-check.json"),
+    JSON.stringify({ base, routes, routeOrigin: src.origin, degraded: src.degraded, results }, null, 2),
+  );
   let total = 0;
   for (const r of results) {
     if (r.error) {
@@ -109,6 +110,9 @@ async function main(): Promise<void> {
     }
   }
   console.log(`AXE SUMMARY: ${results.length} route(s), ${total} violation(s). Evidence: ${join(out, "axe-check.json")}`);
+  if (src.degraded) {
+    console.log(`axe-check: COVERAGE WARNING — ${src.origin}. This is NOT a full pass; do not report it as one.`);
+  }
   if (total > 0) process.exitCode = 1;
 }
 

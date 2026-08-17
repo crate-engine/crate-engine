@@ -219,12 +219,23 @@ const GI_BLOCK = `${GI_BEGIN}
 # The local origin mirror (projects with no GitHub remote) - a bare repo the
 # build gate diffs against; machine-local plumbing, never content.
 /mirror.git
-# Per-session live state is scratch - keep the durable FLAWS.md, drop the churn.
+# Per-session live state is scratch - drop the churn, KEEP FLAWS.md.
+# FLAWS.md is a rig's FEED of engine defects it noticed (each line stamped
+# '-> CE-nnn' once routed into the engine's dev/LEDGER.md). It is tracked on
+# purpose: a routing queue that lives on one machine's disk is lost to a fresh
+# clone, and an unstamped line then reads as unrouted when it was simply never
+# pulled. Tracked-and-intentional (CE-125 was filed the other way round).
 /state/*.md
 !/state/FLAWS.md
 /state/events.log
 /state/checkpoints/CHECKPOINT-latest.md
 /state/checkpoints/archive/*
+# Per-seat runtime: session ids, turn logs, and the pane scrollback mirror
+# (pane.raw — up to ~4 MB of raw ANSI per seat, CE-014 rehydrate). Machine-local
+# session plumbing, never content. This directory was NOT ignored before
+# 2026-08-17, so it was one 'git add -A' away from committing a seat's whole
+# terminal history.
+/state/turns/
 ${GI_END}
 `;
 

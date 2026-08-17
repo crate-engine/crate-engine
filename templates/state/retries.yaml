@@ -1,5 +1,6 @@
 # Per-project retry/escalation state. Gitignored; checkpoint-captured.
-# The orchestrator reads + writes this; never derived from events.log.
+# WRITTEN BY `agentctl.py retry ...` — do not hand-edit (CE-121). Read it freely.
+# Never derived from events.log; this file is the authoritative counter.
 #
 # active_task: the task currently in the loop (matches a key under tasks:)
 # tasks:       one entry per task in the retry cycle

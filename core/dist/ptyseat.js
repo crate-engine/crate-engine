@@ -102,6 +102,22 @@ export function ttySessionId(projectRoot, seat, agentArg) {
     }
     return undefined;
 }
+/** Does this seat have a session a spawn would RESUME (CE-014)?
+ *
+ * Mirrors ttySessionId's acceptance rule — the file exists and names a session
+ * for THIS agent — but is deliberately side-effect free: ttySessionId MINTS an
+ * id for pi, which would make a fresh seat report as resumable and hand a
+ * clean-eyes worker the previous task's scrollback. */
+export function hasResumableSession(projectRoot, seat, agentArg) {
+    const agent = normalizeAgent(agentArg);
+    try {
+        const j = JSON.parse(readFileSync(sessionFile(projectRoot, seat), "utf8"));
+        return j.agent === agent && !!j.sessionId;
+    }
+    catch {
+        return false; // absent or unreadable = fresh
+    }
+}
 /** Claude Code stores sessions per munged-cwd: non-alphanumerics become "-"
  * (verified against a live ~/.claude/projects). */
 export function claudeProjectDir(projectRoot, home) {
@@ -242,6 +258,56 @@ function piNodeBinDir(home) {
 // 5000-line scrollback with ANSI overhead; replay is a one-time cost per
 // attach, not standing chatter (the storm law is untouched).
 const REPLAY_CAP = 2 * 1024 * 1024;
+// ── PANE REHYDRATION (CE-014, Adam 2026-08-17) ───────────────────────────────
+// "Close the app, open it again, my sessions come back" — cmux's contract.
+//
+// The CONVERSATION already came back: turns/<seat>/session.json holds the seat's
+// session id and startSeatTty resumes it (`claude --resume`, `codex exec resume`,
+// pi's pre-minted id). What did NOT come back was the pane's SCROLLBACK — the
+// replay ring lived only in this process's memory, so a rehydrated seat opened
+// visually blank and read as a lost session even though the agent remembered
+// everything. That gap is the whole of this block.
+//
+// So the ring is mirrored to turns/<seat>/pane.raw and read back when a spawn
+// RESUMES a session. Three things make it safe rather than clever:
+//
+//  1. FRESH MEANS FRESH. If the spawn is not resuming (fresh-per-task worker,
+//     the D12 refresh, a dropped session.json), the pane file is DELETED. A
+//     clean-eyes seat showing the previous task's scrollback would be worse than
+//     a blank pane — it is the exact confusion fresh-per-task exists to remove.
+//  2. AMORTIZED WRITES. Appends are small and frequent; a trim rewrite happens
+//     only when the file passes 2x the cap, so the cost is one rewrite per
+//     REPLAY_CAP bytes of output, not per chunk.
+//  3. NEVER FATAL. Every disk touch here is best-effort. A pane that cannot
+//     persist its scrollback still works; losing the mirror costs history, and
+//     wedging the PTY over history would be a far worse trade.
+const PANE_FILE = "pane.raw";
+const paneFile = (projectRoot, seat) => join(turnsDir(projectRoot, seat), PANE_FILE);
+/** The persisted scrollback, tail-capped, or empty when there is none. */
+export function readPaneHistory(projectRoot, seat, cap = REPLAY_CAP) {
+    try {
+        const b = readFileSync(paneFile(projectRoot, seat));
+        return b.length > cap ? b.subarray(b.length - cap) : b;
+    }
+    catch {
+        return Buffer.alloc(0);
+    }
+}
+export function dropPaneHistory(projectRoot, seat) {
+    try {
+        rmSync(paneFile(projectRoot, seat));
+    }
+    catch {
+        /* absent already */
+    }
+}
+/** A visible seam between what a previous engine process showed and what this
+ * one is showing. Silence here would leave the operator unable to tell restored
+ * history from live output — and mistaking old output for current is exactly
+ * the class of error the redelivery header exists to prevent. */
+export function paneResumeBanner(atIso) {
+    return Buffer.from(`\r\n\x1b[2m── session restored ${atIso} — history above is from before the engine restarted ──\x1b[0m\r\n`, "utf8");
+}
 const registry = new Map();
 const keyOf = (projectRoot, seat) => `${projectRoot}|${seat}`;
 export function liveTty(projectRoot, seat) {
@@ -280,6 +346,12 @@ export async function startSeatTty(opts) {
     // inside the wall is refused by the OS. The TTY door is the same session
     // behind the same wall, so it carries the same marker.
     let walled = false;
+    // CE-014: is this spawn RESUMING a conversation, or starting a clean one?
+    // Decided from the seat's own state, NOT from how argv gets built — the pane
+    // mirror's correctness must not depend on which branch below runs. Read
+    // BEFORE buildInteractiveInvocation, because pi's ttySessionId() WRITES the
+    // file when it pre-mints, which would make a fresh seat look resumed.
+    const resumingSession = hasResumableSession(projectRoot, seat, agent);
     if (opts.argvOverride) {
         argv = opts.argvOverride; // tests: a spawnable stub, no wall to render
     }
@@ -347,8 +419,32 @@ export async function startSeatTty(opts) {
     catch (e) {
         return { ok: false, error: `could not open the ${agent} TUI: ${e instanceof Error ? e.message : String(e)}` };
     }
+    // CE-014 rehydrate: a RESUMING spawn reopens the pane with its prior
+    // scrollback; a fresh one starts blank AND clears the mirror, so clean eyes
+    // stay clean. The banner marks where the old process stopped.
     const chunks = [];
     let chunkBytes = 0;
+    const paneMirror = paneFile(projectRoot, seat);
+    let mirrorBytes = 0;
+    if (blended && resumingSession) {
+        const prior = readPaneHistory(projectRoot, seat);
+        if (prior.length > 0) {
+            const banner = paneResumeBanner(localIsoOffset());
+            chunks.push(prior, banner);
+            chunkBytes = prior.length + banner.length;
+            mirrorBytes = prior.length;
+            try {
+                appendFileSync(paneMirror, banner);
+                mirrorBytes += banner.length;
+            }
+            catch {
+                /* history is best-effort — never wedge the pane over it */
+            }
+        }
+    }
+    else {
+        dropPaneHistory(projectRoot, seat);
+    }
     // Multi-view size proposals (smallest-client-wins) — per-view latest fit.
     // A proposal lives exactly as long as its view's SSE stream (tmux's model:
     // the connection IS the liveness signal — no heartbeats, no TTL).
@@ -481,6 +577,22 @@ export async function startSeatTty(opts) {
         while (chunkBytes > REPLAY_CAP && chunks.length > 1) {
             chunkBytes -= chunks[0].length;
             chunks.shift();
+        }
+        // Mirror to disk so the NEXT engine process can repaint this pane. Appends
+        // are small; the trim rewrite fires only past 2x the cap, so the amortized
+        // cost is one rewrite per REPLAY_CAP bytes of output rather than per chunk.
+        if (blended) {
+            try {
+                appendFileSync(paneMirror, b);
+                mirrorBytes += b.length;
+                if (mirrorBytes > REPLAY_CAP * 2) {
+                    writeFileSync(paneMirror, readPaneHistory(projectRoot, seat));
+                    mirrorBytes = Math.min(mirrorBytes, REPLAY_CAP);
+                }
+            }
+            catch {
+                /* best-effort: a pane that cannot persist history still works */
+            }
         }
         outLog.push([Date.now(), b.length]);
         while (outLog.length > 0 && outLog[0][0] < Date.now() - 60_000)

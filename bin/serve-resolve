@@ -3,9 +3,21 @@
 # this project serve" (smoke-rung PDR Q1/C: dev-server and the gate share the
 # RESOLUTION; only the gate runs it ephemerally).
 #
-# Prints exactly two lines:
+# Prints exactly four lines:
 #   MODE=prod|dev|static|none
 #   CMD=<shell command>            (empty when MODE=none)
+#   PORT=<dev port>                (CE-106: the ONE dev-port resolution)
+#   PREVIEW_PORT=<port to expose>  (CE-110: what a tunnel should publish)
+#
+# THE ONE DEV-PORT RESOLUTION (CE-106). The port used to be worked out
+# independently in bin/dev-server, bin/preview-tunnel and core/src/doctor.ts,
+# with THREE different precedences — and two of them `source`d dev.conf on top
+# of rig.conf, so the second file quietly won. Now there is one order, stated
+# once, and callers read it from here:
+#   PORT         = rig.conf(DEV_PORT -> DEV_URL) -> dev.conf(same) -> 3000
+#   PREVIEW_PORT = PREVIEW_DEV_PORT (rig.conf, then dev.conf) -> PORT
+# and per conf_val below, rig.conf WINS over dev.conf on every key — the rig's
+# own sheet is authoritative, a helper file only fills gaps.
 #
 # gate mode (prod-first — smoke the artifact that would deploy):
 #   1. rig.conf/dev.conf GATE_START_CMD  (explicit override; may use $GATE_PORT)
@@ -43,7 +55,47 @@ conf_val() { # conf_val KEY — rig.conf then dev.conf, first hit, quotes stripp
   printf '%s' "$line"
 }
 
-emit() { printf 'MODE=%s\nCMD=%s\n' "$1" "$2"; }
+file_val() { # file_val FILE KEY — one file only, quotes stripped
+  local f="$1" key="$2" line=""
+  [ -f "$f" ] || return 0
+  line="$(grep -E "^[[:space:]]*${key}=" "$f" 2>/dev/null | head -1)"
+  [ -z "$line" ] && return 0
+  line="${line#*=}"
+  line="${line%\"}"; line="${line#\"}"; line="${line%\'}"; line="${line#\'}"
+  printf '%s' "$line"
+}
+
+# THE ONE dev-port resolution — see the header. Every caller reads these.
+# The FILE is the outer key: rig.conf is asked for a port BY EITHER ROUTE
+# (DEV_PORT or DEV_URL) before dev.conf is consulted at all. Key-major order
+# would let a stale dev.conf DEV_PORT beat the rig's own DEV_URL, which is the
+# exact inversion CE-106 was filed about.
+port_from() {   # port_from FILE — DEV_PORT, else the last :port in DEV_URL
+  local f="$1" p u
+  p="$(file_val "$f" DEV_PORT)"
+  if [ -z "$p" ]; then
+    u="$(file_val "$f" DEV_URL)"
+    [ -n "$u" ] && p="$(printf '%s' "$u" | grep -oE ':[0-9]+' | tail -1 | tr -d :)"
+  fi
+  printf '%s' "$p"
+}
+dev_port() {
+  local p
+  p="$(port_from "$CONF/.agents/rig.conf")"
+  [ -z "$p" ] && p="$(port_from "$CONF/.agents/dev.conf")"
+  printf '%s' "${p:-3000}"
+}
+preview_port() {
+  local p
+  p="$(file_val "$CONF/.agents/rig.conf" PREVIEW_DEV_PORT)"
+  [ -z "$p" ] && p="$(file_val "$CONF/.agents/dev.conf" PREVIEW_DEV_PORT)"
+  [ -z "$p" ] && p="$(dev_port)"
+  printf '%s' "$p"
+}
+
+emit() {
+  printf 'MODE=%s\nCMD=%s\nPORT=%s\nPREVIEW_PORT=%s\n' "$1" "$2" "$(dev_port)" "$(preview_port)"
+}
 
 dev_resolve() {
   local dc

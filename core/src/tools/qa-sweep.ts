@@ -12,10 +12,35 @@ interface RouteResult {
   route: string;
   viewport: string;
   consoleErrors: string[];
+  /** CE-115: browser-artifact console lines, kept but not counted as issues. */
+  consoleNoise: string[];
   badResponses: string[];
   overflow: boolean;
   screenshot: string;
   error?: string;
+}
+
+/** Console lines the BROWSER emits about itself, not defects in the app.
+ *
+ * CE-115: headless Chromium logs an error for permissions-policy tokens it
+ * doesn't implement (compute-pressure among them), so every mobile sweep of
+ * every route carried a phantom console error. A QA seat that learns to ignore
+ * "the usual one" will ignore the real one sitting next to it. These are
+ * FILTERED, never dropped: the count is printed and the text lands in
+ * qa-sweep.json under consoleNoise. `--no-filter` turns the filter off. */
+export const CONSOLE_NOISE: { pattern: RegExp; why: string }[] = [
+  {
+    pattern: /Unrecognized feature:\s*['"]?compute-pressure/i,
+    why: "Chromium doesn't implement the compute-pressure permissions-policy token — the header is valid; the warning is a browser-version artifact",
+  },
+  {
+    pattern: /Error with Permissions-Policy header:\s*Unrecognized feature/i,
+    why: "same family: a permissions-policy token this Chromium build doesn't know",
+  },
+];
+
+export function isConsoleNoise(text: string): boolean {
+  return CONSOLE_NOISE.some((n) => n.pattern.test(text));
 }
 
 function arg(name: string, def?: string): string | undefined {
@@ -57,12 +82,61 @@ export async function resolveBase(explicit: string | undefined, project: string,
   return base;
 }
 
-/** Extract `/route` tokens from the AGENTS.md "Critical paths" section. */
+/** Extract `/route` tokens from the AGENTS.md "Critical paths" section.
+ *
+ * CE-112: the heading match is CASE- and WORD-tolerant. It used to be
+ * `/^##\s+Critical paths/m` with no `/i`, so an AGENTS.md written
+ * "## Critical Paths" produced zero routes, the caller silently swept `/`
+ * alone, and the report READ as a full pass. Any heading level, any case, and
+ * "paths" or "routes" all match now — the sweep must not hinge on a capital P. */
+const CRITICAL_HEADING = /^#{1,6}\s+critical\s+(?:paths|routes)\b.*$/im;
+
 export function routesFromAgentsMd(text: string): string[] {
-  const section = text.split(/^##\s+Critical paths.*$/m)[1]?.split(/^##\s/m)[0] ?? "";
+  const m = CRITICAL_HEADING.exec(text);
+  if (!m) return [];
+  const section = text.slice(m.index + m[0].length).split(/^#{1,6}\s/m)[0] ?? "";
   const found = new Set<string>();
-  for (const m of section.matchAll(/`(\/[^\s`]*)`/g)) found.add(m[1]!);
+  for (const r of section.matchAll(/`(\/[^\s`]*)`/g)) found.add(r[1]!);
   return [...found];
+}
+
+/** Where the swept routes came from — so the caller can SAY so. */
+export interface RouteSource {
+  routes: string[];
+  /** Human-readable provenance, printed on every run. */
+  origin: string;
+  /** True when we fell back to `/` alone: coverage is one route, not a sweep. */
+  degraded: boolean;
+}
+
+/** The ONE route-resolution path for every sweep tool (qa-sweep, axe-check).
+ *
+ * CE-112, second half: the old code fell back to `routes = ["/"]` in silence,
+ * so "no routes found" and "this app has one route" produced identical output.
+ * Coverage that READS as complete but isn't is worse than a loud failure, so
+ * the degraded case names itself in the report. */
+export function resolveRoutes(explicit: string | undefined, project: string): RouteSource {
+  const listed = (explicit ?? "").split(",").map((r) => r.trim()).filter(Boolean);
+  if (listed.length) return { routes: listed, origin: "--routes", degraded: false };
+
+  const agents = join(project, "AGENTS.md");
+  if (!existsSync(agents)) {
+    return {
+      routes: ["/"],
+      origin: `DEGRADED: no ${agents} — sweeping "/" only`,
+      degraded: true,
+    };
+  }
+  const text = readFileSync(agents, "utf8");
+  const routes = routesFromAgentsMd(text);
+  if (routes.length) return { routes, origin: `AGENTS.md "Critical paths" (${routes.length} routes)`, degraded: false };
+  return {
+    routes: ["/"],
+    origin: CRITICAL_HEADING.test(text)
+      ? 'DEGRADED: AGENTS.md has a "Critical paths" heading but no `/route` in backticks under it — sweeping "/" only'
+      : 'DEGRADED: AGENTS.md has no "Critical paths" section — sweeping "/" only',
+    degraded: true,
+  };
 }
 
 /** Both playwright cache roots — macOS and Linux (FLAWS "qa-sweep's
@@ -129,12 +203,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  let routes = (arg("--routes") ?? "").split(",").map((r) => r.trim()).filter(Boolean);
-  if (routes.length === 0) {
-    const agents = join(project, "AGENTS.md");
-    if (existsSync(agents)) routes = routesFromAgentsMd(readFileSync(agents, "utf8"));
-    if (routes.length === 0) routes = ["/"];
-  }
+  const src = resolveRoutes(arg("--routes"), project);
+  const routes = src.routes;
+  const filterNoise = !process.argv.includes("--no-filter");
+  console.log(`qa-sweep: routes from ${src.origin}`);
 
   mkdirSync(out, { recursive: true });
   const browser = await chromium.launch({ executablePath: findChromium() });
@@ -146,12 +218,18 @@ async function main(): Promise<void> {
         route,
         viewport: vp.name,
         consoleErrors: [],
+        consoleNoise: [],
         badResponses: [],
         overflow: false,
         screenshot: join(out, `${(route.replace(/[^a-z0-9]+/gi, "_") || "home") + "-" + vp.name}.png`),
       };
       const page = await browser.newPage({ viewport: { width: vp.width, height: vp.height } });
-      page.on("console", (m) => m.type() === "error" && r.consoleErrors.push(m.text()));
+      page.on("console", (m) => {
+        if (m.type() !== "error") return;
+        const text = m.text();
+        if (filterNoise && isConsoleNoise(text)) r.consoleNoise.push(text);
+        else r.consoleErrors.push(text);
+      });
       page.on("response", (res) => res.status() >= 400 && r.badResponses.push(`${res.status()} ${res.url()}`));
       try {
         await page.goto(base + route, { waitUntil: "networkidle", timeout: 20000 });
@@ -168,17 +246,31 @@ async function main(): Promise<void> {
   }
   await browser.close();
 
-  writeFileSync(join(out, "qa-sweep.json"), JSON.stringify({ base, routes, results }, null, 2));
+  writeFileSync(
+    join(out, "qa-sweep.json"),
+    JSON.stringify({ base, routes, routeOrigin: src.origin, degraded: src.degraded, filterNoise, results }, null, 2),
+  );
   let issues = 0;
+  let noise = 0;
   for (const r of results) {
     const bad =
       (r.error ? 1 : 0) + r.consoleErrors.length + r.badResponses.length + (r.overflow ? 1 : 0);
     issues += bad;
+    noise += r.consoleNoise.length;
     console.log(
-      `${r.route} [${r.viewport}] ${bad === 0 ? "OK" : "ISSUES"}${r.error ? ` load-error: ${r.error}` : ""}${r.consoleErrors.length ? ` console-errors: ${r.consoleErrors.length}` : ""}${r.badResponses.length ? ` bad-responses: ${r.badResponses.length}` : ""}${r.overflow ? " HORIZONTAL-OVERFLOW" : ""}`,
+      `${r.route} [${r.viewport}] ${bad === 0 ? "OK" : "ISSUES"}${r.error ? ` load-error: ${r.error}` : ""}${r.consoleErrors.length ? ` console-errors: ${r.consoleErrors.length}` : ""}${r.badResponses.length ? ` bad-responses: ${r.badResponses.length}` : ""}${r.overflow ? " HORIZONTAL-OVERFLOW" : ""}${r.consoleNoise.length ? ` (+${r.consoleNoise.length} browser-noise, filtered)` : ""}`,
     );
   }
-  console.log(`SUMMARY: ${results.length} checks, ${issues} issue(s). Evidence: ${out} (qa-sweep.json + screenshots)`);
+  console.log(
+    `SUMMARY: ${results.length} checks over ${routes.length} route(s), ${issues} issue(s)` +
+      `${noise ? `, ${noise} browser-noise line(s) filtered (see consoleNoise in qa-sweep.json; --no-filter to keep them)` : ""}` +
+      `. Evidence: ${out} (qa-sweep.json + screenshots)`,
+  );
+  if (src.degraded) {
+    console.log(
+      `qa-sweep: COVERAGE WARNING — ${src.origin}. This is NOT a full sweep; do not report it as one.`,
+    );
+  }
 }
 
 if (process.argv[1]?.endsWith("qa-sweep.js") || process.argv[1]?.endsWith("qa-sweep.ts")) {

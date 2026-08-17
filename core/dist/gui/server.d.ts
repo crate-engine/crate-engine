@@ -54,6 +54,22 @@ export interface GuiServer {
     previewProxyPort?: number;
 }
 export declare function pickerRoots(state: Pick<GuiState, "home" | "project">): Promise<string[]>;
+/** CE-014 P0 — DETACHED IS NOT CRASHED.
+ *
+ * One engine per host, so a viewer can ask about a workspace this engine is NOT
+ * bound to. Its seats are genuinely not running, but the honest reason is "the
+ * engine is serving a different workspace", not "your team died". The system
+ * knew this all along (last-project, gui.log) and did not say it: on 2026-08-16
+ * the cockpit rendered five empty "staff this seat" panes, visually identical to
+ * a crash, and cost the operator a morning of misdiagnosis.
+ *
+ * Pure on purpose — the endpoint is a one-liner over this, and the WORDING is
+ * the whole fix, so it is worth pinning directly. */
+export declare function workspaceDetachment(bound: string | undefined, requested: string): {
+    detached: boolean;
+    boundProject?: string;
+    detachedNote?: string;
+};
 export declare function startGuiServer(opts?: {
     home?: string;
     project?: string;

@@ -1,19 +1,19 @@
-# rig.conf — per-project Crate Engine settings.
-# Lives at <project>/.agents/rig.conf on the rig host, AND copied to your Mac rig
-# home (~/Documents/Codex/Claude-Control-Room/rig.conf) so the Mac-side scripts read it.
-# install.sh writes a starter copy with PROJECT/PROJECT_PATH filled in.
-# Authoritative for every project-specific value the config docs reference as {{TOKENS}}.
+# rig.conf — per-project Crate Engine settings. REFERENCE COPY.
 #
-# MANDATORY: fill in every placeholder below before the rig works.
+# You normally never write this by hand: `crate open <project>` (attach) generates
+# a starter <project>/.agents/rig.conf with the essentials filled in, local-first.
+# This file is the fuller annotated reference — every knob, with what it does.
+# Copy a line out of here into your rig.conf when you want to change something.
+#
+# Authoritative for every project-specific value the config docs reference as
+# {{TOKENS}}. Defaults are LOCAL: one machine, no remote host, no shared paths.
 
-# --- Mac-side (cmux layout) ------------------------------------------------
-WORKSPACE_NAME="CHANGE_ME"                    # the cmux workspace title for this rig
-WORKSPACE_END=""                              # title of the NEXT workspace (to bound the section); empty if only/last
+# --- Seat titles (the cockpit's five panes) ---------------------------------
 ORCH_TITLE="Orchestrator"
-CODER_TITLE="Coder"                           # Coder-station pane title in cmux (the agent staffing it is set below)
+CODER_TITLE="Coder"                           # the agent staffing it is set below
 REVIEWER_TITLE="Reviewer"
-DESIGNER_TITLE="CHANGE_ME"                    # Designer pane title as it appears in cmux
-TESTER_TITLE="QA"                             # QA/Tester pane title as it appears in cmux
+DESIGNER_TITLE="Designer"
+TESTER_TITLE="QA"
 CTXMAX="1000000"
 
 # --- Staffing (which agent + model fills each station) ----------------------
@@ -28,14 +28,24 @@ REVIEWER_AGENT="claude"; REVIEWER_MODEL="opus"
 DESIGNER_AGENT="claude"; DESIGNER_MODEL="sonnet"
 TESTER_AGENT="claude";   TESTER_MODEL="opus"
 
-# --- Host-side (Superman) --------------------------------------------------
-SUPERMAN_HOST="user@192.168.x.x"              # SSH target for the rig host
-SUPERMAN_IP="192.168.x.x"                     # reachable LAN IP of the rig host
-PROJECTS_ROOT="/mnt/data/projects"
-PROJECT="CHANGE_ME"                           # project folder name (install.sh auto-fills this)
-PROJECT_PATH="/mnt/data/projects/CHANGE_ME"   # absolute path (install.sh auto-fills this)
-DEV_URL="http://192.168.x.x:3000"             # dev server URL reachable from Mac
-HERMES_BIN="/home/user/.local/bin/hermes"     # path to the Hermes CLI on the rig host (Coder=hermes only)
+# --- Where the project lives (LOCAL is the default shape) --------------------
+# One machine, no SSH, no shared project root. `crate open` fills PROJECT and
+# PROJECT_PATH from the directory you point it at — wherever that happens to be.
+SUPERMAN_HOST="local"
+SUPERMAN_IP="127.0.0.1"
+PROJECT="CHANGE_ME"                           # project folder name (attach auto-fills this)
+PROJECT_PATH="/absolute/path/to/CHANGE_ME"    # absolute path (attach auto-fills this)
+DEV_URL="http://localhost:3000"               # dev server URL
+
+# --- Remote rig host (POWER USER — not the default; normally leave commented) -
+# For a headless build host reached over SSH: the engine runs there and the
+# window comes to your laptop (`crate open --remote <host>`). PROJECTS_ROOT is
+# only meaningful in that shape, and its value is whatever YOUR host uses — the
+# paths below are examples, not defaults.
+# SUPERMAN_HOST="user@192.168.x.x"            # SSH target for the rig host
+# SUPERMAN_IP="192.168.x.x"                   # reachable LAN IP of the rig host
+# PROJECTS_ROOT="/srv/projects"               # where that host keeps its repos
+# HERMES_BIN="/home/user/.local/bin/hermes"   # Hermes CLI on the rig host (Coder=hermes only)
 
 # --- Branding (build-preview card; neutral defaults — override per project) -
 # Drives the build-preview skill's card. Defaults are deliberately neutral so a
@@ -45,8 +55,15 @@ BRAND_ACCENT="#3b82f6"                        # accent color (buttons, highlight
 BRAND_BG="#0d1117"                            # card background (dark)
 BRAND_FG="#ffffff"                            # foreground / text
 
-# --- Dev server supervision (bin/dev-server: systemd --user, auto-restart, mem-bounded) -
+# --- Dev server supervision (bin/dev-server) --------------------------------
+# Three backends, picked by what the host offers: systemd --user (Linux),
+# launchd (macOS), or `bare` (nohup + pidfile) when there is no supervisor at
+# all — inside a seat sandbox, say. Bare means NO auto-restart; it says so.
 DEV_BIND="0.0.0.0"                            # bind interface (0.0.0.0 = localhost + LAN, IP-change-safe)
+# DEV_CMD='npm run dev'                       # serve command override (default: the next binary, else
+                                              # the project's dev script). May reference $DEV_PORT /
+                                              # $DEV_BIND — keep SINGLE-quoted so they expand at run time.
+# DEV_BACKEND="bare"                          # force the unsupervised backend anywhere
 DEV_HEAP_MB="4096"                            # node --max-old-space-size for the dev worker
 DEV_MEMMAX="6G"                               # systemd MemoryMax cap (cross-team RAM protection)
 
@@ -116,3 +133,16 @@ PREVIEW_DB_URL=""         # optional Neon READ-ONLY branch for dev/gate (defense
 # BLEND_TESTER="0"
 # Per-seat persistence override (workers are fresh-per-task by default):
 # BLEND_CODER_PERSIST="1"
+
+# --- Concurrent loops (P7-T6) -----------------------------------------------
+# CONCURRENT_LOOPS="1" makes the state machine PER-TASK (task = git branch):
+# task B can build while task A holds at your merge gate. MAX_CONCURRENT_LOOPS
+# caps live tasks (default 2). OFF by default: one loop at a time, as always.
+CONCURRENT_LOOPS="0"
+# MAX_CONCURRENT_LOOPS="2"
+
+# --- Team monitor -----------------------------------------------------------
+# AUTO_REVIVE="1" lets the health monitor relaunch DEAD seats automatically
+# (doubling backoff, hard ceiling 3 per episode, honest "stopping" note). OFF by
+# default: the Relaunch button is the only revive path unless you opt in.
+AUTO_REVIVE="0"

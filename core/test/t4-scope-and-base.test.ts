@@ -70,6 +70,8 @@ test("doctrine pins: scope ack is law on both sides (plan before code, [SCOPE_OK
   const coder = readFileSync(join(ROOT, "config", "coder.md"), "utf8");
   assert.match(coder, /Scope ack first \(P7-T4\)/);
   assert.match(coder, /wait for `\[SCOPE_OK\]`/);
-  assert.match(coder, /Stall guard/);
+  // CE-113: the guard became a LADDER (resend → narrowest reading), and the
+  // outcome is stamped on code_ready. Its own laws live in scope-stamp.test.ts.
+  assert.match(coder, /Stall LADDER/);
   assert.match(coder, /plan UPDATE/);
 });

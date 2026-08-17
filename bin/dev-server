@@ -3,11 +3,16 @@
 # One supervised service per repo, auto-restart, restart-BY-NAME so one team can
 # never broad-`pkill` another team's dev server.
 #
-# P4-7: two backends, picked by platform —
-#   Linux : systemd --user (unchanged: Restart=always, MemoryMax cap, journald logs)
+# Three backends, picked by what the host actually offers —
+#   Linux : systemd --user (Restart=always, MemoryMax cap, journald logs)
 #   macOS : launchd gui domain (KeepAlive, logs to .agents/state/dev-server.log;
 #           heap is bounded via NODE_OPTIONS — launchd has no MemoryMax equivalent,
 #           documented limit)
+#   bare  : nohup + pidfile, when there is NO supervisor at all — a seat sandbox,
+#           or Linux with no user bus (CE-107). Unsupervised: no auto-restart, and
+#           the only bound is the node heap. It exists because "no supervisor" used
+#           to mean "no dev server", inside the wall where the coder lives.
+#           Force it anywhere with DEV_BACKEND=bare.
 # and the serve command is CONF-DRIVEN (de-Next-ified): rig.conf/dev.conf DEV_CMD
 # wins; else the classic Next binary if the project has one; else `npm run dev`.
 #
@@ -24,13 +29,24 @@ PROJ="${2:-${PROJECT_PATH:-$(pwd)}}"
 [ -d "$PROJ" ] || { echo "dev-server: no such dir: $PROJ" >&2; exit 1; }
 PROJ="$(cd "$PROJ" && pwd)"
 
+# An explicit env DEV_PORT is the operator's word — captured BEFORE the conf
+# files are sourced, because `.` would otherwise overwrite it (so the documented
+# "env" layer never actually worked).
+ENV_DEV_PORT="${DEV_PORT:-}"
+
 # layer config (later sources override earlier)
 [ -f "$PROJ/.agents/rig.conf" ] && . "$PROJ/.agents/rig.conf"
 [ -f "$PROJ/.agents/dev.conf" ] && . "$PROJ/.agents/dev.conf"
 
-PORT="${DEV_PORT:-}"
-if [ -z "$PORT" ] && [ -n "${DEV_URL:-}" ]; then PORT="$(printf '%s' "$DEV_URL" | grep -oE ':[0-9]+' | tail -1 | tr -d :)"; fi
+# CE-106: the dev port comes from serve-resolve — the ONE source of truth, shared
+# with preview-tunnel and the gate. This script used to work it out itself, and
+# because it SOURCES dev.conf on top of rig.conf, a stale dev.conf DEV_PORT
+# quietly beat the rig's own sheet. serve-resolve gives rig.conf priority.
+SR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+PORT="$ENV_DEV_PORT"
+[ -z "$PORT" ] && PORT="$(bash "$SR_DIR/serve-resolve" dev "$PROJ" 2>/dev/null | sed -n 's/^PORT=//p')"
 PORT="${PORT:-3000}"
+DEV_PORT="$PORT"   # the serve command may reference $DEV_PORT; keep them identical
 BIND="${DEV_BIND:-0.0.0.0}"
 HEAP="${DEV_HEAP_MB:-4096}"
 MEMMAX="${DEV_MEMMAX:-6G}"
@@ -56,13 +72,18 @@ serve_cmd() {
 }
 
 # Which backend supervises on this host?
+# CE-107: there is ALWAYS a backend. A seat sandbox has neither systemd --user
+# nor launchd, and returning 1 there made the whole tool unusable exactly where
+# the coder needs it — so the last rung is `bare`: unsupervised, but running.
 backend() {
-  if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+  if [ "${DEV_BACKEND:-}" = "bare" ]; then
+    echo bare
+  elif command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
     echo systemd
-  elif [ "$(uname -s)" = "Darwin" ]; then
+  elif [ "$(uname -s)" = "Darwin" ] && launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
     echo launchd
   else
-    echo "dev-server: no supervisor available (need systemd --user or macOS launchd)" >&2; return 1
+    echo bare
   fi
 }
 
@@ -183,8 +204,84 @@ ld_run() {
   esac
 }
 
+# ── bare backend (no supervisor — seat sandboxes, Linux without a user bus) ──
+#    CE-107. Honest about what it is NOT: no auto-restart, no memory cap beyond
+#    the node heap bound. It exists so `dev-server up` works inside the wall,
+#    which is the only place the coder can actually reach.
+ba_dir() {
+  if [ -d "$PROJ/.agents/state" ] && [ -w "$PROJ/.agents/state" ]; then echo "$PROJ/.agents/state"
+  else echo "${TMPDIR:-/tmp}"; fi
+}
+ba_pid_file() { echo "$(ba_dir)/$NAME.pid"; }
+ba_log() { echo "$(ba_dir)/dev-server.log"; }
+ba_pid() { cat "$(ba_pid_file)" 2>/dev/null || true; }
+# Who is LISTENING on our port for this project? The pidfile can go stale (or
+# name a wrapper) — the socket is the ground truth, same test kill_adhoc uses.
+ba_port_pid() {
+  command -v lsof >/dev/null 2>&1 || return 0
+  local pid
+  for pid in $(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null); do
+    if ps -o command= -p "$pid" 2>/dev/null | grep -qF "$PROJ" \
+       || lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | grep -qF "n$PROJ"; then
+      echo "$pid"; return 0
+    fi
+  done
+}
+ba_alive() {
+  local p; p="$(ba_pid)"
+  if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then return 0; fi
+  [ -n "$(ba_port_pid)" ]
+}
+ba_up() {
+  local cmdline log; cmdline="$(serve_cmd)" || exit 1; log="$(ba_log)"
+  ba_alive && { kill "$(ba_pid)" 2>/dev/null || true; sleep 1; }
+  kill_adhoc; sleep 1
+  # setsid where available so the server outlives the shell that started it;
+  # a seat's turn ends, the dev server must not.
+  export NODE_OPTIONS="--max-old-space-size=$HEAP" DEV_PORT="$PORT" DEV_BIND="$BIND"
+  [ -n "${PREVIEW_DB_URL:-}" ] && export POSTGRES_URL="$PREVIEW_DB_URL"
+  # No array here on purpose: `"${arr[@]}"` on an EMPTY array is an unbound-variable
+  # ERROR under `set -u` on bash 3.2 (macOS ships it) — caught live 2026-08-17.
+  if command -v setsid >/dev/null 2>&1; then
+    nohup setsid bash -lc "cd '$PROJ' && exec $cmdline" >"$log" 2>&1 &
+  else
+    nohup bash -lc "cd '$PROJ' && exec $cmdline" >"$log" 2>&1 &
+  fi
+  echo $! > "$(ba_pid_file)"
+  # Wait for the port to actually answer — "started" is not "serving", and a
+  # crash-on-boot must not report UP.
+  local i served=""
+  for i in $(seq 1 30); do
+    if [ -n "$(ba_port_pid)" ]; then served=1; break; fi
+    ba_alive || { echo "dev-server: process died on boot — last log lines:" >&2; tail -n 15 "$log" >&2; exit 1; }
+    sleep 1
+  done
+  # Re-pin the pidfile to whoever actually holds the socket (a wrapper may have
+  # forked); if lsof is unavailable we keep the launch pid and say so.
+  local real; real="$(ba_port_pid)"; [ -n "$real" ] && echo "$real" > "$(ba_pid_file)"
+  if [ -z "$served" ]; then
+    echo "dev-server: started (pid $(ba_pid)) but nothing is LISTENING on $PORT after 30s — logs: $log" >&2
+    exit 1
+  fi
+  echo "UP  $NAME -> $BIND:$PORT (pid $(ba_pid) · heap ${HEAP}MB · BARE: no supervisor on this host, so NO auto-restart · logs: $log)"
+}
+ba_run() {
+  case "$CMD" in
+    install) echo "$NAME: bare backend needs no install (no supervisor on this host); use 'dev-server up'";;
+    up)      ba_up;;
+    down)    if ba_alive; then kill "$(ba_pid)" 2>/dev/null || true; fi; kill_adhoc; rm -f "$(ba_pid_file)"; echo "DOWN $NAME";;
+    restart) ba_up;;
+    status)
+      if ba_alive; then echo "$NAME: running (pid $(ba_pid)) -> $BIND:$PORT · bare, no auto-restart"
+      else echo "$NAME: not running (bare backend; pidfile $(ba_pid_file))"; fi;;
+    logs)    tail -n "${LINES:-40}" "$(ba_log)" 2>/dev/null || echo "(no log at $(ba_log))";;
+    *) echo "usage: dev-server <up|down|restart|status|logs|install> [PROJECT_PATH]" >&2; exit 1;;
+  esac
+}
+
 case "$(backend)" in
   systemd) sd_run;;
   launchd) ld_run;;
+  bare)    ba_run;;
   *) exit 1;;
 esac

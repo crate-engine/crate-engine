@@ -16,6 +16,13 @@ export declare function buildInteractiveInvocation(agentArg: string, opts?: {
 /** The seat's session id as the TTY door should open it. Mirrors the
  * runner's semantics (pi pre-mints so both doors share one session). */
 export declare function ttySessionId(projectRoot: string, seat: string, agentArg: string): string | undefined;
+/** Does this seat have a session a spawn would RESUME (CE-014)?
+ *
+ * Mirrors ttySessionId's acceptance rule — the file exists and names a session
+ * for THIS agent — but is deliberately side-effect free: ttySessionId MINTS an
+ * id for pi, which would make a fresh seat report as resumable and hand a
+ * clean-eyes worker the previous task's scrollback. */
+export declare function hasResumableSession(projectRoot: string, seat: string, agentArg: string): boolean;
 /** Claude Code stores sessions per munged-cwd: non-alphanumerics become "-"
  * (verified against a live ~/.claude/projects). */
 export declare function claudeProjectDir(projectRoot: string, home: string): string;
@@ -101,6 +108,14 @@ export interface TtySeat {
      * streaming = mid-turn, judgment defers to the boundary. */
     outputBytesSince(windowMs: number): number;
 }
+/** The persisted scrollback, tail-capped, or empty when there is none. */
+export declare function readPaneHistory(projectRoot: string, seat: string, cap?: number): Buffer;
+export declare function dropPaneHistory(projectRoot: string, seat: string): void;
+/** A visible seam between what a previous engine process showed and what this
+ * one is showing. Silence here would leave the operator unable to tell restored
+ * history from live output — and mistaking old output for current is exactly
+ * the class of error the redelivery header exists to prevent. */
+export declare function paneResumeBanner(atIso: string): Buffer;
 export declare function liveTty(projectRoot: string, seat: string): TtySeat | undefined;
 /** Every live TTY of one project — the multiplexed stream's roster. */
 export declare function liveTtyList(projectRoot: string): TtySeat[];

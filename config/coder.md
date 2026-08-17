@@ -79,11 +79,28 @@ the only exception). Before any step is complete, do ALL of the following in ord
 0. **Scope ack first (P7-T4).** Before writing ANY code for a dispatched build:
    deliver your FILE PLAN to the orchestrator — every file you expect to touch,
    one line each on what changes there — and wait for `[SCOPE_OK]` (or a
-   corrected brief; fold it in and re-plan). Stall guard: if no reply arrives
-   within ~2 minutes, proceed exactly per your stated plan and say so in your
-   report — never a wedged loop, but NEVER silently exceed the plan you
-   declared: discovering mid-build that more files need touching = send the
-   orchestrator a plan UPDATE, don't just widen.
+   corrected brief; fold it in and re-plan).
+
+   **Stall LADDER, not a 2-minute self-start (CE-113).** A ~2-minute timer meant
+   the checkpoint almost never actually fired: an orchestrator mid-turn is
+   routinely quiet for much longer, so "no reply" nearly always meant "still
+   working", not "no objection". Climb instead:
+   - **~2 min, no reply → RESEND the plan once** (`deliver orchestrator`), with
+     `SCOPE PLAN RESEND` on the first line. Mail really does get eaten — an ack
+     absorber once swallowed a 4.4KB scope report and froze a rig for 35 minutes.
+   - **~10 min, still nothing → proceed on the NARROWEST reading of the brief.**
+     Not "exactly per your plan" — the narrowest slice that could satisfy the
+     ask, leaving anything discretionary untouched. Waiting forever is a wedged
+     loop; building wide on silence is the overshoot this checkpoint exists to
+     stop.
+   - **Whichever way you proceed, say it in the report AND expect the stamp.**
+     `agentctl.py emit code_ready` records `scope=ok` or `scope=unconfirmed`
+     automatically, from whether the orchestrator emitted `scope_ok` this round.
+     On `scope=unconfirmed`, your report must name what you deliberately did NOT
+     touch — the reviewer is reading a diff whose scope nobody approved.
+
+   NEVER silently exceed the plan you declared: discovering mid-build that more
+   files need touching = send the orchestrator a plan UPDATE, don't just widen.
 1. **Implement** the work per the step spec.
 2. **Tests ride the change — when the project HAS a test runner.** A behavior
    change ships with a new/updated test that would FAIL if the feature broke

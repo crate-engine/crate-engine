@@ -18,7 +18,7 @@ import { loadLoadout, loadoutPath, SEATS, type Seat } from "../manifest.js";
 import { discoverPiModels } from "../pidiscovery.js";
 import { loadUserDefaults, orderCatalog, parseRigConf, resolveSeatDetailed, RIG_PREFIX, updateRigStaffing } from "../staffing.js";
 import { appUrlPath, readLastProject, seedDefaultsIfAbsent, tierPaths, updateEngine, writeLastProject } from "../usertier.js";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 export interface GuiState {
   home: string;
@@ -418,6 +418,32 @@ function probePreviewTarget(target: string): Promise<boolean> {
   });
 }
 
+/** CE-014 P0 — DETACHED IS NOT CRASHED.
+ *
+ * One engine per host, so a viewer can ask about a workspace this engine is NOT
+ * bound to. Its seats are genuinely not running, but the honest reason is "the
+ * engine is serving a different workspace", not "your team died". The system
+ * knew this all along (last-project, gui.log) and did not say it: on 2026-08-16
+ * the cockpit rendered five empty "staff this seat" panes, visually identical to
+ * a crash, and cost the operator a morning of misdiagnosis.
+ *
+ * Pure on purpose — the endpoint is a one-liner over this, and the WORDING is
+ * the whole fix, so it is worth pinning directly. */
+export function workspaceDetachment(
+  bound: string | undefined,
+  requested: string,
+): { detached: boolean; boundProject?: string; detachedNote?: string } {
+  if (bound === undefined || resolve(requested) === resolve(bound)) return { detached: false };
+  return {
+    detached: true,
+    boundProject: bound,
+    detachedNote:
+      `this workspace is DETACHED — its seats are not running because this engine is serving ` +
+      `${basename(bound)} instead (one engine per host). Nothing crashed. To bring this team ` +
+      `back: crate open ${requested}`,
+  };
+}
+
 export async function startGuiServer(
   opts: { home?: string; project?: string; detectPath?: string; cliPath?: string } = {},
 ): Promise<GuiServer> {
@@ -562,8 +588,16 @@ export async function startGuiServer(
           // T7-3: the GUI-owned team lifecycle — which seats' runners are alive.
           const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
           const proj = url.searchParams.get("project") ?? state.project;
-          if (!proj) return json(res, 200, { booted: false, seats: [] });
-          return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home)).status());
+          if (!proj) return json(res, 200, { booted: false, seats: [], detached: false });
+          // CE-014 P0 — DETACHED IS NOT CRASHED. One engine per host, so a
+          // viewer can ask about a workspace this engine is NOT bound to. Its
+          // seats are genuinely not running, but the honest reason is "the
+          // engine is serving a different workspace", not "your team died".
+          // The system knew this all along (last-project, gui.log) and did not
+          // say it; five empty "staff this seat" panes cost the operator a
+          // morning on 2026-08-16. Now the answer carries the reason.
+          const st = teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home)).status();
+          return json(res, 200, { ...st, ...workspaceDetachment(state.project, proj) });
         }
         case "POST /api/team/boot": {
           // T7-3: boot the headless team (one supervised runner child per seat).
@@ -1013,7 +1047,15 @@ export async function startGuiServer(
           // loadedSha = what THIS process runs (boot-captured); version = disk
           // truth (drives the update UI). They disagree exactly when a stale
           // survivor is serving — the reattach probe reads loadedSha.
-          return json(res, 200, { ...engineVersion(state.home), loadedSha: state.loadedSha ?? "unknown", pid: process.pid });
+          // CE-014 P1: `project` is here so a switching `crate open` can ask
+          // "what are you bound to, and does it have a live team?" BEFORE it
+          // tears that team down. Without it the caller had to guess.
+          return json(res, 200, {
+            ...engineVersion(state.home),
+            loadedSha: state.loadedSha ?? "unknown",
+            pid: process.pid,
+            project: state.project ?? null,
+          });
         case "POST /api/shutdown": {
           // Pack 3 (stale-reattach, cure 2): the CONFIRMED way down — `crate
           // stop` calls this instead of a blind pkill (the incident's kill

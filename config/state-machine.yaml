@@ -28,8 +28,15 @@
 #                  changes_needed from anyone but the orchestrator, and
 #                  (rig.conf JOIN_ENFORCE=1) until BOTH verdicts are on record
 #                  since the last code_ready. A new code_ready voids verdicts.
+#   scope_ok     : the orchestrator's RECORDED approval of the coder's file plan
+#                  (CE-113) — `emit scope_ok --actor orchestrator task=<branch>`,
+#                  sent alongside the `[SCOPE_OK]` reply. code_ready then stamps
+#                  itself scope=ok or scope=unconfirmed, so a diff whose plan was
+#                  never approved says so on the record instead of reading
+#                  identical to an approved one. A new round (start_impl /
+#                  changes_needed) voids it — last round's plan is not this one's.
 initial: down
-always_legal: checkpoint, gate_pass, gate_release, verdict
+always_legal: checkpoint, gate_pass, gate_release, verdict, scope_ok
 transitions:
   boot: down,checkpointed -> initialized
   start_design: initialized,idle,deployed -> designing

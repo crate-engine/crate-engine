@@ -66,11 +66,26 @@ This is a brain skill (agent-agnostic): the RECIPE below is portable. The
    ```
    QR=$(python3 -c "import segno,io,base64; b=io.BytesIO(); segno.make('<BASE><route>').save(b, kind='png', scale=10, border=2); print('data:image/png;base64,'+base64.b64encode(b.getvalue()).decode())")
    ```
-   One-time install if missing: `pip3 install --user segno`. If segno is unavailable,
-   STOP with that install line as the fix — there is NO fallback. Never render the QR
-   via an external web service: the preview URL is a PRIVATE tunnel address, and
-   shipping it to a third party contradicts safe-by-default (P4-10; doctor checks
-   the QR path at attach).
+   One-time install if missing: `pip3 install --user segno` (the cockpit's attach
+   screen offers this as one click; `crate doctor` flags it).
+
+   **DEGRADE, DON'T FAIL (CE-109).** If segno is unavailable, still SHIP THE CARD —
+   without the QR block, with this line in its place:
+
+   ```html
+   <div class="legend"><b>No QR on this card</b> — the local QR renderer (segno) is not
+   installed on the rig host. Open the URL above on your phone by hand for the mobile
+   test, or install it once with <code>pip3 install --user segno</code> and regenerate.</div>
+   ```
+
+   Then say the same thing in your report. A missing QR costs the operator one
+   copy-paste; refusing to produce the preview at all costs them the whole review —
+   the same degrade-don't-fail rule axe-check follows ("AXE NOT VERIFIED — …", exit 0).
+   The desktop half of the card is unaffected either way.
+
+   **Never render the QR via an external web service**, with or without segno: the
+   preview URL is a PRIVATE tunnel address, and shipping it to a third party
+   contradicts safe-by-default (P4-10). There is no external fallback, by design.
 3. **Write the card** to a temp HTML file, substituting the brand tokens, `<BASE><route>`,
    `$QR`, the title, and the build-note:
    ```html
@@ -101,8 +116,23 @@ This is a brain skill (agent-agnostic): the RECIPE below is portable. The
    </div></body></html>
    ```
    `{TITLE}` defaults to the route path title-cased (`/sell` → "Sell", `/` → "Home").
-4. **Open it for the human** using your adapter's OS open-verb (macOS
-   `open -a "Google Chrome" <file>`; Linux `xdg-open <file>`).
+4. **REGISTER the card — do not try to open a browser (CE-111).**
+
+   ```
+   python3 .agents/bin/agentctl.py preview <BASE><route> --route <route> \
+       --label "<TITLE> — dev test" --from <your seat>
+   ```
+
+   A registered preview rides the cockpit proxy and reaches the operator's own
+   machine, wherever that is. Reaching for a browser from inside a seat cannot
+   work and used to look like a hang: `xdg-open` FATALs on the wall's read-only
+   `~/.config`, and on a headless host there is no display to open onto anyway —
+   the operator's screen is on a different computer. Then point them at it in
+   your report.
+
+   The OS open-verb (`open -a "Google Chrome" <file>` / `xdg-open <file>`) is for
+   the ONE case where you are running unwalled on the operator's own machine with
+   a display. If you are unsure which you are, register — that path always works.
 5. **Tell the operator how to use it**, briefly: scan the QR with his phone, or click
    "Open on this computer" for desktop. If `<BASE>` is the LAN `DEV_URL`, add the
    same-Wi-Fi caveat (the phone must be on the dev host's network); if it is a
@@ -111,7 +141,11 @@ This is a brain skill (agent-agnostic): the RECIPE below is portable. The
 
 ## Why these choices
 - **Local QR** (segno) keeps the card self-contained and never sends the dev URL to a
-  third party; the external API is fallback only.
+  third party. There is deliberately NO external fallback. Until 2026-08-17 this line
+  described a third-party QR API as an acceptable backstop, which directly contradicted
+  step 2 and invited a seat to resolve the conflict by sending a private tunnel URL to
+  someone else's server. Absent segno, the card ships without a QR (step 2) — never
+  with one fetched from a stranger.
 - **Phone must share the dev host's WiFi** — the dev server is a LAN address, not a
   public URL. Always say this; it is the #1 reason a scan "does not load." A configured
   `PREVIEW_URL` (e.g. a tunnel) REMOVES this constraint -- then say "works from anywhere".

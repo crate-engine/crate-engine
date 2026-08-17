@@ -221,6 +221,17 @@ work around them:
 - **Never fake state in the log.** The events log is ground truth. If legal
   transitions cannot honestly represent reality, surface it as a flaw — do not
   emit a false event.
+- **A change spanning two repos is TWO LOOPS, never one (CE-118, Adam's call
+  2026-08-17).** The gate is repo-local by construction: `NMGATE_ENFORCE`, the
+  `gate_pass` record and `gate_ok_for_head()` all live in ONE repo's `.agents`
+  and compare THAT repo's HEAD. So a single loop physically cannot prove both
+  halves are gated — and a loop that claims otherwise is faking state.
+  Compose it as: loop A in repo A, gated and verified and merged on your go;
+  then loop B in repo B, the same. Sequence them when B depends on A's merged
+  code, and say so in the brief. NEVER let one `code_ready` stand for work in a
+  repo the gate never built. If the two-loop split is genuinely painful for some
+  task, that is a flaw to file (BACKLOG #18 holds the companion-repo-gate
+  design) — not a rail to bend.
 - **All verdicts and QA reports go to the ORCHESTRATOR.** No station (Reviewer or
   QA) ever signals the coder directly. Only the orchestrator releases the merge,
   after the human. This forces every verdict through the human gate rather than
@@ -244,9 +255,29 @@ message deserves motion plus an easy steering point — not a form to fill in.
 
 ### (e) Retry tracking — `state/retries.yaml`
 
-Per-project state file (gitignored, checkpoint-captured). The orchestrator updates
-it each round so retry counts and defect streaks survive a recover. Never derive
-this from events.log — this file is the authoritative counter.
+Per-project state file (gitignored, checkpoint-captured). It carries retry counts
+and defect streaks across a recover. Never derive this from events.log — this file
+is the authoritative counter.
+
+**Write it with the command; never hand-edit it (CE-121).** An ad-hoc regex edit
+corrupted this file once (2026-07-04) — structured YAML patched in place is a
+corruption waiting to happen, the same lesson that moved rig.conf writes into
+`conf-set`. `agentctl.py` parses, mutates and re-emits the whole file atomically,
+and refuses typo'd enum values before they can land:
+
+    python3 .agents/bin/agentctl.py retry round <task> --type symptom_brief|surgical|diagnostic \
+        --result changes_needed|approved|bugs_found|abandoned [--sha <sha>] \
+        [--defect "<signature>"] [--escalation none|diagnosing|surgical_applied|human]
+    python3 .agents/bin/agentctl.py retry show [<task>]
+    python3 .agents/bin/agentctl.py retry active <task>
+    python3 .agents/bin/agentctl.py retry resolve <task>
+
+`round` bumps `attempts`/`total_rounds`, appends the history row, and maintains
+`same_defect_streak` from the `--defect` signature you pass: repeat the signature
+to CONTINUE a streak, pass a new one to reset it to 1. At a streak of 3 the command
+itself prints the ladder cue — the escalation decision stays yours, but noticing it
+is no longer something you have to remember. READING the file directly is fine and
+encouraged.
 
 **Schema:**
 
@@ -650,6 +681,16 @@ to the orchestrator (which wakes it). Make this impossible to get wrong:
    CSS + hidden marketing sections): the plan exposes the drift while it is
    still one message, not a diff. Keep the check seconds-fast — you are
    matching the plan against the brief, not reviewing code.
+
+   **RECORD the approval, don't only say it (CE-113).** With the `[SCOPE_OK]`
+   reply, emit it: `python3 .agents/bin/agentctl.py emit scope_ok --actor
+   orchestrator task=<branch>`. The coder's `code_ready` then stamps itself
+   `scope=ok`; without the record it stamps `scope=unconfirmed` and the reviewer
+   sees that the plan behind the diff was never approved. A new round
+   (`start_impl` / `changes_needed`) voids it — re-approve each round's plan.
+   Corollary for you: the coder now RESENDS its plan at ~2 minutes and proceeds
+   on the narrowest reading only after ~10. A resend is not a duplicate to
+   ignore; it means your ack never landed.
 1. **Inject the destination in every brief.** In EVERY dispatch, include the
    rule: "Your FINAL action is to DELIVER your report to the orchestrator
    (`agentctl.py deliver orchestrator --from <role> …`). Printing it in your own

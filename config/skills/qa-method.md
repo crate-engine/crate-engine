@@ -47,6 +47,30 @@ form/field/action — each must produce a plain-words rejection or a safe no-op:
 Absence of an error message IS the bug; the matrix result rides your verdict
 alongside the happy-path result.
 
+### Clicking: an element containing an `<svg>` is INVISIBLE to text locators (CE-108)
+
+Measured against the shipped `agent-browser` 0.31.1, 2026-08-17. If a button or
+link contains an inline `<svg>` — an icon beside its label, which is most modern
+CTAs — **every text- and role-based locator fails to find it**:
+
+    agent-browser find text "Browse Inventory" click        # ✗ Element not found
+    agent-browser find text "Browse" click                  # ✗ (substring is no help)
+    agent-browser find role link click --name "Browse …"    # ✗ (the a11y name misses it too)
+    agent-browser click "text=Browse Inventory"             # ✗
+
+CSS selectors DO reach it — use one:
+
+    agent-browser click "#browse-cta"
+    agent-browser click "a:has(svg)"
+    agent-browser click "nav a[href='/inventory']"
+
+It is not silent: the command prints `✗ Element not found` and exits 1. **Treat
+that as "my locator was wrong", not "the element is missing" — and never as "the
+feature is broken".** Filing a bug against the app because a text locator could
+not see an icon button is a false finding; confirm with `agent-browser snapshot`
+or a CSS click before you write it up. Multi-line text and flex layout are
+innocent; the `<svg>` child is the whole cause.
+
 ## 4. Console after EVERY interactive action (the #2 classic miss)
 
 Page-load console capture (the sweep) does NOT cover actions. After EACH submit /

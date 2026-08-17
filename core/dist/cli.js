@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // crate2 — the 2.0 CLI (Phase 1: up/print/relaunch · Phase 4: setup/update/attach).
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadLoadout, loadoutPath, SEATS } from "./manifest.js";
 import { buildInvocation, toShellCommand } from "./invocation.js";
@@ -23,6 +23,26 @@ async function promptYesNo(question) {
 const HOME = process.env.HOME ?? "";
 /** Dev default engine source = this working clone (gate answer Q3); the
  * product default for Phase 6 is PRODUCT_ENGINE_ORIGIN (see usertier.ts). */
+/** A yes/no at the terminal, for a question whose wrong answer destroys work
+ * (CE-014 P1). No TTY = NO: a piped or CI `crate open` must not silently stop
+ * somebody's live team, and `--stop-others` is the explicit way to say yes. */
+async function confirmTty(question) {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        console.log(`${question}\n  (no terminal to ask — refusing. Re-run with --stop-others to confirm.)`);
+        return false;
+    }
+    process.stdout.write(`${question} [y/N] `);
+    const answer = await new Promise((res) => {
+        const onData = (d) => {
+            process.stdin.pause();
+            process.stdin.off("data", onData);
+            res(d.toString("utf8").trim().toLowerCase());
+        };
+        process.stdin.resume();
+        process.stdin.on("data", onData);
+    });
+    return answer === "y" || answer === "yes";
+}
 function defaultEngineSource() {
     return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 }
@@ -454,12 +474,61 @@ switch (command) {
                     }
                 }
                 if (url && project) {
+                    // ── CE-014 P1: NEVER STOP ANOTHER WORKSPACE'S LIVE TEAM SILENTLY ──
+                    // One engine per host, so switching it to this project stops whatever
+                    // team the OTHER workspace has running. On 2026-08-16 that happened
+                    // with no prompt and no notice: attaching crate-engine-site tore down
+                    // jdm-rush-crate's five live seats, and nothing was lost only because
+                    // the team happened to be parked. Mid-build, that work evaporates.
+                    //
+                    // So: name the casualties and require a yes. --stop-others is the
+                    // deliberate non-interactive form; a pipe with live seats and no flag
+                    // REFUSES rather than guessing, because guessing here destroys work.
+                    const u = new URL(url);
+                    const tok = u.searchParams.get("token") ?? "";
+                    const hdr = { "X-Crate-Token": tok };
+                    let bound;
+                    try {
+                        const v = (await (await fetch(`${u.origin}/api/version`, { headers: hdr, signal: AbortSignal.timeout(8000) })).json());
+                        bound = v.project ?? undefined;
+                    }
+                    catch {
+                        /* an unreachable probe must not block the switch — fail open */
+                    }
+                    if (bound && resolve(bound) !== resolve(project)) {
+                        let live = [];
+                        try {
+                            const st = (await (await fetch(`${u.origin}/api/team/status?project=${encodeURIComponent(bound)}`, {
+                                headers: hdr,
+                                signal: AbortSignal.timeout(8000),
+                            })).json());
+                            live = (st.seats ?? []).filter((x) => x.alive).map((x) => x.seat);
+                        }
+                        catch {
+                            /* same fail-open: unknown is not "none", but we cannot block on a probe */
+                        }
+                        if (live.length > 0) {
+                            const forced = rest.includes("--stop-others") || rest.includes("--force");
+                            console.log(`\ncrate open: this would STOP a live team.\n\n` +
+                                `  ${basename(bound)}  (${bound})\n` +
+                                `  live seats: ${live.join(", ")}\n\n` +
+                                `One engine runs one workspace on this host, so opening ${basename(project)} stops those seats.\n` +
+                                `Their sessions survive — a reopened seat resumes with its scrollback (CE-014 rehydrate) —\n` +
+                                `but any work IN FLIGHT right now is lost.\n`);
+                            const ok = forced || (await confirmTty(`Stop ${live.length} live seat(s) in ${basename(bound)} and open ${basename(project)}?`));
+                            if (!ok) {
+                                console.log(`crate open: cancelled — ${basename(bound)} is untouched.\n` +
+                                    `  To open it instead:      crate open ${bound}\n` +
+                                    `  To go ahead anyway:      crate open ${project} --stop-others`);
+                                break;
+                            }
+                        }
+                    }
                     // already open — switch it to this project (idempotent attach)
                     try {
-                        const u = new URL(url);
                         await fetch(`${u.origin}/api/attach/execute`, {
                             method: "POST",
-                            headers: { "X-Crate-Token": u.searchParams.get("token") ?? "", "Content-Type": "application/json" },
+                            headers: { ...hdr, "Content-Type": "application/json" },
                             body: JSON.stringify({ target: project, create: false }),
                             signal: AbortSignal.timeout(15000),
                         });

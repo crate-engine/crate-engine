@@ -7,6 +7,7 @@ import { accessSync, constants as fsConstants, existsSync, lstatSync, readFileSy
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { agentProblem } from "./detect.js";
+import { resolveDevPorts } from "./devport.js";
 import { deriveBrainRoot, isUnwalledSeat } from "./launcher.js";
 import { loadLoadout, loadoutPath, SEATS } from "./manifest.js";
 import { loadUserDefaults, parseRigConf, resolveSeat } from "./staffing.js";
@@ -149,7 +150,10 @@ export async function runDoctor(projectRoot) {
     // 3 — dev port sanity. Flaw 1 (2026-08-10): probe the rig's ACTUAL DEV_URL
     // and say WHOSE it looks like — the old localhost-only probe green-lit a
     // FOREIGN server when an inherited rig.conf pointed off-rig.
-    const port = conf.DEV_PORT || (conf.DEV_URL ? (conf.DEV_URL.match(/:(\d+)/g)?.pop() ?? ":3000").slice(1) : "3000");
+    // CE-106: ONE resolution, from bin/serve-resolve — this used to be a fourth
+    // independent precedence that never looked at .agents/dev.conf, so a rig could
+    // serve on one port while doctor diagnosed another.
+    const { port } = resolveDevPorts(projectRoot);
     const devUrl = conf.DEV_URL || `http://localhost:${port}/`;
     let devHost = "localhost";
     try {
@@ -241,7 +245,7 @@ export async function runDoctor(projectRoot) {
         : {
             name: "QR generator",
             status: "warn",
-            detail: "the QR maker for phone-preview cards isn't installed yet",
+            detail: "the QR maker for phone-preview cards isn't installed yet — preview cards still ship, minus the QR (CE-109)",
             fix: 'one click: the "One-time seat tooling" box below installs it — or: pip3 install --user segno',
         });
     return results;

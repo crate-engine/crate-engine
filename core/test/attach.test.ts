@@ -13,7 +13,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
   AttachError,
@@ -339,4 +340,35 @@ test("listDirs: the headless-era jail — extra roots browse, the picker STARTS 
 
   const made = makeDir(rigsRoot, "fresh-rig", opts);
   assert.ok(made.path.endsWith("fresh-rig"), "New-folder works inside the projects root");
+});
+
+// ── CE-012: the SHIPPED reference config must not describe someone else's box ──
+// rig.conf.example rides the dist whitelist, so every tester reads it. It had
+// drifted a full generation: cmux-era pane titles (cmux retired in 2.1), a
+// PROJECTS_ROOT hardcoded to one machine's /mnt/data/projects, and four knobs
+// `attach` generates that it never mentioned. `attach` is the generator and the
+// example is the annotated reference — the reference may say MORE, never less,
+// and never anything host-specific outside a commented power-user block.
+test("rig.conf.example: no foreign absolute paths, and every generated key is documented (CE-012)", () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const example = readFileSync(join(root, "rig.conf.example"), "utf8");
+  const attachSrc = readFileSync(join(root, "core", "src", "attach.ts"), "utf8");
+  const template = /const RIG_CONF_LOCAL = `([\s\S]*?)\n`;/.exec(attachSrc)?.[1];
+  assert.ok(template, "the generated rig.conf template is still findable in attach.ts");
+
+  const keys = (s: string): Set<string> =>
+    new Set([...s.matchAll(/^#?\s*([A-Z][A-Z0-9_]+)=/gm)].map((m) => m[1]!));
+  const missing = [...keys(template!)].filter((k) => !keys(example).has(k));
+  assert.deepEqual(missing, [], "keys attach generates but the shipped reference never documents");
+
+  // Host-specific paths belong in the commented remote block, if anywhere.
+  const live = example
+    .split("\n")
+    .filter((l) => !l.trim().startsWith("#") && l.trim() !== "");
+  for (const l of live) {
+    assert.doesNotMatch(l, /\/mnt\/data\//, `a foreign machine's path shipped as a default: ${l}`);
+    assert.doesNotMatch(l, /192\.168\./, `a foreign machine's LAN IP shipped as a default: ${l}`);
+  }
+  // cmux died in 2.1 — its layout keys must not linger in a shipped file.
+  assert.doesNotMatch(example, /WORKSPACE_NAME|WORKSPACE_END|cmux/, "cmux-era keys are gone");
 });

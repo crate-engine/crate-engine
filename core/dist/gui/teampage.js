@@ -59,6 +59,12 @@ body{background:var(--bg);color:var(--fg);font:15.5px/1.55 var(--body);-webkit-f
    engine is offline, never keep rendering the last-known state as if live. */
 .deadbar{display:none;background:#2a1210;border-bottom:1px solid var(--bad);color:var(--bad);font:600 10.5px/1.5 var(--mono);letter-spacing:.14em;text-transform:uppercase;padding:10px 16px;text-align:center;flex:0 0 auto}
 .deadbar code{color:var(--fg);text-transform:none;letter-spacing:0}
+/* CE-014 P0: DETACHED IS NOT CRASHED. Amber, not red — nothing is broken;
+   this engine is simply serving another workspace. The old UI showed five
+   empty 'staff this seat' panes here, visually identical to a crash. */
+.detbar{display:none;background:#2a2210;border-bottom:1px solid var(--amber);color:var(--amber);font:600 10.5px/1.6 var(--mono);letter-spacing:.10em;padding:10px 16px;text-align:center;flex:0 0 auto}
+.detbar code{color:var(--fg);letter-spacing:0}
+body.detached .detbar{display:block}
 body.dead .deadbar{display:block}
 body.dead header,body.dead main{opacity:.4;pointer-events:none}
 header{padding:12px 22px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:16px;flex:0 0 auto}
@@ -1239,6 +1245,17 @@ async function refresh(){
     // can tell UNSTAFFED (invite) from live/dead. The map persists across a
     // failed status poll — a blip must never flip five panes to "unstaffed".
     if(ps&&ps.seats)ps.seats.forEach(x=>{ALIVEMAP[x.seat]={a:x.alive,s:!!x.startedAt};});
+    // CE-014 P0: say WHY the seats are empty. The engine knows (it is bound to
+    // another workspace) and used to keep that to itself — five empty panes read
+    // as a crash and cost the operator a morning on 2026-08-16.
+    if(ps&&ps.detached){
+      document.body.classList.add("detached");
+      const el=document.getElementById("detbar");
+      if(el&&!el.dataset.set){el.dataset.set="1";
+        el.innerHTML='<b>THIS WORKSPACE IS DETACHED — nothing crashed.</b> Its seats are not running because '
+          +'this engine is serving <b>'+esc(ps.boundProject||"another workspace")+'</b> (one engine per host). '
+          +'Bring this team back with <code>crate open '+esc(PROJECT||"&lt;this project&gt;")+'</code>.';}
+    } else { document.body.classList.remove("detached"); }
     (tr.seats||[]).forEach(s=>{const m=ALIVEMAP[s.seat]||{};s._alive=!!m.a;s._started=!!m.s;});
     if(!GATES.length)GATEREL={}; // gate consumed (DEPLOYED) — clear the client-side release memory
     if(!PREVIEWS.length)PVSRC={}; // previews clear at close — a fresh registration re-points the proxy
@@ -2073,6 +2090,7 @@ export function teamPage(view, opts = {}) {
 <style>${VIEW_STYLE}</style></head>
 <body>
 <div class="deadbar" id="deadbar">engine offline — the app server is not responding. Reopen with <code>crate open</code>.</div>
+<div class="detbar" id="detbar"></div>
 <div class="railback" id="railback"></div>
 <aside class="rail" id="rail">
   <div class="railhd"><h3>Workspaces</h3><button class="rx" id="railclose" title="Close">×</button></div>
