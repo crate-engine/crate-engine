@@ -97,6 +97,11 @@ export function routesFromAgentsMd(text: string): string[] {
   const section = text.slice(m.index + m[0].length).split(/^#{1,6}\s/m)[0] ?? "";
   const found = new Set<string>();
   for (const r of section.matchAll(/`(\/[^\s`]*)`/g)) found.add(r[1]!);
+  // CE-130: the prose form `Name (/route)` — the site's own CP1 is written
+  // "Homepage (/)", which the backtick-only parse missed, so the sweep skipped
+  // Critical Path #1 with no warning. Parens whose first character is `/` are
+  // a route; "(see /docs)" and anchor forms "(#crate)" do not match.
+  for (const r of section.matchAll(/\((\/[^\s)]*)\)/g)) found.add(r[1]!);
   return [...found];
 }
 
@@ -195,6 +200,19 @@ const VIEWPORTS = [
 ] as const;
 
 async function main(): Promise<void> {
+  // CE-132: --help must be HELP — this used to fall through into a full
+  // browser sweep that wrote evidence to /tmp (CE-127's disease, second tool).
+  if (process.argv.includes("--help") || process.argv.includes("-h")) {
+    console.log(
+      [
+        "usage: qa-sweep [--project <dir>] [--base <url>] [--routes </a,/b>] [--out <dir>] [--no-filter]",
+        "  Per route × {mobile 390×844, desktop 1280×800}: console errors, responses ≥400,",
+        "  horizontal overflow, full-page screenshot. Routes: --routes, else the project",
+        "  AGENTS.md 'Critical paths' section; base: --base, else rig.conf DEV_URL.",
+      ].join("\n"),
+    );
+    return;
+  }
   const out = arg("--out") ?? "/tmp/qa-sweep";
   const project = arg("--project") ?? ".";
   const base = await resolveBase(arg("--base"), project, "qa-sweep");

@@ -96,3 +96,28 @@ test("isConsoleNoise does NOT swallow real app errors (CE-115)", () => {
   assert.equal(isConsoleNoise("compute-pressure observer threw: TypeError"), false);
 });
 
+
+// ── CE-130: the prose route form `Name (/route)` ────────────────────────────
+// The site's own CP1 is written "Homepage (/)" — backtick-only parsing skipped
+// Critical Path #1 with no warning, and the sweep read as a full pass.
+test("routesFromAgentsMd reads the paren form — 'Homepage (/)' is a route (CE-130)", () => {
+  const md = [
+    "# App",
+    "## Critical Paths",
+    "1. Homepage (/) — loads, hero renders.",
+    "2. Nav anchors — (#crate) scrolls. (see /ignored-not-a-paren-route in prose? no: bare)",
+    "3. Pricing (/pricing) — table renders.",
+    "4. `/get` — rewrite serves the script.",
+  ].join("\n");
+  const got = routesFromAgentsMd(md);
+  assert.ok(got.includes("/"), "CP1's (/) is Critical Path #1 — the exact miss");
+  assert.ok(got.includes("/pricing"), "paren routes with a path parse too");
+  assert.ok(got.includes("/get"), "backticked routes still parse");
+  assert.ok(!got.some((r) => r.startsWith("#")), "anchors (#crate) are not routes");
+  assert.equal(got.length, 3, "nothing else sneaks in");
+});
+
+test("paren parsing is confined to the Critical paths section (CE-130)", () => {
+  const md = ["# App", "intro mentions (/not-critical)", "## Critical Paths", "1. Home (/)", "## Other", "(/also-not)"].join("\n");
+  assert.deepEqual(routesFromAgentsMd(md), ["/"]);
+});

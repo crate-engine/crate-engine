@@ -22,7 +22,14 @@ screenshots. Anything it flags becomes a numbered finding with the JSON as evide
 Drive every `AGENTS.md` Critical Path behaviorally (the sweep's load checks are
 the floor, not the drive): mobile-first (390×844 before desktop), unhappy paths
 included (invalid input must show its plain-words message — absence of an error
-message IS the bug); tap-targets ≥44px and overflow per binder. The accrued
+message IS the bug); tap-targets ≥44px and overflow per binder.
+
+The viewport command is `agent-browser set viewport <w> <h>` (e.g.
+`agent-browser set viewport 390 844`) — note the `set`. CE-133: the bare form
+(`agent-browser viewport …`) errors "Unknown command" but the session KEEPS its
+previous size, so a following screenshot silently captures the wrong width.
+After setting, treat any "Unknown command" from the set as a HARD stop — a
+mobile finding proven at desktop width is not evidence. The accrued
 list is what the team already PROVED — re-prove it first, and LEAD your
 verdict with its result.
 

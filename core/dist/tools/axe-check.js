@@ -15,6 +15,16 @@ function arg(name, def) {
     return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : def;
 }
 async function main() {
+    // CE-132: --help must be HELP, never a real browser run (qa-sweep's fix,
+    // applied here in the same pass — same arg() pattern, same disease).
+    if (process.argv.includes("--help") || process.argv.includes("-h")) {
+        console.log([
+            "usage: axe-check [--project <dir>] [--base <url>] [--routes </a,/b>] [--out <dir>]",
+            "  Runs axe-core accessibility checks per route. Routes: --routes, else the project",
+            "  AGENTS.md 'Critical paths' section; base: --base, else rig.conf DEV_URL.",
+        ].join("\n"));
+        return;
+    }
     const out = arg("--out") ?? "/tmp/axe-check";
     const project = arg("--project") ?? ".";
     const base = await resolveBase(arg("--base"), project, "axe-check");
