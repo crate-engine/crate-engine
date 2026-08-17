@@ -361,6 +361,13 @@ export async function startSeatTty(opts) {
             // same refusal physics. Interactivity and containment are independent.
             const wall = resolveHeadlessWall(projectRoot, seat, agent);
             walled = wall !== undefined;
+            // CE-129: a walled claude cannot persist its own trust answer (its
+            // tmp+rename save shape is unexpressible through a single-file bind),
+            // so the engine seeds it — attach was the operator's trust decision.
+            if (agent === "claude") {
+                const { preseedClaudeProjectTrust } = await import("./sandbox.js");
+                preseedClaudeProjectTrust(opts.home ?? homedir(), projectRoot);
+            }
             const sessionId = ttySessionId(projectRoot, seat, agent);
             const inner = buildInteractiveInvocation(agent, { sessionId, model: opts.model, walled, seat });
             argv = wall ? [...wall.argvPrefix, ...inner] : inner;
@@ -430,8 +437,19 @@ export async function startSeatTty(opts) {
         const prior = readPaneHistory(projectRoot, seat);
         if (prior.length > 0) {
             const banner = paneResumeBanner(localIsoOffset());
-            chunks.push(prior, banner);
-            chunkBytes = prior.length + banner.length;
+            // CE-126 (battle test 2026-08-17): park the restored history fully in
+            // SCROLLBACK before any live output. An ink-style TUI boots by repainting
+            // its frame with cursor-up + erase-line; cursor-up clamps at the viewport
+            // top, so on a fresh terminal the boot repaint climbed ABOVE its own
+            // frame and ate the just-replayed history — the orchestrator pane came
+            // back blank while pane.raw held everything (proven against that ring in
+            // a headless xterm: no pad = history destroyed, pad = history survives).
+            // A viewport of newlines after the banner is a wall the repaint cannot
+            // cross. RING-ONLY: the pad is never mirrored to pane.raw, so restarts
+            // do not stack blank runs into the durable history.
+            const pad = Buffer.from("\r\n".repeat(rows));
+            chunks.push(prior, banner, pad);
+            chunkBytes = prior.length + banner.length + pad.length;
             mirrorBytes = prior.length;
             try {
                 appendFileSync(paneMirror, banner);

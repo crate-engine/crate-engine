@@ -5,7 +5,7 @@
 // Profiles land in the launch runtime dir, never committed.
 // PHASE-8 T6: the swap happened — the same SandboxSpec renders to a bubblewrap
 // argv on Linux (renderBwrapArgs) behind one dispatcher (renderWallPlan).
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
 export class SandboxError extends Error {
 }
@@ -63,6 +63,46 @@ export function stateDoorsFor(agent) {
     if (agent === "codex")
         return ["~/.codex"]; // auth.json, config.toml, sessions, history
     return []; // pi: the templates already carry {{HOME}}/.pi
+}
+/**
+ * CE-129 (battle test 2026-08-17): pre-seed Claude Code's folder-trust for the
+ * attached project so a walled seat never blocks on the interactive dialog.
+ *
+ * WHY the dialog cannot save its own answer inside the wall — claude v2 writes
+ * config as `~/.claude.json.tmp.<pid>.<hash>` then rename()s it over
+ * `~/.claude.json` (strace-proven on Superman). The tmp name matches no door,
+ * and a rename over a single-file bind mount is impossible on Linux regardless
+ * — so every in-wall save silently fails, trust never persists, and each boot
+ * re-asks. An unanswered prompt is a dead seat: deliveries queue durably but
+ * nothing consumes them.
+ *
+ * WHY seeding is legitimate: `crate open`/attach is the operator deliberately
+ * pointing a team at this repo — that IS the trust decision. The engine writes
+ * the same key claude's own dialog writes, atomically, from OUTSIDE the wall.
+ *
+ * Never blocks a spawn: absent config (agent not signed in) or unparseable
+ * JSON → false, untouched. Only ever ADDS `hasTrustDialogAccepted: true` for
+ * this one project root.
+ */
+export function preseedClaudeProjectTrust(home, projectRoot) {
+    const cfg = join(home, ".claude.json");
+    try {
+        const data = JSON.parse(readFileSync(cfg, "utf8"));
+        if (typeof data !== "object" || data === null)
+            return false;
+        const projects = (data.projects ??= {});
+        const entry = (projects[projectRoot] ??= {});
+        if (entry.hasTrustDialogAccepted === true)
+            return false;
+        entry.hasTrustDialogAccepted = true;
+        const tmp = `${cfg}.tmp-crate-${process.pid}`;
+        writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
+        renameSync(tmp, cfg);
+        return true;
+    }
+    catch {
+        return false; // no config / corrupt config — the seat spawns as before
+    }
 }
 const DOORS_MARKER = /^.*\{\{DOORS\}\}.*$/m;
 /**

@@ -147,3 +147,51 @@ export function loadLoadout(brainRoot: string, seat: Seat): Loadout {
 
   return loadout;
 }
+
+// ── CE-117: project-owned ADDITIVE sandbox doors (Adam's ruling 2026-08-17) ──
+// `.agents/config` is a symlink into the shared engine, so before this the ONLY
+// way to give one project's coder a write door was to edit the shared loadout —
+// which opened that door for EVERY rig on the host, with no record of which
+// project asked. `.agents/doors.yaml` is that record: a repo-tracked, per-seat
+// declaration MERGED AFTER the loadout's list. Additive-only by construction —
+// a project can widen its own wall, never narrow one it did not write — and
+// every render PRINTS the project doors, because a silent widening is the
+// failure mode that matters here.
+
+const ProjectDoorsSchema = z
+  .object({ doors: z.record(z.string(), z.array(z.string())).default({}) })
+  .strict();
+
+export function projectDoorsPath(projectRoot: string): string {
+  return join(projectRoot, ".agents", "doors.yaml");
+}
+
+/**
+ * The project's own additive doors for one seat: `doors.all` plus
+ * `doors.<seat>` from `<project>/.agents/doors.yaml`. Absent file → none.
+ * A malformed file is a LOUD ManifestError — a silently ignored typo would
+ * strand a seat behind a wall the operator believes they opened.
+ */
+export function loadProjectDoors(projectRoot: string, seat: Seat): string[] {
+  const file = projectDoorsPath(projectRoot);
+  if (!existsSync(file)) return [];
+
+  let raw: unknown;
+  try {
+    raw = parse(readFileSync(file, "utf8"));
+  } catch (e) {
+    throw new ManifestError(`${file} is not valid YAML: ${e instanceof Error ? e.message : e}`);
+  }
+  const parsed = ProjectDoorsSchema.safeParse(raw);
+  if (!parsed.success) throw new ManifestError(plainWords(file, parsed.error));
+
+  const valid = new Set<string>([...SEATS, "all"]);
+  for (const k of Object.keys(parsed.data.doors)) {
+    if (!valid.has(k)) {
+      throw new ManifestError(
+        `${file}: unknown seat "${k}" — seats are ${SEATS.join(", ")}, plus "all" for every seat`,
+      );
+    }
+  }
+  return [...(parsed.data.doors["all"] ?? []), ...(parsed.data.doors[seat] ?? [])];
+}

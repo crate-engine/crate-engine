@@ -107,6 +107,13 @@ dev_resolve() {
   if [ -f "$PROJ/package.json" ] && grep -q '"dev"[[:space:]]*:' "$PROJ/package.json" 2>/dev/null; then
     emit dev "npm run dev"; return 0
   fi
+  # Static rung (battle test 2026-08-17): a plain-HTML project (crate-engine-site)
+  # has no DEV_CMD, no next, no dev script — but the tree IS the artifact, so the
+  # honest dev server is the same static-serve the gate's smoke rung already uses.
+  # Before this, `dev-server up` on such a repo could only error "set DEV_CMD".
+  if [ -f "$PROJ/index.html" ]; then
+    emit static "node \"$SCRIPT_DIR/static-serve.js\" \$DEV_PORT ."; return 0
+  fi
   emit none ""
 }
 

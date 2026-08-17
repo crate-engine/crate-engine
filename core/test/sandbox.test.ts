@@ -258,3 +258,57 @@ test("stateDoorsFor: claude-code gets its state doors, pi rides the template", a
     assert.ok(text.includes(`(subpath "${p}")`), `door ${p}`);
   }
 });
+
+// ── CE-129: pre-seeded folder trust (attach IS the trust decision) ──────────
+// A walled claude cannot persist its own trust answer: its save shape is
+// tmp+rename over ~/.claude.json (strace-proven), unexpressible through a
+// single-file bind — so the engine seeds the key claude's dialog would write.
+import { preseedClaudeProjectTrust } from "../src/sandbox.js";
+
+function mkHome(cfg?: unknown): string {
+  const home = mkdtempSync(join(tmpdir(), "crate2-trust-"));
+  if (cfg !== undefined)
+    writeFileSync(join(home, ".claude.json"), typeof cfg === "string" ? cfg : JSON.stringify(cfg, null, 2));
+  return home;
+}
+
+test("seeds hasTrustDialogAccepted for the project, atomically, preserving the rest (CE-129)", () => {
+  const home = mkHome({ numStartups: 42, projects: { "/other/rig": { hasTrustDialogAccepted: true, history: [1] } } });
+  assert.equal(preseedClaudeProjectTrust(home, "/mnt/rigs/site"), true);
+  const got = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"));
+  assert.equal(got.projects["/mnt/rigs/site"].hasTrustDialogAccepted, true, "the new project is trusted");
+  assert.equal(got.numStartups, 42, "unrelated config survives");
+  assert.deepEqual(got.projects["/other/rig"], { hasTrustDialogAccepted: true, history: [1] }, "other projects untouched");
+  assert.ok(!existsSync(join(home, ".claude.json.tmp-crate-" + process.pid)), "no tmp file left behind");
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("already-trusted project is a no-op — false, file untouched (CE-129)", () => {
+  const home = mkHome({ projects: { "/mnt/rigs/site": { hasTrustDialogAccepted: true } } });
+  const before = readFileSync(join(home, ".claude.json"), "utf8");
+  assert.equal(preseedClaudeProjectTrust(home, "/mnt/rigs/site"), false);
+  assert.equal(readFileSync(join(home, ".claude.json"), "utf8"), before, "byte-identical");
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("absent config = not signed in — false, nothing created (CE-129)", () => {
+  const home = mkHome();
+  assert.equal(preseedClaudeProjectTrust(home, "/mnt/rigs/site"), false);
+  assert.ok(!existsSync(join(home, ".claude.json")), "the engine must not conjure a config claude has not made");
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("corrupt config is left exactly as found — never block a spawn, never 'repair' (CE-129)", () => {
+  const home = mkHome("{not json at all");
+  assert.equal(preseedClaudeProjectTrust(home, "/mnt/rigs/site"), false);
+  assert.equal(readFileSync(join(home, ".claude.json"), "utf8"), "{not json at all");
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("a project entry claude already started (no trust key yet) gains ONLY the key (CE-129)", () => {
+  const home = mkHome({ projects: { "/mnt/rigs/site": { projectOnboardingSeenCount: 3 } } });
+  assert.equal(preseedClaudeProjectTrust(home, "/mnt/rigs/site"), true);
+  const got = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"));
+  assert.deepEqual(got.projects["/mnt/rigs/site"], { projectOnboardingSeenCount: 3, hasTrustDialogAccepted: true });
+  rmSync(home, { recursive: true, force: true });
+});

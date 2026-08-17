@@ -155,3 +155,11 @@ export declare function loadoutPath(brainRoot: string, seat: Seat): string;
  * Every failure is a ManifestError whose message says what to fix, in plain words.
  */
 export declare function loadLoadout(brainRoot: string, seat: Seat): Loadout;
+export declare function projectDoorsPath(projectRoot: string): string;
+/**
+ * The project's own additive doors for one seat: `doors.all` plus
+ * `doors.<seat>` from `<project>/.agents/doors.yaml`. Absent file → none.
+ * A malformed file is a LOUD ManifestError — a silently ignored typo would
+ * strand a seat behind a wall the operator believes they opened.
+ */
+export declare function loadProjectDoors(projectRoot: string, seat: Seat): string[];

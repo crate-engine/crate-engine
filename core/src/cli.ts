@@ -338,14 +338,24 @@ switch (command) {
     break;
   }
   case "open": {
+    // CE-127 (battle test 2026-08-17): parse LOUDLY before doing anything.
+    // `open` used to read only --project and silently swallow the rest — a
+    // bare positional path (the form the DETACHED banner and the P1 guard's
+    // cancel message prescribe) fell through to the cwd project, so the guard
+    // compared the wrong target; --help executed instead of printing usage.
+    const { parseOpenArgs, OPEN_USAGE } = await import("./openargs.js");
+    const parsed = parseOpenArgs(rest);
+    if (parsed.kind === "help") {
+      console.log(OPEN_USAGE);
+      break;
+    }
+    if (parsed.kind === "error") fail(`crate open: ${parsed.message}\n${OPEN_USAGE}`);
     // crate open --remote <ssh-host> — the Mac side of the Linux headless
     // server (PDR dev/pdr/linux-headless-server.md): ensure the app is up on
     // the host (its own `crate open` headless-boots and writes ~/.crate/app-url),
     // tunnel its loopback port here, open the local ⚡ window on the tunnel.
-    const rIdx = rest.indexOf("--remote");
-    if (rIdx !== -1) {
-      const host = rest[rIdx + 1];
-      if (!host || host.startsWith("--")) fail("crate open --remote <ssh-host> — the ssh host is missing.");
+    if (parsed.kind === "remote") {
+      const host: string = parsed.host;
       const { execFile } = await import("node:child_process");
       const { promisify } = await import("node:util");
       const sh = promisify(execFile);
@@ -404,15 +414,20 @@ switch (command) {
     // the GUI server headless, open the chromeless ⚡ app window, boot the team.
     // cmux was retired in 2.1 (T8) — this is the only boot path.
     const { appUrlPath, projectAt } = await import("./usertier.js");
-    const { mkdtempSync, readFileSync: rf, existsSync: ex } = await import("node:fs");
+    const { mkdtempSync, readFileSync: rf, existsSync: ex, statSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const home = process.env.HOME ?? "";
-    const pIdx0 = rest.indexOf("--project");
-    // Project resolution (run #13): explicit flag → the project you're
+    // Project resolution (run #13, CE-127): explicit target (positional or
+    // --project — parseOpenArgs guarantees they agree) → the project you're
     // STANDING IN (cd my-app && crate open — the multi-rig-safe anchor) →
-    // else the gui falls back to the last attached project.
-    const project = pIdx0 !== -1 ? resolve(rest[pIdx0 + 1] ?? ".") : projectAt(process.cwd());
-    if (project && pIdx0 === -1) console.log(`crate open: opening the project here — ${project}`);
+    // else the gui falls back to the last attached project. An explicit
+    // target that does not exist on disk is a loud error, never a fallback.
+    const explicit = parsed.kind === "local" && parsed.project ? resolve(parsed.project) : undefined;
+    if (explicit && !(ex(explicit) && statSync(explicit).isDirectory()))
+      fail(`crate open: no such project directory — ${explicit}`);
+    const project = explicit ?? projectAt(process.cwd());
+    if (project && !explicit) console.log(`crate open: opening the project here — ${project}`);
+    if (explicit) console.log(`crate open: opening ${explicit}`);
     const appAlive = async (): Promise<string | undefined> => {
       const f = appUrlPath(home);
       if (!ex(f)) return undefined;

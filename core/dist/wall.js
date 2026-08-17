@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { loadLoadout, loadoutPath } from "./manifest.js";
+import { loadLoadout, loadoutPath, loadProjectDoors } from "./manifest.js";
 import { renderWallPlan, specFromLoadout, stateDoorsFor } from "./sandbox.js";
 /** Harnesses that may NEVER run unwalled (their approvals are bypassed). */
 const WALL_REQUIRED = { claude: "claude-code", codex: "codex" };
@@ -104,6 +104,16 @@ export function resolveHeadlessWall(projectRoot, seatArg, agentArg, opts = {}) {
     }
     const spec = specFromLoadout(loadout);
     spec.doors = [...spec.doors, ...stateDoorsFor(WALL_REQUIRED[agent] ?? agent)];
+    // CE-117 (Adam's ruling 2026-08-17): a project may WIDEN its own wall —
+    // additive doors from <project>/.agents/doors.yaml, merged AFTER the
+    // loadout's list (never replacing it), and always printed below: a silent
+    // widening is the failure mode that matters. A malformed doors.yaml throws
+    // in plain words rather than being silently ignored.
+    const projDoors = loadProjectDoors(projectRoot, seat);
+    if (projDoors.length > 0) {
+        spec.doors = [...spec.doors, ...projDoors];
+        console.warn(`[wall] ${seat}: PROJECT doors (additive, from .agents/doors.yaml): ${projDoors.join("  ")}`);
+    }
     const home = opts.home ?? homedir();
     const paths = { brainRoot: brainRoot, projectRoot: realpathSync(projectRoot), home };
     const outDir = mkdtempSync(join(tmpdir(), "crate-wall-"));

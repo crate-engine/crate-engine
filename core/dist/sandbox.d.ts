@@ -44,6 +44,27 @@ export declare function renderDoor(door: string, paths: SandboxPaths): string;
  */
 export declare function stateDoorsFor(agent: string): string[];
 /**
+ * CE-129 (battle test 2026-08-17): pre-seed Claude Code's folder-trust for the
+ * attached project so a walled seat never blocks on the interactive dialog.
+ *
+ * WHY the dialog cannot save its own answer inside the wall — claude v2 writes
+ * config as `~/.claude.json.tmp.<pid>.<hash>` then rename()s it over
+ * `~/.claude.json` (strace-proven on Superman). The tmp name matches no door,
+ * and a rename over a single-file bind mount is impossible on Linux regardless
+ * — so every in-wall save silently fails, trust never persists, and each boot
+ * re-asks. An unanswered prompt is a dead seat: deliveries queue durably but
+ * nothing consumes them.
+ *
+ * WHY seeding is legitimate: `crate open`/attach is the operator deliberately
+ * pointing a team at this repo — that IS the trust decision. The engine writes
+ * the same key claude's own dialog writes, atomically, from OUTSIDE the wall.
+ *
+ * Never blocks a spawn: absent config (agent not signed in) or unparseable
+ * JSON → false, untouched. Only ever ADDS `hasTrustDialogAccepted: true` for
+ * this one project root.
+ */
+export declare function preseedClaudeProjectTrust(home: string, projectRoot: string): boolean;
+/**
  * Render a seat's profile text from the brain's template. Returns undefined
  * for `sandbox: none` (no wrap). Doors from the manifest expand at the
  * template's `{{DOORS}}` marker line; a doorless render strips the marker.

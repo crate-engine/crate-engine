@@ -104,6 +104,43 @@ kill_adhoc() {
   fi
 }
 
+# ── shared state (CE-128) ────────────────────────────────────────────────────
+# The server's lifetime spans invocations, but DEV_BACKEND is per-invocation:
+# a bare `up` followed by a plain `down` on a systemd host stopped a unit that
+# does not exist, printed DOWN, and left the server serving. So the backend
+# that did the `up` is RECORDED next to the pidfile, later commands honor the
+# record, and DOWN is a claim about the PORT — verified, never assumed.
+st_dir() {
+  if [ -d "$PROJ/.agents/state" ] && [ -w "$PROJ/.agents/state" ]; then echo "$PROJ/.agents/state"
+  else echo "${TMPDIR:-/tmp}"; fi
+}
+backend_marker() { echo "$(st_dir)/$NAME.backend"; }
+# Who is LISTENING on our port for this project? Pidfiles and unit names can
+# go stale — the socket is the ground truth.
+port_holder() {
+  command -v lsof >/dev/null 2>&1 || return 0
+  local pid
+  for pid in $(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null); do
+    if ps -o command= -p "$pid" 2>/dev/null | grep -qF "$PROJ" \
+       || lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | grep -qF "n$PROJ"; then
+      echo "$pid"; return 0
+    fi
+  done
+}
+# Runs after EVERY down, whichever backend handled it: sweep ad-hoc strays,
+# then refuse to say DOWN while something of ours still listens.
+down_seal() {
+  kill_adhoc
+  rm -f "$(backend_marker)"
+  local i p=""
+  for i in 1 2 3 4 5; do p="$(port_holder)"; [ -z "$p" ] && break; sleep 1; done
+  if [ -n "$p" ]; then
+    echo "dev-server: down FAILED — pid $p still LISTENS on $PORT for $(basename "$PROJ") (backend: $B). Inspect: ps -p $p" >&2
+    exit 1
+  fi
+  echo "DOWN $NAME"
+}
+
 # ── systemd backend (Linux — unchanged behavior) ─────────────────────────────
 sd_unit() { echo "$HOME/.config/systemd/user/$NAME.service"; }
 sd_write() {
@@ -139,7 +176,7 @@ sd_run() {
   case "$CMD" in
     install) sd_write; systemctl --user enable "$NAME" >/dev/null 2>&1 || true; echo "installed $NAME (port $PORT · heap ${HEAP}MB · MemoryMax $MEMMAX)";;
     up)      sd_write; systemctl --user stop "$NAME" 2>/dev/null || true; kill_adhoc; sleep 1; systemctl --user enable --now "$NAME"; echo "UP  $NAME -> $BIND:$PORT (heap ${HEAP}MB · MemoryMax $MEMMAX)";;
-    down)    systemctl --user disable --now "$NAME" 2>/dev/null || true; echo "DOWN $NAME";;
+    down)    systemctl --user disable --now "$NAME" 2>/dev/null || true;;  # down_seal verifies + prints (CE-128)
     restart) systemctl --user restart "$NAME"; echo "restarted $NAME";;
     status)  systemctl --user --no-pager status "$NAME" 2>&1 | head -14 || true;;
     logs)    journalctl --user -u "$NAME" --no-pager -n "${LINES:-40}" 2>&1 || true;;
@@ -192,8 +229,7 @@ ld_run() {
       ;;
     down)
       launchctl bootout "gui/$LD_UID/$NAME" 2>/dev/null || true
-      echo "DOWN $NAME"
-      ;;
+      ;;  # down_seal verifies + prints (CE-128)
     restart) launchctl kickstart -k "gui/$LD_UID/$NAME" && echo "restarted $NAME";;
     status)
       launchctl print "gui/$LD_UID/$NAME" 2>/dev/null | grep -E "state|pid|last exit" | head -6 \
@@ -208,25 +244,12 @@ ld_run() {
 #    CE-107. Honest about what it is NOT: no auto-restart, no memory cap beyond
 #    the node heap bound. It exists so `dev-server up` works inside the wall,
 #    which is the only place the coder can actually reach.
-ba_dir() {
-  if [ -d "$PROJ/.agents/state" ] && [ -w "$PROJ/.agents/state" ]; then echo "$PROJ/.agents/state"
-  else echo "${TMPDIR:-/tmp}"; fi
-}
+ba_dir() { st_dir; }
 ba_pid_file() { echo "$(ba_dir)/$NAME.pid"; }
 ba_log() { echo "$(ba_dir)/dev-server.log"; }
 ba_pid() { cat "$(ba_pid_file)" 2>/dev/null || true; }
-# Who is LISTENING on our port for this project? The pidfile can go stale (or
-# name a wrapper) — the socket is the ground truth, same test kill_adhoc uses.
-ba_port_pid() {
-  command -v lsof >/dev/null 2>&1 || return 0
-  local pid
-  for pid in $(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null); do
-    if ps -o command= -p "$pid" 2>/dev/null | grep -qF "$PROJ" \
-       || lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | grep -qF "n$PROJ"; then
-      echo "$pid"; return 0
-    fi
-  done
-}
+# Who is LISTENING on our port for this project? Shared truth (CE-128).
+ba_port_pid() { port_holder; }
 ba_alive() {
   local p; p="$(ba_pid)"
   if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then return 0; fi
@@ -269,7 +292,7 @@ ba_run() {
   case "$CMD" in
     install) echo "$NAME: bare backend needs no install (no supervisor on this host); use 'dev-server up'";;
     up)      ba_up;;
-    down)    if ba_alive; then kill "$(ba_pid)" 2>/dev/null || true; fi; kill_adhoc; rm -f "$(ba_pid_file)"; echo "DOWN $NAME";;
+    down)    if ba_alive; then kill "$(ba_pid)" 2>/dev/null || true; fi; kill_adhoc; rm -f "$(ba_pid_file)";;  # down_seal verifies + prints (CE-128)
     restart) ba_up;;
     status)
       if ba_alive; then echo "$NAME: running (pid $(ba_pid)) -> $BIND:$PORT · bare, no auto-restart"
@@ -279,9 +302,21 @@ ba_run() {
   esac
 }
 
-case "$(backend)" in
+# CE-128: `up`/`install` choose a backend fresh (env + host detection) and
+# RECORD it; every later command prefers the record over today's auto-detect,
+# so a bare `up` is never followed by a systemd `down` that no-ops in silence.
+B="$(backend)"
+if [ "$CMD" != "up" ] && [ "$CMD" != "install" ]; then
+  REC="$(cat "$(backend_marker)" 2>/dev/null || true)"
+  case "$REC" in systemd|launchd|bare) B="$REC";; esac
+fi
+case "$B" in
   systemd) sd_run;;
   launchd) ld_run;;
   bare)    ba_run;;
   *) exit 1;;
+esac
+case "$CMD" in
+  up|restart) echo "$B" > "$(backend_marker)" 2>/dev/null || true;;
+  down)       down_seal;;
 esac

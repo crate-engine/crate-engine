@@ -137,6 +137,34 @@ test("a dropped session.json drops the pane with it (the D12 refresh path, CE-01
   evictSeatTty(rig, "coder");
 });
 
+test("restored history is parked BEHIND a viewport of padding — a booting TUI's cursor-up repaint cannot reach it (CE-126)", async () => {
+  const rig = mkRig("pad");
+  seedSession(rig, "coder");
+  seedPane(rig, "coder", "PREVIOUS TASK OUTPUT");
+  const r = await startSeatTty({
+    projectRoot: rig,
+    seat: "coder" as never,
+    agent: "claude",
+    blended: true,
+    rows: 7,
+    argvOverride: STUB,
+  });
+  assert.ok(r.ok, `stub spawn failed: ${JSON.stringify(r)}`);
+  await new Promise((res) => setTimeout(res, 250));
+  const replay = r.ok ? r.tty.replay().toString("utf8") : "";
+  const seam = replay.indexOf("session restored");
+  const live = replay.indexOf("live output");
+  assert.ok(seam >= 0 && live > seam, "history seam precedes live output");
+  const between = replay.slice(seam, live);
+  assert.ok((between.match(/\r\n/g) ?? []).length >= 7,
+    "at least a viewport (rows) of newlines separates the seam from live output — " +
+    "cursor-up clamps at the viewport top, so the pad is a wall the boot repaint cannot climb");
+  // The pad is RING-ONLY: pane.raw must not accumulate blank runs per restart.
+  assert.doesNotMatch(readPaneHistory(rig, "coder").toString("utf8"), /(?:\r\n){7}/,
+    "the mirror file carries history + banner + live output, never the replay padding");
+  evictSeatTty(rig, "coder");
+});
+
 test("the mirror is written for blended seats so the NEXT process can repaint (CE-014)", async () => {
   const rig = mkRig("mirror");
   seedSession(rig, "coder");
