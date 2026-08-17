@@ -14,7 +14,10 @@ cli_deps:
   - name: git
     check: command -v git
   - name: playwright-browsers
-    check: ls "$HOME/Library/Caches/ms-playwright" | grep -q chrom
+    # CE-134: BOTH cache roots — ~/Library/Caches on macOS, ~/.cache on Linux.
+    # The mac-only path made this check unpassable on a Linux host: install
+    # succeeded into ~/.cache/ms-playwright, the check looked elsewhere forever.
+    check: ls "$HOME/Library/Caches/ms-playwright" 2>/dev/null | grep -q chrom || ls "$HOME/.cache/ms-playwright" 2>/dev/null | grep -q chrom
     install: npx playwright-core install chromium-headless-shell
     heavy: true
     why: how your Designer seat looks at the real app (screenshots of the pages it styles)
