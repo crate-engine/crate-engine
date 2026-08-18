@@ -50,6 +50,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
   /// Backlog 11: the View menu's panel items stay DISABLED until the cockpit
   /// page is actually loaded (error/boot screens have no panels to open).
   var cockpitReady = false
+  /// THE FLEET RAIL (PDR fleet-rail): the LOCAL hub engine's tokened door.
+  /// The window is the multiplexer — the Fleet menu reads the hub's
+  /// /api/fleet and swaps this webview between engine cockpits. Set once
+  /// the hub answers; nil = the Fleet menu says so instead of hanging.
+  var hubURL: URL?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     let frame = NSRect(x: 0, y: 0, width: 1440, height: 900)
@@ -98,6 +103,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
 
     DispatchQueue.global(qos: .userInitiated).async { [self] in
       let result = launchEngine(remote: remote)
+      // FLEET (PDR fleet-rail): the LOCAL engine is the fleet brain — ensure
+      // it is up even when the window points at a remote (a bare local open
+      // boots no teams since the lifecycle ship, so this is cheap). The hub
+      // feeds the Fleet menu regardless of where the glass looks.
+      if remote.isEmpty {
+        if case .success(let url) = result { DispatchQueue.main.async { self.hubURL = url } }
+      } else {
+        DispatchQueue.global(qos: .utility).async { [self] in
+          if case .success(let url) = launchEngine(remote: "") {
+            DispatchQueue.main.async { self.hubURL = url }
+          }
+        }
+      }
       DispatchQueue.main.async { [self] in
         switch result {
         case .success(let url):
@@ -373,6 +391,105 @@ final class PanelActions: NSObject, NSMenuItemValidation {
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { cockpit() != nil }
 }
 
+// THE FLEET RAIL, F2 (PDR fleet-rail, Adam's option A): the WINDOW is the
+// multiplexer. A native Fleet menu, rebuilt each time it opens from the
+// LOCAL hub's /api/fleet (cache-first server-side, so this stays instant),
+// lists every host's workspaces — "name · 5 live / parked" — and a click
+// swaps the webview to that workspace's cockpit (local or tunneled). An
+// asleep host is a calm row with Connect; engine skew carries an amber ⚠
+// pointing at the Update menu's existing fan-out. The menu never hangs:
+// the fetch is capped at 1.2s and a silent hub degrades to one honest row.
+final class FleetActions: NSObject, NSMenuDelegate {
+  static let shared = FleetActions()
+
+  private func hubFleetURL(_ path: String) -> URL? {
+    guard let d = NSApp.delegate as? AppDelegate, let hub = d.hubURL,
+      let comps = URLComponents(url: hub, resolvingAgainstBaseURL: false),
+      let token = comps.queryItems?.first(where: { $0.name == "token" })?.value
+    else { return nil }
+    return URL(string: "http://127.0.0.1:\(comps.port ?? 0)\(path)?token=\(token)")
+  }
+
+  private func fetchJSON(_ url: URL, method: String = "GET", body: Data? = nil, timeout: Double) -> [String: Any]? {
+    var req = URLRequest(url: url, timeoutInterval: timeout)
+    req.httpMethod = method
+    if let b = body {
+      req.httpBody = b
+      req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    }
+    var out: [String: Any]?
+    let sem = DispatchSemaphore(value: 0)
+    URLSession.shared.dataTask(with: req) { data, _, _ in
+      if let d = data { out = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] }
+      sem.signal()
+    }.resume()
+    _ = sem.wait(timeout: .now() + timeout)
+    return out
+  }
+
+  func menuNeedsUpdate(_ menu: NSMenu) {
+    menu.removeAllItems()
+    guard let url = hubFleetURL("/api/fleet") else {
+      menu.addItem(withTitle: "fleet brain starting — the local engine is not up yet", action: nil, keyEquivalent: "")
+      return
+    }
+    guard let fleet = fetchJSON(url, timeout: 1.2), let hosts = fleet["hosts"] as? [[String: Any]] else {
+      menu.addItem(withTitle: "fleet brain unreachable — is the local engine up?", action: nil, keyEquivalent: "")
+      return
+    }
+    for host in hosts {
+      let name = host["host"] as? String ?? "?"
+      let state = host["state"] as? String ?? "unknown"
+      let skew = host["skew"] as? Bool ?? false
+      let header = NSMenuItem(title: "\(name)\(skew ? "  ⚠ engine differs — Update menu fans out" : "")", action: nil, keyEquivalent: "")
+      header.isEnabled = false
+      menu.addItem(header)
+      let workspaces = host["workspaces"] as? [[String: Any]] ?? []
+      if state == "connected" || host["local"] as? Bool == true {
+        if workspaces.isEmpty {
+          menu.addItem(withTitle: "   no workspaces yet", action: nil, keyEquivalent: "")
+        }
+        for w in workspaces {
+          let live = w["liveSeats"] as? Int ?? 0
+          let desired = w["desired"] as? String
+          let stateLabel = live > 0 ? "\(live) live" : (desired == "running" ? "resuming" : "parked")
+          let item = NSMenuItem(
+            title: "   \(w["name"] as? String ?? "?") · \(stateLabel)",
+            action: #selector(switchTo(_:)), keyEquivalent: "")
+          item.target = self
+          item.representedObject = w["url"] as? String
+          menu.addItem(item)
+        }
+      } else {
+        // asleep/failed/unknown/connecting: one calm row; click = Connect
+        let note = host["note"] as? String ?? state
+        let item = NSMenuItem(title: "   \(note) — Connect", action: #selector(connectHost(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = name
+        menu.addItem(item)
+      }
+      menu.addItem(NSMenuItem.separator())
+    }
+  }
+
+  @objc func switchTo(_ sender: NSMenuItem) {
+    guard let s = sender.representedObject as? String, let url = URL(string: s),
+      let d = NSApp.delegate as? AppDelegate
+    else { return }
+    d.webView.load(URLRequest(url: url)) // a pure view swap — lifecycle untouched
+  }
+
+  @objc func connectHost(_ sender: NSMenuItem) {
+    guard let host = sender.representedObject as? String,
+      let url = hubFleetURL("/api/fleet/connect"),
+      let body = try? JSONSerialization.data(withJSONObject: ["host": host])
+    else { return }
+    DispatchQueue.global(qos: .userInitiated).async { [self] in
+      _ = fetchJSON(url, method: "POST", body: body, timeout: 150) // dial + boot can take a while; reopen the menu when done
+    }
+  }
+}
+
 // Minimal real menus — copy/paste and Cmd-Q must work inside the cockpit
 // (and inside TUI panes). Without an Edit menu, WKWebView eats shortcuts.
 let mainMenu = NSMenu()
@@ -411,6 +528,11 @@ let studioMenuItem = NSMenuItem(title: "Design Studio", action: #selector(PanelA
 studioMenuItem.target = PanelActions.shared
 viewMenu.addItem(studioMenuItem)
 viewItem.submenu = viewMenu
+let fleetItem = NSMenuItem(); mainMenu.addItem(fleetItem)
+let fleetMenu = NSMenu(title: "Fleet")
+fleetMenu.delegate = FleetActions.shared // rows rebuilt from /api/fleet each open
+fleetMenu.autoenablesItems = false
+fleetItem.submenu = fleetMenu
 let updateItem = NSMenuItem(); mainMenu.addItem(updateItem)
 let updateMenu = NSMenu(title: "Update")
 let updNowItem = NSMenuItem(title: "Update Engine Now", action: #selector(PanelActions.updateNow(_:)), keyEquivalent: "u")

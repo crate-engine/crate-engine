@@ -112,9 +112,13 @@ test("boot marks the record running again (the record follows intent, not accide
 });
 
 test("RESTART-RESUME: a fresh server boots exactly what the record says — running resumes, parked stays parked", async () => {
-  // simulate the engine dying: teams stop, records survive (bare shutdown never rewrites them)
+  // simulate the engine dying: teams stop, records survive (bare shutdown
+  // never rewrites them). AWAIT the close — its handler runs the global
+  // stopAllTeams, and in this shared test process a deferred close landing
+  // after the new server's resume would kill the very teams it booted
+  // (production runs one server per process; only the simulation races).
   stopAllTeams();
-  gui.server.close();
+  await new Promise((r) => gui.server.close(r));
   gui = await startGuiServer({ home: HOME, seatSpawner: stub });
   const stB = await call("GET", `/api/team/status?project=${encodeURIComponent(B)}`);
   assert.equal(stB.body.seats.filter((s: any) => s.alive).length, 5, "desired-running beta came back by itself");
@@ -172,6 +176,18 @@ test("the rail's glass reads the record: live seat counts, parked, resuming", ()
   assert.match(fn, /w\.liveSeats>0/, "Running shows its live seat count");
   assert.match(fn, /"resuming"/, "record-running with no seats yet reads as resuming, not dead");
   assert.match(fn, /"parked"/, "and a seat-less workspace is PARKED — calm, never a crash costume");
+});
+
+test("/api/fleet (fleet rail F1): the hub's local row carries its workspaces with the record + live counts", async () => {
+  const r = await call("GET", "/api/fleet");
+  assert.equal(r.status, 200);
+  const local = r.body.hosts[0];
+  assert.equal(local.local, true);
+  assert.equal(local.state, "connected");
+  const rows = Object.fromEntries(local.workspaces.map((w: any) => [w.path, w]));
+  assert.equal(rows[B].desired, "running");
+  assert.equal(rows[B].liveSeats, 5);
+  assert.match(rows[B].url, /\/team\?token=.+&project=/, "each row carries the cockpit URL the window loads");
 });
 
 test("per-workspace preview proxies: each workspace points its OWN target on its OWN port", async () => {

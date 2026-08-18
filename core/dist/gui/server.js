@@ -430,6 +430,9 @@ export async function startGuiServer(opts = {}) {
         previewProxyPorts: new Map(),
     };
     const token = randomUUID();
+    // The hub's own port — captured after listen(); routes (the fleet view's
+    // local URLs) read it lazily, so the closure-before-listen order is safe.
+    let hubPort = 0;
     // One preview-proxy listener PER WORKSPACE (lifecycle PDR decision 7) —
     // lazily creatable for workspaces registered after boot.
     const previewProxies = new Map();
@@ -1316,6 +1319,40 @@ export async function startGuiServer(opts = {}) {
                     return json(res, 200, r);
                 }
                 // ── remote engines (cockpit-first S1: the "+ Add a server" chips) ──
+                // ── THE FLEET RAIL, F1 (PDR fleet-rail): the hub's aggregated view.
+                // The shells' native Fleet menu reads this and switches the webview;
+                // the read is cache-first and NEVER blocks on ssh (asleep hosts must
+                // never hang the menu); connect is the explicit dial. ──
+                case "GET /api/fleet": {
+                    const { fleetView } = await import("./fleet.js");
+                    const { listWorkspaces } = await import("./workspaces.js");
+                    const { peekTeam } = await import("./teamproc.js");
+                    const { hostname, platform } = await import("node:os");
+                    return json(res, 200, fleetView({
+                        home: state.home,
+                        hubSha: state.loadedSha ?? "unknown",
+                        hubOrigin: `http://127.0.0.1:${hubPort}`,
+                        hubToken: token,
+                        hostLabel: platform() === "darwin" ? "This Mac" : hostname(),
+                        localWorkspaces: listWorkspaces(state.home)
+                            .filter((w) => w.rig)
+                            .map((w) => ({
+                            name: w.name,
+                            path: w.path,
+                            desired: w.desired,
+                            liveSeats: peekTeam(w.path)?.seats.filter((s) => s.alive).length ?? 0,
+                        })),
+                    }));
+                }
+                case "POST /api/fleet/connect": {
+                    const { connectHost } = await import("./fleet.js");
+                    const { validRemoteHost } = await import("./remotes.js");
+                    const body = await readBody(req);
+                    const host = String(body.host ?? "").trim();
+                    if (!validRemoteHost(host))
+                        return json(res, 400, { error: "bad ssh destination" });
+                    return json(res, 200, await connectHost(host, { hubSha: state.loadedSha ?? "unknown", home: state.home }));
+                }
                 case "GET /api/remotes": {
                     const { listRemotes, remoteJob } = await import("./remotes.js");
                     const { hostname, platform } = await import("node:os");
@@ -1588,6 +1625,7 @@ export async function startGuiServer(opts = {}) {
     server.on("close", async () => {
         clearInterval(reviveTimer);
         clearInterval(idleTimer);
+        (await import("./fleet.js")).clearFleetLinks(); // owned tunnels die with the hub (fleet PDR d.4)
         for (const m of mirrors.values())
             m.stop();
         mirrors.clear();
@@ -1599,6 +1637,7 @@ export async function startGuiServer(opts = {}) {
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : 0;
+    hubPort = port;
     // ── RESTART-RESUME (lifecycle PDR decision 5): the server comes back and
     // resumes EVERY workspace whose record says running — cmux's "app relaunch
     // restores your sessions", by record. Never more than the record, never a

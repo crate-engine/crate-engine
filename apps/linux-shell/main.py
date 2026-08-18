@@ -30,6 +30,7 @@ import re
 import subprocess
 import threading
 import urllib.parse
+import urllib.request
 
 import gi
 
@@ -147,6 +148,10 @@ class Shell:
     def __init__(self):
         self.cockpit_ready = False
         self.view_items = []
+        # THE FLEET RAIL (PDR fleet-rail): the LOCAL hub engine's tokened
+        # door — the Fleet menu reads its /api/fleet and swaps this webview
+        # between engine cockpits. None until the hub answers.
+        self.hub_url = None
         self.satellites = []
 
         self.win = Gtk.Window(title="Crate Engine")
@@ -196,6 +201,17 @@ class Shell:
 
         def work():
             status, payload = launch_engine(remote)
+            # FLEET: the LOCAL engine is the fleet brain — ensure it is up
+            # even when the window points at a remote (a bare local open
+            # boots no teams since the lifecycle ship, so this is cheap).
+            if remote:
+                def hub_work():
+                    hstatus, hpayload = launch_engine("")
+                    if hstatus == "ok":
+                        self.hub_url = hpayload
+                threading.Thread(target=hub_work, daemon=True).start()
+            elif status == "ok":
+                self.hub_url = payload
             def apply():
                 if status == "ok":
                     self.web.load_uri(payload)
@@ -340,6 +356,15 @@ class Shell:
         # restart confirm), and when the topology is remote this machine's
         # own engine copy + shell need the same update: local `crate update`
         # fans out (its linux-shell hook refreshes this very app).
+        # THE FLEET RAIL, F2 (PDR fleet-rail): the window is the multiplexer.
+        # Rows rebuilt from the hub's /api/fleet on every open (the "show"
+        # signal); click swaps the webview to that workspace's cockpit. The
+        # fetch caps at 1.2s — an asleep host must never hang the menu.
+        fleet_root = Gtk.MenuItem(label="Fleet")
+        fleet_menu = Gtk.Menu()
+        fleet_root.set_submenu(fleet_menu)
+        fleet_menu.connect("show", self.on_fleet_open)
+        bar.append(fleet_root)
         upd_root = Gtk.MenuItem(label="Update")
         upd_menu = Gtk.Menu()
         upd_root.set_submenu(upd_menu)
@@ -352,6 +377,66 @@ class Shell:
         self.view_items.append(upd_check)
         bar.append(upd_root)
         return bar
+
+    # ── the Fleet menu (PDR fleet-rail F2) ──
+    def _hub_api(self, path):
+        if not self.hub_url:
+            return None
+        u = urllib.parse.urlparse(self.hub_url)
+        tok = urllib.parse.parse_qs(u.query).get("token", [""])[0]
+        return f"http://127.0.0.1:{u.port}{path}?token={tok}"
+
+    def on_fleet_open(self, menu):
+        for child in menu.get_children():
+            menu.remove(child)
+        def row(label, cb=None, arg=None):
+            it = Gtk.MenuItem(label=label)
+            if cb is None:
+                it.set_sensitive(False)
+            else:
+                it.connect("activate", lambda *_: cb(arg))
+            menu.append(it)
+        api = self._hub_api("/api/fleet")
+        fleet = None
+        if api:
+            try:
+                with urllib.request.urlopen(api, timeout=1.2) as r:
+                    fleet = json.load(r)
+            except OSError:
+                fleet = None
+        if not fleet:
+            row("fleet brain unreachable — is the local engine up?" if api else "fleet brain starting — the local engine is not up yet")
+            menu.show_all()
+            return
+        for host in fleet.get("hosts", []):
+            skew = "  ⚠ engine differs — Update menu fans out" if host.get("skew") else ""
+            row(f"{host.get('host', '?')}{skew}")
+            if host.get("state") == "connected" or host.get("local"):
+                spaces = host.get("workspaces", [])
+                if not spaces:
+                    row("   no workspaces yet")
+                for w in spaces:
+                    live = w.get("liveSeats", 0)
+                    state = f"{live} live" if live else ("resuming" if w.get("desired") == "running" else "parked")
+                    row(f"   {w.get('name', '?')} · {state}", lambda u: self.web.load_uri(u), w.get("url"))
+            else:
+                note = host.get("note") or host.get("state", "unknown")
+                row(f"   {note} — Connect", self._fleet_connect, host.get("host"))
+            menu.append(Gtk.SeparatorMenuItem())
+        menu.show_all()
+
+    def _fleet_connect(self, host):
+        api = self._hub_api("/api/fleet/connect")
+        if not api or not host:
+            return
+        def work():
+            try:
+                req = urllib.request.Request(api, data=json.dumps({"host": host}).encode(),
+                                             headers={"Content-Type": "application/json"})
+                urllib.request.urlopen(req, timeout=150).read()  # dial + boot can take a while; reopen the menu when done
+            except OSError:
+                pass
+        threading.Thread(target=work, daemon=True).start()
 
     def on_update(self, *_):
         self.run_js("window.crateUpdate && window.crateUpdate()")
