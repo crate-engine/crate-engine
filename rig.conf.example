@@ -31,19 +31,22 @@ TESTER_AGENT="claude";   TESTER_MODEL="opus"
 # --- Where the project lives (LOCAL is the default shape) --------------------
 # One machine, no SSH, no shared project root. `crate open` fills PROJECT and
 # PROJECT_PATH from the directory you point it at — wherever that happens to be.
-SUPERMAN_HOST="local"
-SUPERMAN_IP="127.0.0.1"
+# Renamed 2026-08-18 (CE-147): these were SUPERMAN_HOST/SUPERMAN_IP — one person's
+# machine name, shipped to every stranger in the block describing their OWN laptop.
+# The old names are still honoured as aliases, so existing rigs keep working.
+DEV_HOST="local"                              # SSH target for the rig host ("local" = this machine)
+DEV_HOST_IP=""                                # LAN address; blank = bin/preview-base auto-detects it
 PROJECT="CHANGE_ME"                           # project folder name (attach auto-fills this)
 PROJECT_PATH="/absolute/path/to/CHANGE_ME"    # absolute path (attach auto-fills this)
-DEV_URL="http://localhost:3000"               # dev server URL
+DEV_URL="http://localhost:3000"               # where the dev server BINDS (not what a phone opens — CE-146)
 
 # --- Remote rig host (POWER USER — not the default; normally leave commented) -
 # For a headless build host reached over SSH: the engine runs there and the
 # window comes to your laptop (`crate open --remote <host>`). PROJECTS_ROOT is
 # only meaningful in that shape, and its value is whatever YOUR host uses — the
 # paths below are examples, not defaults.
-# SUPERMAN_HOST="user@192.168.x.x"            # SSH target for the rig host
-# SUPERMAN_IP="192.168.x.x"                   # reachable LAN IP of the rig host
+# DEV_HOST="user@192.168.x.x"                 # SSH target for the rig host
+# DEV_HOST_IP="192.168.x.x"                   # reachable LAN IP of the rig host
 # PROJECTS_ROOT="/srv/projects"               # where that host keeps its repos
 # HERMES_BIN="/home/user/.local/bin/hermes"   # Hermes CLI on the rig host (Coder=hermes only)
 

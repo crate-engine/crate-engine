@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# preview-base <project_root> — ONE source of truth for "what URL does a HUMAN's
+# DEVICE open" (CE-146). Sibling to bin/serve-resolve, which owns the port; this
+# owns the HOST half, and asks serve-resolve for the port rather than re-deriving it.
+#
+# Prints exactly four lines:
+#   BASE=<url>              the base a preview card / QR must carry (no trailing /)
+#   REACH=tunnel|lan|local  what that base can actually be reached FROM
+#   HOST=<host>             the host inside BASE
+#   PORT=<port>             the dev port (serve-resolve's resolution)
+#
+# WHY THIS EXISTS (CE-146). `attach` seeds `DEV_URL="http://localhost:<port>"` and
+# build-preview called it "the LAN DEV_URL" five times while using it as the base a
+# PHONE scans. A localhost base is unreachable from any phone, and nothing in the
+# engine resolved a LAN address — so on every fresh rig the QR was unscannable by
+# construction. The one run that produced a working card only did so because the
+# orchestrator noticed the trap and read the real IP itself: a model-dependent
+# rescue, not a guarantee.
+#
+# WHY NOT JUST SEED A LAN IP INTO DEV_URL. Because DEV_URL is the BIND lane, not
+# the visit lane, and attach's healDevUrl deliberately rewrites any non-loopback
+# DEV_URL back to a free loopback port (a rig that inherited another rig's DEV_URL
+# once had the team testing the wrong server). Seeding a LAN address there would
+# fight that healing every attach. The two facts are genuinely different: DEV_URL
+# says where the server binds, this says where a human's device reaches it.
+#
+# HOST PRECEDENCE
+#   1. PREVIEW_URL          a tunnel — wins outright, works from anywhere
+#   2. DEV_HOST_IP          explicit operator override (legacy alias: SUPERMAN_IP)
+#   3. auto-detected        the source address of this machine's default route
+#   4. localhost            REACH=local — say so honestly; a phone CANNOT scan it
+#
+# Loopback values in step 2 are ignored, not honoured: `SUPERMAN_IP="127.0.0.1"` is
+# what attach seeds by default, and treating that as an override would pin every
+# fresh rig to the broken answer this file exists to fix.
+set -uo pipefail
+
+PROJ="${1:-${PROJECT_PATH:-$(pwd)}}"
+[ -d "$PROJ" ] || { echo "preview-base: no such dir: $PROJ" >&2; exit 1; }
+PROJ="$(cd "$PROJ" && pwd)"
+
+CONF="$PROJ/.agents/rig.conf"
+# shellcheck disable=SC1090
+[ -f "$CONF" ] && . "$CONF"
+# shellcheck disable=SC1090
+[ -f "$PROJ/.agents/dev.conf" ] && . "$PROJ/.agents/dev.conf"
+
+PB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+PORT="$(bash "$PB_DIR/serve-resolve" dev "$PROJ" 2>/dev/null | sed -n 's/^PORT=//p')"
+[ -n "${PORT:-}" ] || PORT=3000
+
+# A usable LAN address: v4, not loopback, not link-local self-assigned.
+usable() {
+  case "${1:-}" in
+    ""|127.*|169.254.*|localhost|::1|"[::1]"|0.0.0.0) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# The source address this machine's default route would use. Reads the routing
+# table only — no packets, no name lookups, nothing that can hang a card build.
+# CRATE_LAN_IP (set, even to empty) replaces detection entirely: the test hook,
+# and an escape hatch on a host whose routing table lies.
+detect_lan_ip() {
+  if [ -n "${CRATE_LAN_IP+set}" ]; then echo "${CRATE_LAN_IP}"; return; fi
+  local ip="" dev=""
+  if command -v ip >/dev/null 2>&1; then
+    ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.*[[:space:]]src[[:space:]]*\([0-9.]*\).*/\1/p' | head -1)"
+  fi
+  if [ -z "$ip" ] && command -v route >/dev/null 2>&1 && command -v ipconfig >/dev/null 2>&1; then
+    dev="$(route -n get default 2>/dev/null | sed -n 's/.*interface:[[:space:]]*//p' | head -1)"
+    [ -n "$dev" ] && ip="$(ipconfig getifaddr "$dev" 2>/dev/null)"
+  fi
+  if [ -z "$ip" ] && command -v hostname >/dev/null 2>&1; then
+    ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9.]+$' | head -1)"
+  fi
+  echo "$ip"
+}
+
+TUNNEL="${PREVIEW_URL:-}"
+if [ -n "$TUNNEL" ]; then
+  BASE="${TUNNEL%/}"
+  HOST="$(printf '%s' "$BASE" | sed -e 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##' -e 's#/.*##' -e 's#:[0-9]*$##')"
+  REACH="tunnel"
+else
+  # Explicit override first (new key, then the pre-CE-147 name — both honoured).
+  HOST="${DEV_HOST_IP:-${SUPERMAN_IP:-}}"
+  usable "$HOST" || HOST="$(detect_lan_ip)"
+  if usable "$HOST"; then
+    REACH="lan"
+  else
+    HOST="localhost"
+    REACH="local"
+  fi
+  BASE="http://$HOST:$PORT"
+fi
+
+echo "BASE=$BASE"
+echo "REACH=$REACH"
+echo "HOST=$HOST"
+echo "PORT=$PORT"

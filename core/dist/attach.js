@@ -218,8 +218,18 @@ TESTER_TITLE="QA"
 # TESTER_AGENT="pi";    TESTER_MODEL=""
 
 # --- Local host (the default) ------------------------------------------------
-SUPERMAN_HOST="local"
-SUPERMAN_IP="127.0.0.1"
+# DEV_HOST is the SSH target for the machine the team + repo live on ("local" =
+# this one). DEV_HOST_IP is that machine's LAN address, and it is OPTIONAL: leave
+# it as-is and bin/preview-base auto-detects the real one at card-build time; set
+# it only when this host's routing table lies. (Both keys were called
+# SUPERMAN_HOST/SUPERMAN_IP before 2026-08-18 — named after ONE person's machine,
+# in the block describing YOUR laptop, in a public repo. Readers honour the old
+# names as aliases, so a rig attached before the rename keeps working; CE-147.)
+DEV_HOST="local"
+DEV_HOST_IP=""
+# DEV_URL is where the dev server BINDS — not what a phone opens. Attach heals a
+# non-loopback value back to loopback on purpose (a rig once inherited another
+# rig's server); the human-reachable base comes from bin/preview-base. CE-146.
 DEV_URL="http://localhost:{{DEV_PORT}}"
 # DEV_CMD='npm run dev'   # dev-server serve command override (default: next binary, else the
                           # project's dev script). May reference \$DEV_PORT/\$DEV_BIND —
@@ -278,8 +288,8 @@ BRAND_BG="#0d1117"
 BRAND_FG="#ffffff"
 
 # --- Remote host (POWER USER — not the MVP shape; normally leave commented) ---
-# SUPERMAN_HOST="user@192.168.x.x"
-# SUPERMAN_IP="192.168.x.x"
+# DEV_HOST="user@192.168.x.x"
+# DEV_HOST_IP="192.168.x.x"
 # PROJECTS_ROOT="/mnt/data/projects"
 # HERMES_BIN="/home/user/.local/bin/hermes"
 `;

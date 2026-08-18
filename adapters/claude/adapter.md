@@ -10,11 +10,12 @@ have to. See `../README.md` for the layer model.
 - **2.x default: LOCAL.** The seat runs where its runner runs, and the project
   is the local folder the rig is attached to (`PROJECT_PATH` from `rig.conf`).
   Read, write, `agentctl`, and git are plain local operations.
-- **Remote rigs (v1-style, `SUPERMAN_HOST` set in `rig.conf`) are the
+- **Remote rigs (v1-style, `DEV_HOST` set in `rig.conf` — older rigs spell the
+  same key `SUPERMAN_HOST`; honour whichever is present) are the
   exception:** there the repo lives on the rig host — reach it over SSH, and
   **write repo/state files on the HOST over SSH** (a heredoc or the host's
   editor), never a local Write that lands where the rig can't see. If
-  `SUPERMAN_HOST` is unset or `local`, none of this applies.
+  `DEV_HOST` (or the legacy `SUPERMAN_HOST`) is unset or `local`, none of this applies.
 - **Cross-repo work: rig STATE stays at THIS rig's absolute `PROJECT_PATH`.** A task
   may TARGET a different repo — do that work there, but the rig's `.agents/state/`
   (`session.md`, `state/<station>.md`, `events.log`) and every `agentctl` emit ALWAYS

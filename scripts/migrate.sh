@@ -101,5 +101,5 @@ else
   echo "  Migrated $REPO to engine home $ENGINE."
   echo "  Backup:   $BAK"
   echo "  Rollback: rm -rf '$D' && mv '$BAK' '$D'"
-  echo "  Launch (from your Mac):  crate up <SUPERMAN_HOST>:$PROJ   (host value is in $RC)"
+  echo "  Launch (from your Mac):  crate up <DEV_HOST>:$PROJ   (host value is in $RC; older rigs: SUPERMAN_HOST)"
 fi

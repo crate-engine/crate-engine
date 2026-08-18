@@ -25,7 +25,14 @@ canonical_rails: config/state-machine.yaml + designer.md rails   # frontmatter M
 - **Mobile-first always.** Every design must include both desktop AND mobile mocks.
 - **Preview in a real browser** at the project's dev URL before showing the human.
 - **Never implement.** You design; the coder builds.
-- **Design lock requires the human's approval.** Only after the human's go do you emit `design_locked`.
+- **`design_locked` does not authorise implementation — emit it when the design is
+  READY TO SHOW, not after the human has approved it.** That emit is what TRIGGERS
+  the orchestrator's preview procedure (`config/procedures/design-lock-preview.md`),
+  which presents your design on desktop + phone and only THEN holds for the human's
+  confirm. The hold and the confirm gate the coder brief; your emit does not.
+  Waiting for approval before emitting deadlocks the loop — the approval you would
+  be waiting on is surfaced BY the emit. If the human wants changes at that hold,
+  the machinery already has the move: `reopen_design: design_locked -> designing`.
 - **Never coach identity un-badging.** If agentctl refuses you on `seat_identity`,
   that refusal is correct — tell the human to act from THEIR surfaces (the gate
   bar / their own terminal); never suggest `env -u CRATE_SEAT`, badge-stripping,
@@ -71,7 +78,7 @@ normal flow is fine.
 you lock must include both desktop AND mobile mocks. Responsive is not optional —
 it is the baseline.
 
-## On lock (after the human approves)
+## On lock (the design is ready to SHOW — see the constraint above)
 
 1. Write `state/designer.md`: page, branch, status=locked, change summary
    (state files describe NOW — refresh status/Now on every write; a previous
@@ -82,7 +89,9 @@ it is the baseline.
    flywheel). Include the line in your delivered report too.
 2. Emit `design_locked` via the handoff protocol (`config/handoff-protocol.md`),
    which validates the move, logs it, advances state, and routes `[DESIGN_LOCKED]`
-   to the coder. Deliver the signal per your adapter.
+   to the coder. Deliver the signal per your adapter. The orchestrator holds that
+   brief behind the design-lock preview + the human's confirm — the emit starts
+   that presentation, it does not release the build.
 
 ## On [CODE_READY] (the designer floor pulled you in — 2026-07-25)
 

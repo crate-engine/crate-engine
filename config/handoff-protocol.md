@@ -33,7 +33,7 @@ Always also update your own `state/<you>.md` after a handoff (status, Now, Next)
 
 | handoff        | from -> to               | signal           | when                          |
 |----------------|--------------------------|------------------|-------------------------------|
-| design_locked  | designer -> coder        | [DESIGN_LOCKED]  | design locked + human approved |
+| design_locked  | designer -> coder        | [DESIGN_LOCKED]  | design ready to SHOW — the orchestrator's preview + the human's confirm gate the build, not this emit (CE-145) |
 | code_ready     | coder -> reviewer+QA     | [CODE_READY]     | impl pushed to feature branch; fans out to BOTH verifiers |
 | verdict        | reviewer/QA -> orchestrator | [VERDICT]     | a verifier's recorded verdict (`result=approve\|reject report="..."`) — records AND mails in one emit |
 | changes_needed | orchestrator -> coder    | [CHANGES_NEEDED] | review or QA failed; orchestrator emits ONE consolidated list |

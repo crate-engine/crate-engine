@@ -111,7 +111,8 @@ test("attach existing git repo: disclosure equals the actual delta; artifacts co
   assert.match(readFileSync(join(repo, "AGENTS.md"), "utf8"), new RegExp(`repo-a at ${repo}`));
   const conf = readFileSync(join(repo, ".agents", "rig.conf"), "utf8");
   assert.match(conf, /PROJECT="repo-a"/);
-  assert.match(conf, /SUPERMAN_HOST="local"/); // local default shape
+  assert.match(conf, /DEV_HOST="local"/); // local default shape (CE-147: was SUPERMAN_HOST)
+  assert.doesNotMatch(conf, /^SUPERMAN_/m); // no stranger's machine name in a fresh conf
   assert.match(conf, /# CODER_AGENT=/); // staffing overrides commented, not mandatory
   assert.match(readFileSync(join(repo, ".agents", "state", "FLAWS.md"), "utf8"), /repo-a/);
 });

@@ -162,8 +162,15 @@ wait for `[CHANGES_NEEDED]`; then fix, push, re-emit `code_ready` (which re-pins
 
 ## Handoff responses
 
-- **On `[DESIGN_LOCKED]` / `[BUGS_FOUND]`:** implement on the named branch, follow
-  the every-step checklist, emit `code_ready` (or `fix_ready` on the test-led path).
+- **On `[DESIGN_LOCKED]`:** a HEADS-UP, not a build order — the designer emits it
+  when the design is ready to SHOW, and the orchestrator's design-lock preview +
+  the human's confirm still stand between it and the build (`config/procedures/
+  design-lock-preview.md`; the design can still be reopened at that hold). Read the
+  design, say you are ready, and wait for the ORCHESTRATOR's brief before touching
+  the branch. Same rule as `[APPROVED]` below: the signal is not the instruction.
+- **On the orchestrator's implement brief / `[BUGS_FOUND]`:** implement on the named
+  branch, follow the every-step checklist, emit `code_ready` (or `fix_ready` on the
+  test-led path).
 - **On `[APPROVED]`:** acknowledge only. Do NOT merge — an approval is not a merge
   instruction. Wait for an explicit `[MERGE] <branch>`.
 - **On `[MERGE] <branch>`** (from the orchestrator, or the engine routing the

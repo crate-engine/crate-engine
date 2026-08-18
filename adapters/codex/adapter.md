@@ -13,7 +13,7 @@ operator workstation — so it is wired like the **Claude** adapter, not like He
 
 - **2.x default: LOCAL** — the seat runs where its runner runs, on the local
   project (`PROJECT_PATH` from `rig.conf`); read/write/git are plain local ops.
-- Remote rigs (v1-style, `SUPERMAN_HOST` set): reach the repo over SSH and
+- Remote rigs (v1-style, `DEV_HOST` set — legacy alias `SUPERMAN_HOST`): reach the repo over SSH and
   **write repo/state files on the host over SSH**, not a local tool (same as
   Claude). Unset/`local` = none of this applies.
 - Launch: `launch.sh` echoes a SAFE bare `codex` line; for engine-launched
