@@ -170,6 +170,7 @@ export function fleetView(deps, exec = defaultFleetExec()) {
                 ...w,
                 url: `${deps.hubOrigin}/team?token=${deps.hubToken}&project=${encodeURIComponent(w.path)}`,
             })),
+            cockpitUrl: `${deps.hubOrigin}/team?token=${deps.hubToken}`,
         },
     ];
     for (const r of listRemotes(deps.home)) {
@@ -190,6 +191,7 @@ export function fleetView(deps, exec = defaultFleetExec()) {
             ...(link.engineSha !== undefined ? { engineSha: link.engineSha } : {}),
             skew: link.engineSha !== undefined && link.engineSha !== deps.hubSha,
             workspaces: link.workspaces ?? [],
+            ...(link.app ? { cockpitUrl: `http://127.0.0.1:${link.app.port}/team?token=${link.app.token}` } : {}),
         });
     }
     return { hubSha: deps.hubSha, hosts };
@@ -211,6 +213,7 @@ export async function connectHost(host, deps, exec = defaultFleetExec()) {
         ...(link.engineSha !== undefined ? { engineSha: link.engineSha } : {}),
         skew: link.engineSha !== undefined && link.engineSha !== deps.hubSha,
         workspaces: link.workspaces ?? [],
+        ...(link.app ? { cockpitUrl: `http://127.0.0.1:${link.app.port}/team?token=${link.app.token}` } : {}),
     };
 }
 //# sourceMappingURL=fleet.js.map

@@ -70,6 +70,12 @@ export declare function runTurn(opts: RunTurnOpts): Promise<TurnResult>;
  * and correct across engine updates). A rig without .agents/bin (test
  * fixtures) falls back to the plain env — the tools shim needs a brain. */
 export declare function seatEnv(projectRoot: string, seat: string): NodeJS.ProcessEnv;
+export declare function execTurn(inv: HeadlessInvocation, cwd: string, logPath: string, agent: string, timeoutMs: number, env: NodeJS.ProcessEnv): Promise<{
+    ok: boolean;
+    sessionId?: string;
+    usage?: TurnUsage;
+    error?: string;
+}>;
 export interface RunnerLoopOpts extends RunTurnOpts {
     pollMs?: number;
     /** Retries before a batch is dead-lettered (honest, never silent). */

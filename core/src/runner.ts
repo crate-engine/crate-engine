@@ -347,7 +347,7 @@ export function seatEnv(projectRoot: string, seat: string): NodeJS.ProcessEnv {
   }
 }
 
-function execTurn(
+export function execTurn(
   inv: HeadlessInvocation, cwd: string, logPath: string, agent: string, timeoutMs: number, env: NodeJS.ProcessEnv,
 ): Promise<{ ok: boolean; sessionId?: string; usage?: TurnUsage; error?: string }> {
   return new Promise((resolve) => {
@@ -358,11 +358,29 @@ function execTurn(
     let usage: TurnUsage | undefined;
     let buf = "";
     let timedOut = false;
+    let wedged = false;
     const timer = setTimeout(() => {
       timedOut = true;
       try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ }
     }, timeoutMs);
+    // CE-139 (battle test 2026-08-18): the FIRST-OUTPUT fuse. A wedged
+    // gemini sat silent for minutes with the turn lock held and NOTHING on
+    // either stream — no capture file, no stamp, no pane signal — and would
+    // have waited out the full 15-minute ceiling. Every healthy CLI emits an
+    // init/system frame within seconds; an agent that has said NOTHING in
+    // two minutes is not thinking, it is wedged. First byte on EITHER
+    // stream disarms the fuse; tripping kills the group and fails the turn
+    // honestly (the stderr tail, if any, is already in the capture).
+    const firstOutputMs = Math.min(Number(env.CRATE_FIRST_OUTPUT_MS) > 0 ? Number(env.CRATE_FIRST_OUTPUT_MS) : 120_000, timeoutMs);
+    let fuse: NodeJS.Timeout | undefined = setTimeout(() => {
+      wedged = true;
+      try { process.kill(-child.pid!, "SIGKILL"); } catch { /* already gone */ }
+    }, firstOutputMs);
+    const disarm = (): void => {
+      if (fuse) { clearTimeout(fuse); fuse = undefined; }
+    };
     child.stdout.on("data", (chunk: Buffer) => {
+      disarm();
       buf += chunk.toString();
       let nl;
       while ((nl = buf.indexOf("\n")) !== -1) {
@@ -372,14 +390,19 @@ function execTurn(
         usage = parseUsage(agent, line) ?? usage;
       }
     });
-    child.stderr.on("data", (chunk: Buffer) => appendFileSync(logPath, JSON.stringify({ stderr: chunk.toString() }) + "\n"));
+    child.stderr.on("data", (chunk: Buffer) => {
+      disarm();
+      appendFileSync(logPath, JSON.stringify({ stderr: chunk.toString() }) + "\n");
+    });
     child.on("close", (code) => {
       clearTimeout(timer);
-      if (timedOut) resolve({ ok: false, usage, error: `turn timeout after ${timeoutMs}ms (killed)` });
+      disarm();
+      if (wedged) resolve({ ok: false, usage, error: `no output within ${firstOutputMs}ms — agent wedged before its first frame (killed; CE-139 fuse)` });
+      else if (timedOut) resolve({ ok: false, usage, error: `turn timeout after ${timeoutMs}ms (killed)` });
       else if (code === 0) resolve({ ok: true, sessionId, usage });
       else resolve({ ok: false, usage, error: `harness exited ${code}` });
     });
-    child.on("error", (e) => { clearTimeout(timer); resolve({ ok: false, error: String(e) }); });
+    child.on("error", (e) => { clearTimeout(timer); disarm(); resolve({ ok: false, error: String(e) }); });
   });
 }
 

@@ -551,7 +551,11 @@ async function restaffDialog(seat){
   const done=()=>d.remove();
   d.querySelector("#rsc").onclick=done;
   d.addEventListener("click",e=>{if(e.target===d)done();});
-  d.querySelectorAll(".pkrow").forEach(b=>{b.onclick=async()=>{
+  // CE-137 (battle test 2026-08-18): bind ONLY the ready rows. The bench
+  // rows share .pkrow but carry no data-i — the old selector bound them
+  // too, and +null===0 silently staffed ready[0] (Fable) when Adam clicked
+  // a greyed "not installed" row. A dead row must be DEAD.
+  d.querySelectorAll(".pkrow[data-i]").forEach(b=>{b.onclick=async()=>{
     const m=ready[+b.getAttribute("data-i")];
     done();
     if(TTYS[seat])await closeTty(seat);

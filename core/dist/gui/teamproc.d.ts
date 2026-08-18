@@ -81,7 +81,12 @@ export declare class TeamProcess {
      * orchestrator). The stamp lands BEFORE the stop so the record says why;
      * the seat then reads as unstaffed (a calm invitation), never as dead. */
     parkSeat(seat: Seat, note: string): void;
-    /** Stop the whole team (SIGTERM every runner; stop every blended seat). */
+    /** Stop the whole team (SIGTERM every runner; stop every blended seat).
+     * CE-135 (battle test 2026-08-18): every stop() call site is DELIBERATE
+     * (scoped park, operator stop, shutdown handoff) — so the seat records
+     * clear, same as parkSeat: a parked workspace must read as calm
+     * invitations, never as died-with-a-startedAt. A CRASHED seat keeps its
+     * record (stop never ran for it) and stays the downchip's distress. */
     stop(): TeamProcStatus;
     status(): TeamProcStatus;
 }

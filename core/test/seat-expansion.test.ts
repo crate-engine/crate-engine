@@ -63,8 +63,19 @@ test("detection: binaries + labels for the expansion; honest auth markers", () =
   } else {
     assert.match(g!.fix, /Google sign-in|GEMINI_API_KEY/);
     mkdirSync(join(home, ".gemini"), { recursive: true });
+    // CE-138 (2026-08-18): OAuth creds are valid-looking but UNSERVABLE —
+    // Google retired the CLI's free individual tier, so creds alone must
+    // NOT read ready (that false-ready wedged a live seat). Key-only now.
     writeFileSync(join(home, ".gemini", "oauth_creds.json"), "{}");
-    assert.equal(seatAuthProblem("gemini", home), undefined);
+    assert.notEqual(seatAuthProblem("gemini", home), undefined, "OAuth creds alone are a false-ready — refused");
+    const hadKey = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = "k";
+    try {
+      assert.equal(seatAuthProblem("gemini", home), undefined, "an API key is the one working path");
+    } finally {
+      if (hadKey === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = hadKey;
+    }
   }
   // aider/openclaw manage their own auth — never blocked on a marker
   assert.equal(seatAuthProblem("aider", home), undefined);

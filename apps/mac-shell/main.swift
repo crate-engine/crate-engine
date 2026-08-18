@@ -446,8 +446,13 @@ final class FleetActions: NSObject, NSMenuDelegate {
       menu.addItem(header)
       let workspaces = host["workspaces"] as? [[String: Any]] ?? []
       if state == "connected" || host["local"] as? Bool == true {
-        if workspaces.isEmpty {
-          menu.addItem(withTitle: "   no workspaces yet", action: nil, keyEquivalent: "")
+        // CE-136: an empty host must never dead-end — its row is the door to
+        // the card (＋ new rig), loading the host's cockpit with &card=1.
+        if let cockpit = host["cockpitUrl"] as? String {
+          let add = NSMenuItem(title: "   ＋ new rig on \(name)…", action: #selector(switchTo(_:)), keyEquivalent: "")
+          add.target = self
+          add.representedObject = cockpit + "&card=1"
+          menu.addItem(add)
         }
         for w in workspaces {
           let live = w["liveSeats"] as? Int ?? 0

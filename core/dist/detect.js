@@ -124,13 +124,17 @@ export function seatAuthProblem(agent, home, models = []) {
         };
     }
     if (agent === "gemini") {
-        // Google sign-in lands OAuth creds under ~/.gemini; an API key via env
-        // also counts (either path makes headless -p turns possible).
-        if (existsSync(join(home, ".gemini", "oauth_creds.json")) || process.env.GEMINI_API_KEY)
+        // CE-138 (battle test 2026-08-18): Google KILLED the CLI's free
+        // individual tier (IneligibleTierError → "migrate to Antigravity"), so
+        // OAuth creds under ~/.gemini are VALID-LOOKING but unservable — counting
+        // them was a false-READY that wedged a live seat. Only an API key makes
+        // headless -p turns possible now.
+        if (process.env.GEMINI_API_KEY)
             return undefined;
         return {
             agent: "gemini",
-            fix: "Gemini CLI is installed but not signed in — run `gemini` in a terminal and finish the Google sign-in (or export GEMINI_API_KEY)",
+            fix: "Gemini CLI needs GEMINI_API_KEY — Google retired the free Google-sign-in tier for this CLI " +
+                "(2026-08, 'Antigravity'); a Google AI API key (metered) is the only working path: export GEMINI_API_KEY=…",
         };
     }
     return undefined; // other agents (aider, openclaw, …) manage their own auth (adapter-specific)

@@ -39,6 +39,10 @@ export interface FleetHostRow {
    * shown honestly, never auto-fixed — the UPDATE menu fans out). */
   skew: boolean;
   workspaces: FleetWorkspaceRow[];
+  /** CE-136: the host's cockpit door — the "＋ new rig on this host" row
+   * loads this + &card=1 (the summonable card), so an EMPTY host is never
+   * a dead-end in the Fleet menu. Present when the host is reachable. */
+  cockpitUrl?: string;
 }
 
 export interface FleetView {
@@ -236,6 +240,7 @@ export function fleetView(deps: FleetLocalDeps, exec: FleetExec = defaultFleetEx
         ...w,
         url: `${deps.hubOrigin}/team?token=${deps.hubToken}&project=${encodeURIComponent(w.path)}`,
       })),
+      cockpitUrl: `${deps.hubOrigin}/team?token=${deps.hubToken}`,
     },
   ];
   for (const r of listRemotes(deps.home)) {
@@ -255,6 +260,7 @@ export function fleetView(deps: FleetLocalDeps, exec: FleetExec = defaultFleetEx
       ...(link.engineSha !== undefined ? { engineSha: link.engineSha } : {}),
       skew: link.engineSha !== undefined && link.engineSha !== deps.hubSha,
       workspaces: link.workspaces ?? [],
+      ...(link.app ? { cockpitUrl: `http://127.0.0.1:${link.app.port}/team?token=${link.app.token}` } : {}),
     });
   }
   return { hubSha: deps.hubSha, hosts };
@@ -280,5 +286,6 @@ export async function connectHost(
     ...(link.engineSha !== undefined ? { engineSha: link.engineSha } : {}),
     skew: link.engineSha !== undefined && link.engineSha !== deps.hubSha,
     workspaces: link.workspaces ?? [],
+    ...(link.app ? { cockpitUrl: `http://127.0.0.1:${link.app.port}/team?token=${link.app.token}` } : {}),
   };
 }

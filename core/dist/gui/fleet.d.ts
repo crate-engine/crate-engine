@@ -20,6 +20,10 @@ export interface FleetHostRow {
      * shown honestly, never auto-fixed — the UPDATE menu fans out). */
     skew: boolean;
     workspaces: FleetWorkspaceRow[];
+    /** CE-136: the host's cockpit door — the "＋ new rig on this host" row
+     * loads this + &card=1 (the summonable card), so an EMPTY host is never
+     * a dead-end in the Fleet menu. Present when the host is reachable. */
+    cockpitUrl?: string;
 }
 export interface FleetView {
     hubSha: string;

@@ -144,7 +144,9 @@ const MODELS = [
     agent: "gemini",
     model: "",
     display: "Gemini CLI (Google, account-default model)",
-    billing: "Google account sign-in (free tier) or GEMINI_API_KEY — see your Google AI plan",
+    // CE-138: Google retired the CLI's free individual tier (2026-08) — the
+    // old "free tier" line was false advertising; API key is the only path.
+    billing: "GEMINI_API_KEY required (metered, Google AI pricing) — Google retired the CLI's free sign-in tier",
     verifiedFor: [] as Seat[],
   },
 ];

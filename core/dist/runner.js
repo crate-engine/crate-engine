@@ -319,7 +319,7 @@ export function seatEnv(projectRoot, seat) {
         return { ...process.env, DISABLE_AUTOUPDATER: "1", CRATE_SEAT: seat };
     }
 }
-function execTurn(inv, cwd, logPath, agent, timeoutMs, env) {
+export function execTurn(inv, cwd, logPath, agent, timeoutMs, env) {
     return new Promise((resolve) => {
         const child = spawn(inv.argv[0], inv.argv.slice(1), {
             cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true, // own pgid → group-kill on timeout
@@ -328,6 +328,7 @@ function execTurn(inv, cwd, logPath, agent, timeoutMs, env) {
         let usage;
         let buf = "";
         let timedOut = false;
+        let wedged = false;
         const timer = setTimeout(() => {
             timedOut = true;
             try {
@@ -335,7 +336,30 @@ function execTurn(inv, cwd, logPath, agent, timeoutMs, env) {
             }
             catch { /* already gone */ }
         }, timeoutMs);
+        // CE-139 (battle test 2026-08-18): the FIRST-OUTPUT fuse. A wedged
+        // gemini sat silent for minutes with the turn lock held and NOTHING on
+        // either stream — no capture file, no stamp, no pane signal — and would
+        // have waited out the full 15-minute ceiling. Every healthy CLI emits an
+        // init/system frame within seconds; an agent that has said NOTHING in
+        // two minutes is not thinking, it is wedged. First byte on EITHER
+        // stream disarms the fuse; tripping kills the group and fails the turn
+        // honestly (the stderr tail, if any, is already in the capture).
+        const firstOutputMs = Math.min(Number(env.CRATE_FIRST_OUTPUT_MS) > 0 ? Number(env.CRATE_FIRST_OUTPUT_MS) : 120_000, timeoutMs);
+        let fuse = setTimeout(() => {
+            wedged = true;
+            try {
+                process.kill(-child.pid, "SIGKILL");
+            }
+            catch { /* already gone */ }
+        }, firstOutputMs);
+        const disarm = () => {
+            if (fuse) {
+                clearTimeout(fuse);
+                fuse = undefined;
+            }
+        };
         child.stdout.on("data", (chunk) => {
+            disarm();
             buf += chunk.toString();
             let nl;
             while ((nl = buf.indexOf("\n")) !== -1) {
@@ -346,17 +370,23 @@ function execTurn(inv, cwd, logPath, agent, timeoutMs, env) {
                 usage = parseUsage(agent, line) ?? usage;
             }
         });
-        child.stderr.on("data", (chunk) => appendFileSync(logPath, JSON.stringify({ stderr: chunk.toString() }) + "\n"));
+        child.stderr.on("data", (chunk) => {
+            disarm();
+            appendFileSync(logPath, JSON.stringify({ stderr: chunk.toString() }) + "\n");
+        });
         child.on("close", (code) => {
             clearTimeout(timer);
-            if (timedOut)
+            disarm();
+            if (wedged)
+                resolve({ ok: false, usage, error: `no output within ${firstOutputMs}ms — agent wedged before its first frame (killed; CE-139 fuse)` });
+            else if (timedOut)
                 resolve({ ok: false, usage, error: `turn timeout after ${timeoutMs}ms (killed)` });
             else if (code === 0)
                 resolve({ ok: true, sessionId, usage });
             else
                 resolve({ ok: false, usage, error: `harness exited ${code}` });
         });
-        child.on("error", (e) => { clearTimeout(timer); resolve({ ok: false, error: String(e) }); });
+        child.on("error", (e) => { clearTimeout(timer); disarm(); resolve({ ok: false, error: String(e) }); });
     });
 }
 /** The seat's standing loop: watch → turn → ack/retry → watch. */

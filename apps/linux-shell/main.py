@@ -412,10 +412,12 @@ class Shell:
             skew = "  ⚠ engine differs — Update menu fans out" if host.get("skew") else ""
             row(f"{host.get('host', '?')}{skew}")
             if host.get("state") == "connected" or host.get("local"):
-                spaces = host.get("workspaces", [])
-                if not spaces:
-                    row("   no workspaces yet")
-                for w in spaces:
+                # CE-136: an empty host must never dead-end — the ＋ new rig
+                # row is the door to the card (&card=1 on the host's cockpit).
+                if host.get("cockpitUrl"):
+                    row(f"   ＋ new rig on {host.get('host', '?')}…",
+                        lambda u: self.web.load_uri(u), host["cockpitUrl"] + "&card=1")
+                for w in host.get("workspaces", []):
                     live = w.get("liveSeats", 0)
                     state = f"{live} live" if live else ("resuming" if w.get("desired") == "running" else "parked")
                     row(f"   {w.get('name', '?')} · {state}", lambda u: self.web.load_uri(u), w.get("url"))

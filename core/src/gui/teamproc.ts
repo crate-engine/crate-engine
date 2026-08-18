@@ -25,6 +25,17 @@ import { defaultBlendStarter, type BlendedSeatHandle } from "../blendseat.js";
 
 export { defaultBlendStarter } from "../blendseat.js";
 
+/** CE-140 (found by the CE-135 fix's own test, 2026-08-18): aliveness must
+ * account for SIGNAL deaths. Node leaves `exitCode` null when a child dies
+ * by signal (`signalCode` carries it) and `killed` marks only handle-
+ * initiated kills — so `exitCode === null && !killed` read a SIGKILLed
+ * runner as ALIVE forever (phantom-alive; the 2026-08-11 deaths were
+ * code-0 exits, which is why this never surfaced). One truth, used
+ * everywhere: not exited by code, not exited by signal, not killed by us. */
+function childAlive(child: ChildProcess): boolean {
+  return child.exitCode === null && child.signalCode === null && !child.killed;
+}
+
 export interface SeatProc {
   seat: Seat;
   child: ChildProcess;
@@ -120,7 +131,7 @@ export class TeamProcess {
 
   /** True once any seat has been booted and at least one child is alive. */
   get booted(): boolean {
-    for (const p of this.procs.values()) if (p.child.exitCode === null && !p.child.killed) return true;
+    for (const p of this.procs.values()) if (childAlive(p.child)) return true;
     for (const b of this.blends.values()) if (b.alive()) return true;
     return false;
   }
@@ -154,7 +165,7 @@ export class TeamProcess {
       this.blends.delete(seat);
     }
     const cur = this.procs.get(seat);
-    if (cur && cur.child.exitCode === null && !cur.child.killed) cur.child.kill("SIGTERM");
+    if (cur && childAlive(cur.child)) cur.child.kill("SIGTERM");
     this.procs.delete(seat);
 
     let conf: Record<string, string> = {};
@@ -183,7 +194,7 @@ export class TeamProcess {
     const b = this.blends.get(seat);
     if (b) return b.alive();
     const p = this.procs.get(seat);
-    return !!p && p.child.exitCode === null && !p.child.killed;
+    return !!p && childAlive(p.child);
   }
 
   /** Boot every not-already-running seat. Idempotent: a live seat is left alone. */
@@ -243,17 +254,25 @@ export class TeamProcess {
       this.blends.delete(seat);
     }
     const p = this.procs.get(seat);
-    if (p && p.child.exitCode === null && !p.child.killed) p.child.kill("SIGTERM");
+    if (p && childAlive(p.child)) p.child.kill("SIGTERM");
     this.procs.delete(seat); // no corpse record — parked is an invitation, not distress
   }
 
-  /** Stop the whole team (SIGTERM every runner; stop every blended seat). */
+  /** Stop the whole team (SIGTERM every runner; stop every blended seat).
+   * CE-135 (battle test 2026-08-18): every stop() call site is DELIBERATE
+   * (scoped park, operator stop, shutdown handoff) — so the seat records
+   * clear, same as parkSeat: a parked workspace must read as calm
+   * invitations, never as died-with-a-startedAt. A CRASHED seat keeps its
+   * record (stop never ran for it) and stays the downchip's distress. */
   stop(): TeamProcStatus {
     for (const p of this.procs.values()) {
-      if (p.child.exitCode === null && !p.child.killed) p.child.kill("SIGTERM");
+      if (childAlive(p.child)) p.child.kill("SIGTERM");
     }
     for (const b of this.blends.values()) b.stop();
-    return this.status();
+    const st = this.status(); // report what was stopped…
+    this.procs.clear(); // …then no corpse records: parked is an invitation
+    this.blends.clear();
+    return st;
   }
 
   status(): TeamProcStatus {
@@ -264,7 +283,7 @@ export class TeamProcess {
         return { seat, alive: b.alive(), pid: null, startedAt: b.startedAt, mode: "blended" as const };
       }
       const p = this.procs.get(seat);
-      const alive = !!p && p.child.exitCode === null && !p.child.killed;
+      const alive = !!p && childAlive(p.child);
       return { seat, alive, pid: p?.child.pid ?? null, startedAt: p?.startedAt ?? null };
     });
     return { booted: this.booted, seats };
