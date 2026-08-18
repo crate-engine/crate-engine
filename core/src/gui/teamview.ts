@@ -3,6 +3,7 @@
 // the /team page renders. READ-ONLY (the viewer is glass, never a control
 // surface at T2). Two lenses come from ONE capture: the raw jsonl stream
 // (Engineer) and a narrated digest derived from it (Narrated).
+import { resolveSeatStaffing } from "../launcher.js";
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -416,7 +417,18 @@ export function readTeamView(projectRoot: string, maxTurnsPerSeat = 5, home: str
     const turns = turnFiles.map((f) => readTurn(join(dir, f)));
     const st = stateStatus(projectRoot, seat);
     const agentKey = `${RIG_PREFIX[seat]}_AGENT`; // rig.conf keys use ORCH, not ORCHESTRATOR
-    const model = conf[agentKey.replace("_AGENT", "_MODEL")];
+    // CE-141: the seat card must name the agent the seat ACTUALLY runs — the
+    // canonical chain, not rig.conf alone (which showed a phantom pi).
+    // The chain THROWS on a malformed defaults.yaml (staffing the wrong agent
+    // silently is worse than refusing) — correct at boot, wrong here: the
+    // cockpit must still render. Degrade to conf-only for the CARD.
+    let staffed: { agent: string; model?: string };
+    try {
+      staffed = resolveSeatStaffing(projectRoot, seat, home, conf);
+    } catch {
+      staffed = resolveSeatStaffing(projectRoot, seat, undefined, conf);
+    }
+    const model = staffed.model;
     // context fullness from the newest turn that reported input tokens (the
     // session's current context size), or the live running total as fallback.
     const withUsage = turns.find((t) => t.usage?.inputTokens);
@@ -435,7 +447,7 @@ export function readTeamView(projectRoot: string, maxTurnsPerSeat = 5, home: str
     // S4: blend is the default — eligible + not opted out = the pane is a
     // live session; an ineligible agent fell back to headless at boot, and
     // the page must not render a phantom pane.
-    const agentRaw = conf[agentKey] || "pi";
+    const agentRaw = staffed.agent;
     const el = blendEligible(agentRaw);
     const blended = isBlended(conf, seat, agentRaw);
     const bv = blended ? blendedSeatView(projectRoot, seat, el.ok ? el.cli : undefined, model, home) : {};

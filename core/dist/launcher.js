@@ -12,7 +12,7 @@ import { loadLoadout, loadoutPath, SEATS } from "./manifest.js";
 import { buildInvocation, toShellCommand } from "./invocation.js";
 import { composedBrainRoot, overlayDirFor } from "./overlay.js";
 import { specFromLoadout, stateDoorsFor, writeProfile } from "./sandbox.js";
-import { loadUserDefaults, parseRigConf, resolveSeat, resolveSeatDetailed, } from "./staffing.js";
+import { loadUserDefaults, parseRigConf, resolveSeat, resolveSeatDetailed, RIG_PREFIX, } from "./staffing.js";
 const execFileP = promisify(execFile);
 /**
  * P4-12: per-agent flag syntax for a declared permission posture — DATA, not
@@ -123,6 +123,31 @@ export function resolveRigSeats(projectRoot, home) {
             modelSource: d.model.source,
         };
     });
+}
+/**
+ * ONE seat's staffing through the canonical chain — the RUNTIME door.
+ *
+ * CE-141: the blended-pane path (S4, now the default for eligible seats) was
+ * hand-rolling `rig.conf[key] || "pi"` again, the exact shortcut resolveRigSeats
+ * was written to retire. A rig whose rig.conf names no agent — i.e. EVERY
+ * freshly attached rig, since attach writes those lines commented out — booted
+ * bare pi on the account-default model while the staffing screen, `crate print`
+ * and /api/staffing all showed the user's real default. Runtime and display
+ * disagreed, and the user's own model choice lost silently.
+ *
+ * `home` is explicit because the user-defaults layer lives there: callers that
+ * cannot name a home (tests, legacy paths) get the conf-only resolution they
+ * always had rather than whatever ~/.crate holds on the machine running them.
+ */
+export function resolveSeatStaffing(projectRoot, seat, home, conf) {
+    if (home === undefined) {
+        const c = conf ?? {};
+        const agent = c[`${RIG_PREFIX[seat]}_AGENT`] || "pi";
+        const model = c[`${RIG_PREFIX[seat]}_MODEL`] || undefined;
+        return { agent, model };
+    }
+    const r = resolveRigSeats(projectRoot, home).find((s) => s.seat === seat);
+    return { agent: r?.agent ?? "pi", model: r?.model };
 }
 export function deriveBrainRoot(projectRoot) {
     // .agents/bin is a symlink into the brain; its target's parent IS the brain.

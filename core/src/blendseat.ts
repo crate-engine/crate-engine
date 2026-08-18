@@ -31,6 +31,7 @@ import {
   type BlendSession,
   type StaleTracker,
 } from "./blend.js";
+import { resolveSeatStaffing } from "./launcher.js";
 import { SEATS, type Seat } from "./manifest.js";
 import { evictSeatTty, startSeatTty, type StartTtyOpts, type StartTtyResult, type TtySeat } from "./ptyseat.js";
 import { sessionFile, turnsDir } from "./runner.js";
@@ -420,14 +421,19 @@ export function resetBlendCrews(): void {
 }
 
 /**
- * The real starter teamproc uses for a flagged, eligible seat: staffing from
- * rig.conf, the project's shared stale tracker, the standing loop fired.
+ * The real starter teamproc uses for a flagged, eligible seat: staffing through
+ * the CANONICAL chain (rig.conf → ~/.crate/defaults.yaml → loadout floor), the
+ * project's shared stale tracker, the standing loop fired.
+ *
+ * CE-141: this read rig.conf alone and fell back to bare pi, so a freshly
+ * attached rig ran pi on the account default while every display showed the
+ * user's configured seat. resolveSeatStaffing is the one door now.
  */
 export function defaultBlendStarter(home: string): (seat: Seat, projectRoot: string) => BlendedSeatHandle {
   return (seat, projectRoot) => {
     const conf = parseRigConf(readFileSync(join(projectRoot, ".agents", "rig.conf"), "utf8"));
-    const prefix = RIG_PREFIX[seat];
-    const agentArg = conf[`${prefix}_AGENT`] || "pi";
+    const staffed = resolveSeatStaffing(projectRoot, seat, home, conf);
+    const agentArg = staffed.agent;
     const el = blendEligible(agentArg);
     if (!el.ok) throw new Error(el.reason); // teamproc checks first — belt + braces
     const bs = new BlendedSeat({
@@ -435,7 +441,7 @@ export function defaultBlendStarter(home: string): (seat: Seat, projectRoot: str
       seat,
       agentArg,
       cli: el.cli,
-      model: conf[`${prefix}_MODEL`] || undefined,
+      model: staffed.model,
       home,
       stale: blendCrewFor(projectRoot).stale,
       // The SAME rig.conf knob the headless runner honors (cli.ts) — in

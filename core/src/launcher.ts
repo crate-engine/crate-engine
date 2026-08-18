@@ -179,6 +179,37 @@ export function resolveRigSeats(projectRoot: string, home: string): ResolvedRigS
   });
 }
 
+/**
+ * ONE seat's staffing through the canonical chain — the RUNTIME door.
+ *
+ * CE-141: the blended-pane path (S4, now the default for eligible seats) was
+ * hand-rolling `rig.conf[key] || "pi"` again, the exact shortcut resolveRigSeats
+ * was written to retire. A rig whose rig.conf names no agent — i.e. EVERY
+ * freshly attached rig, since attach writes those lines commented out — booted
+ * bare pi on the account-default model while the staffing screen, `crate print`
+ * and /api/staffing all showed the user's real default. Runtime and display
+ * disagreed, and the user's own model choice lost silently.
+ *
+ * `home` is explicit because the user-defaults layer lives there: callers that
+ * cannot name a home (tests, legacy paths) get the conf-only resolution they
+ * always had rather than whatever ~/.crate holds on the machine running them.
+ */
+export function resolveSeatStaffing(
+  projectRoot: string,
+  seat: Seat,
+  home: string | undefined,
+  conf?: Record<string, string>,
+): { agent: string; model?: string } {
+  if (home === undefined) {
+    const c = conf ?? {};
+    const agent = c[`${RIG_PREFIX[seat]}_AGENT`] || "pi";
+    const model = c[`${RIG_PREFIX[seat]}_MODEL`] || undefined;
+    return { agent, model };
+  }
+  const r = resolveRigSeats(projectRoot, home).find((s) => s.seat === seat);
+  return { agent: r?.agent ?? "pi", model: r?.model };
+}
+
 export function deriveBrainRoot(projectRoot: string): string {
   // .agents/bin is a symlink into the brain; its target's parent IS the brain.
   const binLink = join(projectRoot, ".agents", "bin");

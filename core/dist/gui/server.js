@@ -13,7 +13,7 @@ import { agentLabel, agentProblem, agentStatus, binaryFor, whichBin } from "../d
 import { heavyDeps, installHeavyDeps, runDoctor } from "../doctor.js";
 import { isBlended } from "../blend.js";
 import { autoReviveEnabled, makeAutoReviver } from "../health.js";
-import { deriveBrainRoot } from "../launcher.js";
+import { deriveBrainRoot, resolveSeatStaffing } from "../launcher.js";
 import { loadLoadout, loadoutPath, SEATS } from "../manifest.js";
 import { discoverPiModels } from "../pidiscovery.js";
 import { loadUserDefaults, orderCatalog, parseRigConf, resolveSeatDetailed, RIG_PREFIX, updateRigStaffing } from "../staffing.js";
@@ -626,7 +626,7 @@ export async function startGuiServer(opts = {}) {
                     // no detachment claims (nothing evicts anything; a seat-less
                     // workspace is Parked by record, and the record rides along so
                     // the glass can say "parked", never "crashed").
-                    const st = teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home)).status();
+                    const st = teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home), state.home).status();
                     const w = (await import("./workspaces.js")).listWorkspaces(state.home).find((x) => x.path === proj);
                     return json(res, 200, { ...st, desired: w?.desired ?? "parked" });
                 }
@@ -637,7 +637,7 @@ export async function startGuiServer(opts = {}) {
                     if (!proj)
                         return json(res, 400, { error: "no project attached" });
                     try {
-                        const st = teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home)).boot();
+                        const st = teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home), state.home).boot();
                         // lifecycle record (PDR workspace-lifecycle): booting IS the intent
                         (await import("./workspaces.js")).setWorkspaceDesired(state.home, proj, "running");
                         ensureMirror(proj); // telemetry rides the workspace, not the server
@@ -652,7 +652,7 @@ export async function startGuiServer(opts = {}) {
                     const proj = url.searchParams.get("project") ?? state.project;
                     if (!proj)
                         return json(res, 400, { error: "no project" });
-                    const st = teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home)).stop();
+                    const st = teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home), state.home).stop();
                     // a scoped stop parks exactly THIS workspace on the record
                     (await import("./workspaces.js")).setWorkspaceDesired(state.home, proj, "parked");
                     stopMirror(proj);
@@ -668,7 +668,7 @@ export async function startGuiServer(opts = {}) {
                     const seat = String(body.seat ?? "");
                     if (!SEATS.includes(seat))
                         return json(res, 400, { error: "unknown seat" });
-                    return json(res, 200, teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home)).relaunch(seat));
+                    return json(res, 200, teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home), state.home).relaunch(seat));
                 }
                 case "POST /api/team/abandon": {
                     // T7-2 Team menu: drop a mid-flight loop back to idle (agentctl emit
@@ -723,7 +723,7 @@ export async function startGuiServer(opts = {}) {
                     if (!state.project)
                         state.project = p; // a project-less server adopts a view default; never a rebind
                     try {
-                        const st = teamProcessFor(p, spawnerFor(), defaultBlendStarter(state.home)).boot(); // idempotent — live seats are left alone
+                        const st = teamProcessFor(p, spawnerFor(), defaultBlendStarter(state.home), state.home).boot(); // idempotent — live seats are left alone
                         ensureMirror(p);
                         await ensureProxyFor(p);
                         return json(res, 200, { ok: true, booted: st.booted, alive: st.seats.filter((s) => s.alive).length });
@@ -746,12 +746,25 @@ export async function startGuiServer(opts = {}) {
                 }
                 case "POST /api/workspaces/remove": {
                     // T7-1: drop a workspace from the rail (never touches the repo).
-                    const { removeWorkspace } = await import("./workspaces.js");
+                    const { removeWorkspace, lastFocusedWorkspace } = await import("./workspaces.js");
                     const body = await readBody(req);
                     const p = String(body.path ?? "").trim();
                     if (!p)
                         return json(res, 400, { error: "path required" });
-                    return json(res, 200, { workspaces: removeWorkspace(state.home, p) });
+                    const remaining = removeWorkspace(state.home, p);
+                    // CE-142: removing the workspace you are LOOKING AT left the server
+                    // pointed at it — every route that defaults to state.project (team
+                    // status, preview, chat, loop) then worked a path that is no longer
+                    // registered, and a chat send would re-create a maildir under it.
+                    // Repoint to the last-focused survivor — falling back to ANY
+                    // survivor, because a workspace can be on the rail without ever
+                    // having been focused and rendering the attach card over a
+                    // non-empty rail would be its own lie. Empty rail = null, which is
+                    // the truthful "no project" the page already draws.
+                    if (state.project === p) {
+                        state.project = lastFocusedWorkspace(state.home) ?? remaining[0]?.path;
+                    }
+                    return json(res, 200, { workspaces: remaining });
                 }
                 case "GET /api/preview": {
                     // PHASE-8 T5: pending previews (pages flagged for review) — proxy
@@ -896,7 +909,7 @@ export async function startGuiServer(opts = {}) {
                     // visible restart of the pane (refused mid-response). Falls through
                     // to the headless session-drop path for everything else.
                     const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
-                    const rb = teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home))
+                    const rb = teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home), state.home)
                         .refreshBlended(seat, { force: Boolean(body.force) });
                     if (rb.handled)
                         return json(res, rb.ok ? 200 : 409, { ok: Boolean(rb.ok), ...(rb.reason ? { reason: rb.reason } : {}) });
@@ -965,7 +978,8 @@ export async function startGuiServer(opts = {}) {
                     // S4 (wheel retired from blended seats): a blended seat's pane IS
                     // its live session — a second interactive door would be two writers
                     // on one session. The wheel survives only for the headless fallback.
-                    if (isBlended(conf, seat, conf[agentKey] || "pi")) {
+                    const ttyStaffed = resolveSeatStaffing(proj, seat, state.home, conf); // CE-141
+                    if (isBlended(conf, seat, ttyStaffed.agent)) {
                         return json(res, 409, {
                             error: `${seat} is blended — its pane IS the live session; type into the pane itself. ` +
                                 `(The wheel door exists only for headless-fallback seats; opt out with BLEND_${RIG_PREFIX[seat]}=0 if you truly need it.)`,
@@ -975,8 +989,8 @@ export async function startGuiServer(opts = {}) {
                     const r = await startSeatTty({
                         projectRoot: proj,
                         seat,
-                        agent: conf[agentKey] || "pi",
-                        model: conf[agentKey.replace("_AGENT", "_MODEL")] || undefined,
+                        agent: ttyStaffed.agent,
+                        model: ttyStaffed.model,
                         cols: Number(body.cols) || undefined,
                         rows: Number(body.rows) || undefined,
                         home: state.home,
@@ -1008,7 +1022,7 @@ export async function startGuiServer(opts = {}) {
                     const { stopSeatTty } = await import("../ptyseat.js");
                     stopSeatTty(proj, seat);
                     const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
-                    const tp = teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home));
+                    const tp = teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home), state.home);
                     // Cockpit-first S2 (PDR decision 6): STAFFING A SEAT BOOTS IT
                     // IMMEDIATELY — no separate start step. The first staffed seat
                     // brings the rig live; each subsequent staff joins; a restaff on a
@@ -1483,7 +1497,7 @@ export async function startGuiServer(opts = {}) {
                     // that exited is "dead" (auto-revive can act); a seat never booted is
                     // "unknown" (not-booted ≠ provably dead).
                     const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
-                    const st = teamProcessFor(state.project, spawnerFor(), defaultBlendStarter(state.home)).status();
+                    const st = teamProcessFor(state.project, spawnerFor(), defaultBlendStarter(state.home), state.home).status();
                     const seats = st.seats.map((s) => ({
                         seat: s.seat,
                         liveness: s.alive ? "live" : s.startedAt ? "dead" : "unknown",
@@ -1566,7 +1580,7 @@ export async function startGuiServer(opts = {}) {
     const reviver = makeAutoReviver({
         revive: async (seat) => {
             const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
-            teamProcessFor(state.project, spawnerFor(), defaultBlendStarter(state.home)).relaunch(seat);
+            teamProcessFor(state.project, spawnerFor(), defaultBlendStarter(state.home), state.home).relaunch(seat);
         },
     });
     const reviveTimer = setInterval(async () => {
@@ -1574,7 +1588,7 @@ export async function startGuiServer(opts = {}) {
             if (!state.project || !autoReviveEnabled(state.project))
                 return;
             const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
-            const st = teamProcessFor(state.project, spawnerFor(), defaultBlendStarter(state.home)).status();
+            const st = teamProcessFor(state.project, spawnerFor(), defaultBlendStarter(state.home), state.home).status();
             if (!st.booted)
                 return; // team not booted — nothing to monitor
             // Map the lifecycle status to the reviver's SeatHealth shape.
@@ -1620,7 +1634,7 @@ export async function startGuiServer(opts = {}) {
                 const targets = idleParkTargets(st, min, w.lastActivityMs, Date.now());
                 if (targets.length === 0)
                     continue;
-                const tp = teamProcessFor(w.path, spawnerFor(), defaultBlendStarter(home));
+                const tp = teamProcessFor(w.path, spawnerFor(), defaultBlendStarter(home), home);
                 for (const seat of targets) {
                     tp.parkSeat(seat, `idle-parked | quiet ${min}min (IDLE_PARK_MIN, rig.conf — deliberate + visible; never the orchestrator) — staff the seat or Boot/Resume to wake it`);
                 }
@@ -1659,7 +1673,7 @@ export async function startGuiServer(opts = {}) {
         const { guiLog } = await import("./guilog.js");
         for (const p of ws.desiredRunning(home)) {
             try {
-                const st = teamProcessFor(p, spawnerFor(), defaultBlendStarter(home)).boot();
+                const st = teamProcessFor(p, spawnerFor(), defaultBlendStarter(home), home).boot();
                 ensureMirror(p);
                 guiLog(home, `restart-resume: ${p} — ${st.seats.filter((s) => s.alive).length}/${st.seats.length} seats back (desired=running)`);
             }

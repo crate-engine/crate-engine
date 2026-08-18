@@ -14,6 +14,7 @@
 // else keeps the runner-child path byte-identical. A flagged-but-ineligible
 // seat FAILS OPEN to the proven headless path with an honest stamp — never a
 // dead seat.
+import { resolveSeatStaffing } from "../launcher.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -116,6 +117,10 @@ export class TeamProcess {
     readonly projectRoot: string,
     private readonly spawner: SeatSpawner,
     private blendStarter?: BlendStarter, // mutable — see adoptBlendStarter
+    /** CE-141: the user-defaults layer lives under this home. Undefined =
+     * conf-only staffing (tests and any caller that cannot name a home), so a
+     * hermetic run never reads whatever ~/.crate the host happens to have. */
+    private readonly home?: string,
   ) {}
 
   /** Late-bind the blend starter (the five-dead-seats fix, 2026-08-13): the
@@ -178,7 +183,11 @@ export class TeamProcess {
     // headless runner survives ONLY as the invisible fallback for agents
     // without a live-probed TUI shape (and for explicit BLEND_<PREFIX>=0
     // opt-outs). Fail open to the proven path, never a dead seat.
-    const agent = conf[`${RIG_PREFIX[seat]}_AGENT`] || "pi";
+    //
+    // CE-141: this decision MUST use the same staffing the starter will use —
+    // deciding "blend" from a phantom pi and then handing the starter a
+    // non-eligible user default is a throw at boot, not a fallback.
+    const agent = resolveSeatStaffing(this.projectRoot, seat, this.home, conf).agent;
     if (this.blendStarter && isBlended(conf, seat, agent)) {
       this.blends.set(seat, this.blendStarter(seat, this.projectRoot));
       return;
@@ -293,10 +302,15 @@ export class TeamProcess {
 // One TeamProcess per project root, shared across requests in the GUI process.
 const registry = new Map<string, TeamProcess>();
 
-export function teamProcessFor(projectRoot: string, spawner: SeatSpawner, blendStarter?: BlendStarter): TeamProcess {
+export function teamProcessFor(
+  projectRoot: string,
+  spawner: SeatSpawner,
+  blendStarter?: BlendStarter,
+  home?: string, // CE-141: pass it — the user-defaults staffing layer needs it
+): TeamProcess {
   let tp = registry.get(projectRoot);
   if (!tp) {
-    tp = new TeamProcess(projectRoot, spawner, blendStarter);
+    tp = new TeamProcess(projectRoot, spawner, blendStarter, home);
     registry.set(projectRoot, tp);
   } else if (blendStarter) {
     tp.adoptBlendStarter(blendStarter); // a starter-less cached instance upgrades, never sticks

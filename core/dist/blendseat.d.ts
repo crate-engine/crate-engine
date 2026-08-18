@@ -115,8 +115,13 @@ export declare function blendCrewFor(projectRoot: string): BlendCrew;
 /** Test seam: a fresh crew map (watchers from dropped crews stay unref'd). */
 export declare function resetBlendCrews(): void;
 /**
- * The real starter teamproc uses for a flagged, eligible seat: staffing from
- * rig.conf, the project's shared stale tracker, the standing loop fired.
+ * The real starter teamproc uses for a flagged, eligible seat: staffing through
+ * the CANONICAL chain (rig.conf → ~/.crate/defaults.yaml → loadout floor), the
+ * project's shared stale tracker, the standing loop fired.
+ *
+ * CE-141: this read rig.conf alone and fell back to bare pi, so a freshly
+ * attached rig ran pi on the account default while every display showed the
+ * user's configured seat. resolveSeatStaffing is the one door now.
  */
 export declare function defaultBlendStarter(home: string): (seat: Seat, projectRoot: string) => BlendedSeatHandle;
 export {};

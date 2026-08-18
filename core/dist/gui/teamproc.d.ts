@@ -39,9 +39,17 @@ export declare class TeamProcess {
     readonly projectRoot: string;
     private readonly spawner;
     private blendStarter?;
+    /** CE-141: the user-defaults layer lives under this home. Undefined =
+     * conf-only staffing (tests and any caller that cannot name a home), so a
+     * hermetic run never reads whatever ~/.crate the host happens to have. */
+    private readonly home?;
     private procs;
     private blends;
-    constructor(projectRoot: string, spawner: SeatSpawner, blendStarter?: BlendStarter | undefined);
+    constructor(projectRoot: string, spawner: SeatSpawner, blendStarter?: BlendStarter | undefined, // mutable — see adoptBlendStarter
+    /** CE-141: the user-defaults layer lives under this home. Undefined =
+     * conf-only staffing (tests and any caller that cannot name a home), so a
+     * hermetic run never reads whatever ~/.crate the host happens to have. */
+    home?: string | undefined);
     /** Late-bind the blend starter (the five-dead-seats fix, 2026-08-13): the
      * registry memoizes the FIRST instance per project, and the restart
      * handoff's --boot path once created it starter-less — every later boot
@@ -90,7 +98,7 @@ export declare class TeamProcess {
     stop(): TeamProcStatus;
     status(): TeamProcStatus;
 }
-export declare function teamProcessFor(projectRoot: string, spawner: SeatSpawner, blendStarter?: BlendStarter): TeamProcess;
+export declare function teamProcessFor(projectRoot: string, spawner: SeatSpawner, blendStarter?: BlendStarter, home?: string): TeamProcess;
 /** Read one team's status WITHOUT creating a supervisor (the workspace
  * rail's live-count read — a peek must never instantiate lifecycle). */
 export declare function peekTeam(projectRoot: string): TeamProcStatus | undefined;
