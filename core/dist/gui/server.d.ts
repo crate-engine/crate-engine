@@ -8,11 +8,12 @@ export interface GuiState {
     reviveNotes?: ReviveNote[];
     /** T7-3: the dist cli.js this server runs from — used to spawn seat runners. */
     cliPath: string;
-    /** Preview proxy (satellites + Launch in Chrome, 2026-08-13): the target
-     * origin the proxy currently forwards to, pointed by the tokened cockpit
-     * call — and the proxy listener's port. */
-    previewTarget?: string;
-    previewProxyPort?: number;
+    /** Preview proxies (satellites + Launch in Chrome, 2026-08-13; PER
+     * WORKSPACE since the lifecycle PDR — singletons followed the last-
+     * attached project and lied to everyone else): target origins and proxy
+     * ports keyed by project root, pointed by the tokened cockpit call. */
+    previewTargets: Map<string, string>;
+    previewProxyPorts: Map<string, number>;
     /** Pack 3 (stale-reattach): the engine sha THIS process loaded at boot.
      * /api/version reports it so a reattaching `crate open` can tell a stale
      * survivor from a fresh server — engineVersion()'s own sha is DISK truth
@@ -42,16 +43,18 @@ export declare function engineVersion(home: string): {
  * pressed — so the relaunched cockpit comes back over a LIVE rig instead of
  * five booted:false seats, while a plain `crate gui` (no flag) never
  * auto-boots anything. Exported pure so the iff is unit-provable. */
-export declare function restartArgv(state: Pick<GuiState, "cliPath" | "project">, urlFile: string, wasBooted: boolean): string[];
+export declare function restartArgv(state: Pick<GuiState, "cliPath" | "project">, urlFile: string): string[];
 export interface GuiServer {
     server: Server;
     port: number;
     token: string;
     url: string;
     state: GuiState;
-    /** The preview proxy listener (unref'd; loopback-only). */
-    previewProxy?: Server;
+    /** The focused workspace's preview-proxy port (back-compat single form). */
     previewProxyPort?: number;
+    /** EVERY workspace's preview-proxy port — the &pv= handshake list, so the
+     * remote tunnel forwards each workspace's previews (lifecycle PDR d.7). */
+    previewProxyPorts: number[];
 }
 export declare function pickerRoots(state: Pick<GuiState, "home" | "project">): Promise<string[]>;
 /** CE-014 P0 — DETACHED IS NOT CRASHED.
@@ -65,14 +68,12 @@ export declare function pickerRoots(state: Pick<GuiState, "home" | "project">): 
  *
  * Pure on purpose — the endpoint is a one-liner over this, and the WORDING is
  * the whole fix, so it is worth pinning directly. */
-export declare function workspaceDetachment(bound: string | undefined, requested: string): {
-    detached: boolean;
-    boundProject?: string;
-    detachedNote?: string;
-};
 export declare function startGuiServer(opts?: {
     home?: string;
     project?: string;
     detectPath?: string;
     cliPath?: string;
+    /** Test seam: replaces the real runner spawner (a boot in a hermetic
+     * test must never spawn `node <test-file> runner …`). */
+    seatSpawner?: import("./teamproc.js").SeatSpawner;
 }): Promise<GuiServer>;

@@ -17,8 +17,8 @@ import { deriveBrainRoot } from "../launcher.js";
 import { loadLoadout, loadoutPath, SEATS } from "../manifest.js";
 import { discoverPiModels } from "../pidiscovery.js";
 import { loadUserDefaults, orderCatalog, parseRigConf, resolveSeatDetailed, RIG_PREFIX, updateRigStaffing } from "../staffing.js";
-import { appUrlPath, readLastProject, seedDefaultsIfAbsent, tierPaths, updateEngine, writeLastProject } from "../usertier.js";
-import { basename, dirname, join, resolve } from "node:path";
+import { appUrlPath, seedDefaultsIfAbsent, tierPaths, updateEngine } from "../usertier.js";
+import { dirname, join } from "node:path";
 // ── the staffing catalog (P0-5 EVIDENCE + the ladder-proven verified defaults) ──
 // verified = what passed that seat's battle-test ladder (P1–P3). Everything
 // else is selectable but labeled "untested for this seat" by the page.
@@ -196,15 +196,11 @@ export function engineVersion(home) {
  * pressed — so the relaunched cockpit comes back over a LIVE rig instead of
  * five booted:false seats, while a plain `crate gui` (no flag) never
  * auto-boots anything. Exported pure so the iff is unit-provable. */
-export function restartArgv(state, urlFile, wasBooted) {
-    return [
-        state.cliPath,
-        "gui",
-        "--url-file",
-        urlFile,
-        ...(state.project ? ["--project", state.project] : []),
-        ...(wasBooted ? ["--boot"] : []),
-    ];
+export function restartArgv(state, urlFile) {
+    // Lifecycle PDR: the --boot flag is RETIRED — the fresh server resumes
+    // every desired-running workspace from the RECORD (restart-resume), so a
+    // restart needs no special memory of what was running; the record IS it.
+    return [state.cliPath, "gui", "--url-file", urlFile, ...(state.project ? ["--project", state.project] : [])];
 }
 // Flaw 4 (Adam's battle test, 2026-08-10): a leftover ~/.claude.json from an
 // OLD install carries real-looking markers, so the shallow check false-READYs
@@ -350,15 +346,14 @@ export async function pickerRoots(state) {
 // Cached briefly — two frames poll every ~4s and must never hammer the rig's
 // dev server. ANY http answer counts as alive (an error page is still a
 // running server); only a dead socket reads "down" on the glass.
-const studioProbe = { at: 0, target: "", ok: false };
+const studioProbes = new Map(); // keyed by target — two workspaces' slots must not thrash one cache slot
 function probePreviewTarget(target) {
-    if (studioProbe.target === target && Date.now() - studioProbe.at < 2500)
-        return Promise.resolve(studioProbe.ok);
+    const hit = studioProbes.get(target);
+    if (hit && Date.now() - hit.at < 2500)
+        return Promise.resolve(hit.ok);
     return new Promise((resolve) => {
         const done = (ok) => {
-            studioProbe.at = Date.now();
-            studioProbe.target = target;
-            studioProbe.ok = ok;
+            studioProbes.set(target, { at: Date.now(), ok });
             resolve(ok);
         };
         try {
@@ -389,17 +384,13 @@ function probePreviewTarget(target) {
  *
  * Pure on purpose — the endpoint is a one-liner over this, and the WORDING is
  * the whole fix, so it is worth pinning directly. */
-export function workspaceDetachment(bound, requested) {
-    if (bound === undefined || resolve(requested) === resolve(bound))
-        return { detached: false };
-    return {
-        detached: true,
-        boundProject: bound,
-        detachedNote: `this workspace is DETACHED — its seats are not running because this engine is serving ` +
-            `${basename(bound)} instead (one engine per host). Nothing crashed. To bring this team ` +
-            `back: crate open ${requested}`,
-    };
-}
+// (workspaceDetachment RETIRED — workspace lifecycle, PDR
+// dev/pdr/workspace-lifecycle.md: one engine serves N workspaces, so "the
+// engine is serving a different workspace" is no longer a state that exists.
+// The CE-014 P0 lesson it carried — empty panes must never read as a crash —
+// lives on in the Parked/Running record: a workspace with no live seats is
+// PARKED by record (calm invitations), while started-then-died seats stay
+// the downchip's distress. Nothing is ever "detached" by a neighbour.)
 export async function startGuiServer(opts = {}) {
     const home = opts.home ?? process.env.HOME ?? "";
     // Run #3: the installer clones the engine without `crate setup`, so a fresh
@@ -417,27 +408,111 @@ export async function startGuiServer(opts = {}) {
             `falling back to the last attached project. Attach it in the app if you meant a new one.`);
         requested = undefined;
     }
+    // Workspace lifecycle S1 (PDR workspace-lifecycle): the single global
+    // last-project is RETIRED — fold it into the workspace record once
+    // (desired=running: it was the auto-booted one), then read the view
+    // default from the record's focus stamps.
+    const { migrateLastProject, lastFocusedWorkspace } = await import("./workspaces.js");
+    migrateLastProject(home);
     const state = {
         home,
-        // P6-5: a VALID --project wins; else the persisted last project (validated on read)
-        project: requested ?? readLastProject(home),
+        // P6-5, lifecycle edition: a VALID --project wins; else the newest-
+        // focused workspace (a VIEW default — it decides where a project-less
+        // window lands, never what boots).
+        project: requested ?? lastFocusedWorkspace(home),
         // T7-3: the dist cli.js this server runs from (spawns seat runners). The
         // caller passes it explicitly; fall back to this process's entry script.
         cliPath: opts.cliPath ?? process.argv[1] ?? "",
         // Pack 3: captured NOW, while disk == the code this process just loaded;
         // /api/version reports it forever after, however the disk moves on.
         loadedSha: diskEngineSha(home),
+        previewTargets: new Map(),
+        previewProxyPorts: new Map(),
     };
     const token = randomUUID();
-    // Backlog 2b: the telemetry mirror rides the server's project lifecycle —
-    // it starts with the project, follows an attach, and (being unref'd)
-    // dies with the process. One writer, per the park-time law.
-    const { startTelemetryMirror } = await import("../telemetry.js");
-    let telemetry = state.project ? startTelemetryMirror(state.project, home) : undefined;
-    const retargetTelemetry = (projectRoot) => {
-        telemetry?.stop();
-        telemetry = startTelemetryMirror(projectRoot, home);
+    // One preview-proxy listener PER WORKSPACE (lifecycle PDR decision 7) —
+    // lazily creatable for workspaces registered after boot.
+    const previewProxies = new Map();
+    const ensureProxyFor = async (project) => {
+        const got = state.previewProxyPorts.get(project);
+        if (got !== undefined)
+            return got;
+        const proxy = createServer((req, res) => {
+            const target = state.previewTargets.get(project);
+            if (!target) {
+                res.writeHead(503, { "Content-Type": "text/plain" });
+                return res.end("no preview pointed for this workspace — open one from its cockpit's Preview tab first");
+            }
+            let t;
+            try {
+                t = new URL(target);
+            }
+            catch {
+                res.writeHead(502, { "Content-Type": "text/plain" });
+                return res.end("bad preview target");
+            }
+            const preq = httpRequest({ hostname: t.hostname, port: t.port || 80, path: req.url, method: req.method, headers: { ...req.headers, host: t.host } }, (pres) => {
+                res.writeHead(pres.statusCode ?? 502, pres.headers);
+                pres.pipe(res);
+            });
+            preq.on("error", () => {
+                if (!res.headersSent)
+                    res.writeHead(502, { "Content-Type": "text/plain" });
+                res.end("preview target unreachable — is that dev server still up? Re-register or re-point the preview.");
+            });
+            req.pipe(preq);
+        });
+        proxy.on("upgrade", (req, socket, head) => {
+            const target = state.previewTargets.get(project);
+            if (!target)
+                return socket.destroy();
+            let t;
+            try {
+                t = new URL(target);
+            }
+            catch {
+                return socket.destroy();
+            }
+            const up = netConnect(Number(t.port || 80), t.hostname, () => {
+                const headerLines = Object.entries({ ...req.headers, host: t.host })
+                    .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
+                    .join("\r\n");
+                up.write(`${req.method} ${req.url} HTTP/1.1\r\n${headerLines}\r\n\r\n`);
+                if (head && head.length > 0)
+                    up.write(head);
+                socket.pipe(up);
+                up.pipe(socket);
+            });
+            up.on("error", () => socket.destroy());
+            socket.on("error", () => up.destroy());
+        });
+        await new Promise((r) => proxy.listen(0, "127.0.0.1", r));
+        proxy.unref();
+        const a = proxy.address();
+        const p = typeof a === "object" && a ? a.port : 0;
+        previewProxies.set(project, proxy);
+        state.previewProxyPorts.set(project, p);
+        return p;
     };
+    // One spawner truth for every boot/relaunch route (test-injectable).
+    const { defaultSeatSpawner } = await import("./teamproc.js");
+    const spawnerFor = () => opts.seatSpawner ?? defaultSeatSpawner(state.cliPath, state.home);
+    // Backlog 2b, PER WORKSPACE since the lifecycle PDR: one telemetry mirror
+    // per running/attached workspace (the retarget-singleton followed the
+    // last-attached project and went blind on the others). Mirrors are unref'd
+    // and die with the process; a scoped stop stops exactly one.
+    const { startTelemetryMirror } = await import("../telemetry.js");
+    const mirrors = new Map();
+    const ensureMirror = (projectRoot) => {
+        if (!mirrors.has(projectRoot))
+            mirrors.set(projectRoot, startTelemetryMirror(projectRoot, home));
+    };
+    const stopMirror = (projectRoot) => {
+        mirrors.get(projectRoot)?.stop();
+        mirrors.delete(projectRoot);
+    };
+    if (state.project)
+        ensureMirror(state.project);
     const server = createServer(async (req, res) => {
         try {
             const url = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -538,43 +613,49 @@ export async function startGuiServer(opts = {}) {
                 }
                 case "GET /api/team/status": {
                     // T7-3: the GUI-owned team lifecycle — which seats' runners are alive.
-                    const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
+                    const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
                     const proj = url.searchParams.get("project") ?? state.project;
                     if (!proj)
-                        return json(res, 200, { booted: false, seats: [], detached: false });
-                    // CE-014 P0 — DETACHED IS NOT CRASHED. One engine per host, so a
-                    // viewer can ask about a workspace this engine is NOT bound to. Its
-                    // seats are genuinely not running, but the honest reason is "the
-                    // engine is serving a different workspace", not "your team died".
-                    // The system knew this all along (last-project, gui.log) and did not
-                    // say it; five empty "staff this seat" panes cost the operator a
-                    // morning on 2026-08-16. Now the answer carries the reason.
-                    const st = teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home)).status();
-                    return json(res, 200, { ...st, ...workspaceDetachment(state.project, proj) });
+                        return json(res, 200, { booted: false, seats: [] });
+                    // Workspace lifecycle: the answer is THIS workspace's own truth —
+                    // no detachment claims (nothing evicts anything; a seat-less
+                    // workspace is Parked by record, and the record rides along so
+                    // the glass can say "parked", never "crashed").
+                    const st = teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home)).status();
+                    const w = (await import("./workspaces.js")).listWorkspaces(state.home).find((x) => x.path === proj);
+                    return json(res, 200, { ...st, desired: w?.desired ?? "parked" });
                 }
                 case "POST /api/team/boot": {
                     // T7-3: boot the headless team (one supervised runner child per seat).
-                    const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
+                    const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
                     const proj = url.searchParams.get("project") ?? state.project;
                     if (!proj)
                         return json(res, 400, { error: "no project attached" });
                     try {
-                        return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home)).boot());
+                        const st = teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home)).boot();
+                        // lifecycle record (PDR workspace-lifecycle): booting IS the intent
+                        (await import("./workspaces.js")).setWorkspaceDesired(state.home, proj, "running");
+                        ensureMirror(proj); // telemetry rides the workspace, not the server
+                        return json(res, 200, st);
                     }
                     catch (e) {
                         return json(res, 400, { error: e instanceof Error ? e.message : String(e) });
                     }
                 }
                 case "POST /api/team/stop": {
-                    const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
+                    const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
                     const proj = url.searchParams.get("project") ?? state.project;
                     if (!proj)
                         return json(res, 400, { error: "no project" });
-                    return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home)).stop());
+                    const st = teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home)).stop();
+                    // a scoped stop parks exactly THIS workspace on the record
+                    (await import("./workspaces.js")).setWorkspaceDesired(state.home, proj, "parked");
+                    stopMirror(proj);
+                    return json(res, 200, st);
                 }
                 case "POST /api/team/relaunch": {
                     // T7-3: restart exactly one seat's runner (headless per-seat relaunch).
-                    const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
+                    const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
                     const proj = url.searchParams.get("project") ?? state.project;
                     if (!proj)
                         return json(res, 400, { error: "no project" });
@@ -582,7 +663,7 @@ export async function startGuiServer(opts = {}) {
                     const seat = String(body.seat ?? "");
                     if (!SEATS.includes(seat))
                         return json(res, 400, { error: "unknown seat" });
-                    return json(res, 200, teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home)).relaunch(seat));
+                    return json(res, 200, teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home)).relaunch(seat));
                 }
                 case "POST /api/team/abandon": {
                     // T7-2 Team menu: drop a mid-flight loop back to idle (agentctl emit
@@ -606,9 +687,45 @@ export async function startGuiServer(opts = {}) {
                 }
                 case "GET /api/workspaces": {
                     // T7-1: the rail's list — every registered team + the active one.
+                    // Lifecycle S1: each row carries its desired state + LIVE seat
+                    // count (peeked, never instantiated), so the glass can tell
+                    // Running from Parked without touching lifecycle.
                     const { listWorkspaces } = await import("./workspaces.js");
+                    const { peekTeam } = await import("./teamproc.js");
                     const active = url.searchParams.get("project") ?? state.project ?? null;
-                    return json(res, 200, { workspaces: listWorkspaces(state.home), active });
+                    const workspaces = listWorkspaces(state.home).map((w) => {
+                        const st = peekTeam(w.path);
+                        return { ...w, liveSeats: st ? st.seats.filter((s) => s.alive).length : 0 };
+                    });
+                    return json(res, 200, { workspaces, active });
+                }
+                case "POST /api/workspaces/open": {
+                    // Lifecycle S1 (PDR decision 4): THE open door — register + focus +
+                    // desired=running + boot-if-not-live. Touches NOTHING else: no
+                    // rebind, no restart, no other workspace's seats. `crate open
+                    // <path>` and the rail both land here.
+                    const { registerWorkspace, setWorkspaceDesired, setWorkspaceFocused } = await import("./workspaces.js");
+                    const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
+                    const body = await readBody(req);
+                    const p = String(body.path ?? "").trim();
+                    if (!p)
+                        return json(res, 400, { error: "path required" });
+                    if (!existsSync(join(p, ".agents", "rig.conf")))
+                        return json(res, 400, { error: `not a crate rig (no .agents/rig.conf): ${p} — attach it first (the card)` });
+                    registerWorkspace(state.home, p);
+                    setWorkspaceFocused(state.home, p);
+                    setWorkspaceDesired(state.home, p, "running");
+                    if (!state.project)
+                        state.project = p; // a project-less server adopts a view default; never a rebind
+                    try {
+                        const st = teamProcessFor(p, spawnerFor(), defaultBlendStarter(state.home)).boot(); // idempotent — live seats are left alone
+                        ensureMirror(p);
+                        await ensureProxyFor(p);
+                        return json(res, 200, { ok: true, booted: st.booted, alive: st.seats.filter((s) => s.alive).length });
+                    }
+                    catch (e) {
+                        return json(res, 400, { error: e instanceof Error ? e.message : String(e) });
+                    }
                 }
                 case "POST /api/workspaces": {
                     // T7-1: register a project as a workspace (the rail's "add"). The
@@ -632,42 +749,49 @@ export async function startGuiServer(opts = {}) {
                     return json(res, 200, { workspaces: removeWorkspace(state.home, p) });
                 }
                 case "GET /api/preview": {
-                    // PHASE-8 T5: pending previews (pages flagged for review).
+                    // PHASE-8 T5: pending previews (pages flagged for review) — proxy
+                    // port + target are THIS workspace's own (lifecycle PDR d.7).
                     const { pendingPreviews } = await import("./teamctl.js");
                     const proj = url.searchParams.get("project") ?? state.project;
                     if (!proj)
-                        return json(res, 200, { previews: [], proxyPort: state.previewProxyPort ?? null });
-                    return json(res, 200, { previews: pendingPreviews(proj), proxyPort: state.previewProxyPort ?? null, target: state.previewTarget ?? null });
+                        return json(res, 200, { previews: [], proxyPort: null });
+                    return json(res, 200, {
+                        previews: pendingPreviews(proj),
+                        proxyPort: await ensureProxyFor(proj),
+                        target: state.previewTargets.get(proj) ?? null,
+                    });
                 }
                 case "GET /api/studio/state": {
-                    // Design Studio (backlog 10): the slot, DERIVED + probed. Reading
-                    // this also AIMS the proxy at the slot's http target (idempotent) —
-                    // the glass never holds a raw dev URL (the routing law); it renders
-                    // through the engine's proxy or waits.
+                    // Design Studio (backlog 10): the slot, DERIVED + probed, PER
+                    // WORKSPACE. Reading this also AIMS this workspace's proxy at the
+                    // slot's http target (idempotent) — the glass never holds a raw
+                    // dev URL (the routing law); it renders through the proxy or waits.
                     const { pendingPreviews, deriveStudioState } = await import("./teamctl.js");
                     const proj = url.searchParams.get("project") ?? state.project;
                     const previews = proj ? pendingPreviews(proj) : [];
                     const first = previews[previews.length - 1]; // newest wins the slot (LESSONS #7)
                     let probeOk = false;
-                    if (first) {
+                    if (first && proj) {
                         if (first.url.startsWith("http://"))
-                            state.previewTarget = first.url;
+                            state.previewTargets.set(proj, first.url);
                         probeOk = first.url.startsWith("http") ? await probePreviewTarget(first.url) : true;
                     }
-                    return json(res, 200, deriveStudioState(previews, probeOk, state.previewProxyPort));
+                    return json(res, 200, deriveStudioState(previews, probeOk, proj ? await ensureProxyFor(proj) : undefined));
                 }
                 case "POST /api/preview/point": {
-                    // Satellites + Launch in Chrome (2026-08-13): aim the preview proxy
-                    // at a registered target. Pointing requires the token (this call);
-                    // the proxy itself then forwards for any window that can reach the
-                    // tunneled port. http-only: an https target (a real tunnel URL) is
-                    // already reachable and opens direct.
+                    // Satellites + Launch in Chrome (2026-08-13): aim THIS workspace's
+                    // preview proxy at a registered target. Pointing requires the
+                    // token; the proxy then forwards for any window that can reach the
+                    // tunneled port. http-only: an https target is already reachable.
+                    const proj = url.searchParams.get("project") ?? state.project;
+                    if (!proj)
+                        return json(res, 400, { error: "no project" });
                     const body = await readBody(req);
                     const target = String(body.url ?? "").replace(/\/+$/, "");
                     if (!/^http:\/\//.test(target))
                         return json(res, 400, { error: "only http:// targets proxy — https targets open direct" });
-                    state.previewTarget = target;
-                    return json(res, 200, { ok: true, proxyPort: state.previewProxyPort ?? 0 });
+                    state.previewTargets.set(proj, target);
+                    return json(res, 200, { ok: true, proxyPort: await ensureProxyFor(proj) });
                 }
                 case "GET /api/servers": {
                     // Backlog 13: the Servers panel — every visible dev server, honest.
@@ -766,8 +890,8 @@ export async function startGuiServer(opts = {}) {
                     // Blended pane (PDR S2): for a live blended seat, refresh IS a
                     // visible restart of the pane (refused mid-response). Falls through
                     // to the headless session-drop path for everything else.
-                    const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
-                    const rb = teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home))
+                    const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
+                    const rb = teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home))
                         .refreshBlended(seat, { force: Boolean(body.force) });
                     if (rb.handled)
                         return json(res, rb.ok ? 200 : 409, { ok: Boolean(rb.ok), ...(rb.reason ? { reason: rb.reason } : {}) });
@@ -878,13 +1002,15 @@ export async function startGuiServer(opts = {}) {
                     writeFileSync(confFile, updateRigStaffing(readFileSync(confFile, "utf8"), seat, agent, String(body.model ?? "").trim()));
                     const { stopSeatTty } = await import("../ptyseat.js");
                     stopSeatTty(proj, seat);
-                    const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
-                    const tp = teamProcessFor(proj, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home));
+                    const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
+                    const tp = teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home));
                     // Cockpit-first S2 (PDR decision 6): STAFFING A SEAT BOOTS IT
                     // IMMEDIATELY — no separate start step. The first staffed seat
                     // brings the rig live; each subsequent staff joins; a restaff on a
                     // running seat is the same relaunch it always was.
                     tp.relaunch(seat);
+                    // lifecycle record: a staffed seat means this workspace is running
+                    (await import("./workspaces.js")).setWorkspaceDesired(state.home, proj, "running");
                     return json(res, 200, { ok: true, relaunched: true, booted: tp.booted });
                 }
                 case "GET /api/tty/stream-all": {
@@ -1120,7 +1246,8 @@ export async function startGuiServer(opts = {}) {
                     if (handoff.stopped > 0)
                         guiLog(state.home, `restart: stopped ${handoff.stopped} seats for handoff`);
                     const urlFile = join(mkdtempSync(join(tmpdir(), "crate-restart-")), "url");
-                    const args = restartArgv(state, urlFile, handoff.wasBooted);
+                    const args = restartArgv(state, urlFile); // the record carries what resumes — no --boot memory needed
+                    void handoff.wasBooted; // (kept in the handoff report for the log line above)
                     const child = spawn(process.execPath, args, { detached: true, stdio: "ignore" });
                     child.unref();
                     const t0 = Date.now();
@@ -1260,10 +1387,11 @@ export async function startGuiServer(opts = {}) {
                     // — heal BEFORE the doctor runs so its dev-server row probes truth.
                     const { healDevUrl } = await import("../attach.js");
                     const devHeal = await healDevUrl(plan.projectRoot);
-                    state.project = plan.projectRoot; // health/boot now operate on it
-                    retargetTelemetry(plan.projectRoot); // 2b: the mirror follows the project
-                    writeLastProject(state.home, plan.projectRoot); // P6-5: survives restarts
-                    (await import("./workspaces.js")).registerWorkspace(state.home, plan.projectRoot); // T7-1: rail entry
+                    state.project = plan.projectRoot; // the view default follows the attach
+                    ensureMirror(plan.projectRoot); // 2b: a mirror per workspace — attaching adds, never retargets
+                    const ws = await import("./workspaces.js");
+                    ws.registerWorkspace(state.home, plan.projectRoot); // T7-1: rail entry
+                    ws.setWorkspaceFocused(state.home, plan.projectRoot); // lifecycle S1: focus survives restarts (the last-project global is retired)
                     const doctor = await runDoctor(plan.projectRoot);
                     // P6-1 (G2): heavy seat-deps disclosed with the result; install is its own call
                     const heavy = await heavyDeps(plan.projectRoot);
@@ -1307,8 +1435,8 @@ export async function startGuiServer(opts = {}) {
                     // read-screen. A seat with a live runner child is "live"; a child
                     // that exited is "dead" (auto-revive can act); a seat never booted is
                     // "unknown" (not-booted ≠ provably dead).
-                    const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
-                    const st = teamProcessFor(state.project, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home)).status();
+                    const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
+                    const st = teamProcessFor(state.project, spawnerFor(), defaultBlendStarter(state.home)).status();
                     const seats = st.seats.map((s) => ({
                         seat: s.seat,
                         liveness: s.alive ? "live" : s.startedAt ? "dead" : "unknown",
@@ -1390,16 +1518,16 @@ export async function startGuiServer(opts = {}) {
     // generic dead-seat monitor (backoff + ceiling); only its wiring changed.
     const reviver = makeAutoReviver({
         revive: async (seat) => {
-            const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
-            teamProcessFor(state.project, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home)).relaunch(seat);
+            const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
+            teamProcessFor(state.project, spawnerFor(), defaultBlendStarter(state.home)).relaunch(seat);
         },
     });
     const reviveTimer = setInterval(async () => {
         try {
             if (!state.project || !autoReviveEnabled(state.project))
                 return;
-            const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./teamproc.js");
-            const st = teamProcessFor(state.project, defaultSeatSpawner(state.cliPath, state.home), defaultBlendStarter(state.home)).status();
+            const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
+            const st = teamProcessFor(state.project, spawnerFor(), defaultBlendStarter(state.home)).status();
             if (!st.booted)
                 return; // team not booted — nothing to monitor
             // Map the lifecycle status to the reviver's SeatHealth shape.
@@ -1418,79 +1546,106 @@ export async function startGuiServer(opts = {}) {
         }
     }, 30_000);
     reviveTimer.unref();
+    // ── the idle knob (lifecycle PDR decision 6): OFF unless a rig sets
+    // IDLE_PARK_MIN — cmux never reaps your idle terminals. When set, WORKER
+    // seats in a quiet Running workspace park after N idle minutes with a
+    // visible stamp; the orchestrator NEVER parks (it holds the loop's
+    // context) and the workspace stays Running on the record. Deliberate,
+    // visible, configurable — never cost control by eviction accident. ──
+    const idleTimer = setInterval(async () => {
+        try {
+            const ws = await import("./workspaces.js");
+            const { peekTeam, teamProcessFor, defaultBlendStarter, idleParkMinutes, idleParkTargets } = await import("./teamproc.js");
+            const { parseRigConf: prc } = await import("../staffing.js");
+            const { guiLog } = await import("./guilog.js");
+            for (const w of ws.listWorkspaces(home)) {
+                const st = peekTeam(w.path);
+                if (!st || !st.booted)
+                    continue;
+                let conf = {};
+                try {
+                    conf = prc(readFileSync(join(w.path, ".agents", "rig.conf"), "utf8"));
+                }
+                catch {
+                    continue;
+                }
+                const min = idleParkMinutes(conf);
+                const targets = idleParkTargets(st, min, w.lastActivityMs, Date.now());
+                if (targets.length === 0)
+                    continue;
+                const tp = teamProcessFor(w.path, spawnerFor(), defaultBlendStarter(home));
+                for (const seat of targets) {
+                    tp.parkSeat(seat, `idle-parked | quiet ${min}min (IDLE_PARK_MIN, rig.conf — deliberate + visible; never the orchestrator) — staff the seat or Boot/Resume to wake it`);
+                }
+                guiLog(home, `idle knob: parked ${targets.join(", ")} in ${w.path} after ${min}min quiet (orchestrator kept)`);
+            }
+        }
+        catch {
+            /* the knob must never crash the server */
+        }
+    }, 60_000);
+    idleTimer.unref();
     server.on("close", async () => {
         clearInterval(reviveTimer);
+        clearInterval(idleTimer);
+        for (const m of mirrors.values())
+            m.stop();
+        mirrors.clear();
+        for (const p of previewProxies.values())
+            p.close();
+        previewProxies.clear();
         (await import("./teamproc.js")).stopAllTeams(); // T7-3: runners die WITH the GUI
     });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : 0;
-    // ── the preview proxy (satellite windows + Launch in Chrome, 2026-08-13):
-    // previews live on THIS host's loopback (a rig dev server) — an address the
-    // operator's machine cannot reach (the loose-URL theme, third recurrence).
-    // This second listener forwards EVERYTHING at root paths to the currently
-    // POINTED target — so a dev site's absolute /_next assets and its own /api
-    // calls survive — and rides the same ssh tunnel the app already has
-    // (crate open forwards both ports; &pv= in the app-url handshake).
-    // Loopback-only and token-free BY POSTURE (the fonts precedent): pointing
-    // the target requires the tokened cockpit call; the proxy only forwards to
-    // the operator's own dev server. WS upgrades pipe through so HMR stays
-    // quiet inside satellites. unref'd: it serves while the process lives and
-    // never holds it open (tests close only the main server).
-    const proxy = createServer((req, res) => {
-        const target = state.previewTarget;
-        if (!target) {
-            res.writeHead(503, { "Content-Type": "text/plain" });
-            return res.end("no preview pointed — open one from the cockpit's Preview tab first");
+    // ── RESTART-RESUME (lifecycle PDR decision 5): the server comes back and
+    // resumes EVERY workspace whose record says running — cmux's "app relaunch
+    // restores your sessions", by record. Never more than the record, never a
+    // special restart flag: crash, update, host reboot all read the same
+    // truth. A vanished rig is skipped with a log line, never a crash. ──
+    {
+        const ws = await import("./workspaces.js");
+        const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
+        const { guiLog } = await import("./guilog.js");
+        for (const p of ws.desiredRunning(home)) {
+            try {
+                const st = teamProcessFor(p, spawnerFor(), defaultBlendStarter(home)).boot();
+                ensureMirror(p);
+                guiLog(home, `restart-resume: ${p} — ${st.seats.filter((s) => s.alive).length}/${st.seats.length} seats back (desired=running)`);
+            }
+            catch (e) {
+                guiLog(home, `restart-resume: ${p} SKIPPED — ${e instanceof Error ? e.message : String(e)}`);
+            }
         }
-        let t;
-        try {
-            t = new URL(target);
-        }
-        catch {
-            res.writeHead(502, { "Content-Type": "text/plain" });
-            return res.end("bad preview target");
-        }
-        const preq = httpRequest({ hostname: t.hostname, port: t.port || 80, path: req.url, method: req.method, headers: { ...req.headers, host: t.host } }, (pres) => {
-            res.writeHead(pres.statusCode ?? 502, pres.headers);
-            pres.pipe(res);
-        });
-        preq.on("error", () => {
-            if (!res.headersSent)
-                res.writeHead(502, { "Content-Type": "text/plain" });
-            res.end("preview target unreachable — is that dev server still up? Re-register or re-point the preview.");
-        });
-        req.pipe(preq);
-    });
-    proxy.on("upgrade", (req, socket, head) => {
-        const target = state.previewTarget;
-        if (!target)
-            return socket.destroy();
-        let t;
-        try {
-            t = new URL(target);
-        }
-        catch {
-            return socket.destroy();
-        }
-        const up = netConnect(Number(t.port || 80), t.hostname, () => {
-            const headerLines = Object.entries({ ...req.headers, host: t.host })
-                .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
-                .join("\r\n");
-            up.write(`${req.method} ${req.url} HTTP/1.1\r\n${headerLines}\r\n\r\n`);
-            if (head && head.length > 0)
-                up.write(head);
-            socket.pipe(up);
-            up.pipe(socket);
-        });
-        up.on("error", () => socket.destroy());
-        socket.on("error", () => up.destroy());
-    });
-    await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
-    proxy.unref();
-    const paddr = proxy.address();
-    const previewProxyPort = typeof paddr === "object" && paddr ? paddr.port : 0;
-    state.previewProxyPort = previewProxyPort;
-    return { server, port, token, url: `http://127.0.0.1:${port}/?token=${token}`, state, previewProxy: proxy, previewProxyPort };
+    }
+    // ── the preview proxies (satellite windows + Launch in Chrome, 2026-08-13;
+    // PER WORKSPACE since the lifecycle PDR): previews live on THIS host's
+    // loopback (a rig dev server) — an address the operator's machine cannot
+    // reach. Each workspace gets its OWN forwarding listener reading its OWN
+    // pointed target — the singleton that followed the last-attached project
+    // is gone. All ports ride the app-url handshake (&pv=p1,p2,…) so the
+    // remote tunnel forwards every workspace's previews. Loopback-only and
+    // token-free BY POSTURE (the fonts precedent): pointing a target requires
+    // the tokened cockpit call; a proxy only forwards to the operator's own
+    // dev server. WS upgrades pipe through so HMR stays quiet in satellites.
+    // unref'd: they serve while the process lives, never hold it open.
+    for (const w of (await import("./workspaces.js")).listWorkspaces(home)) {
+        if (w.rig)
+            await ensureProxyFor(w.path);
+    }
+    if (state.project)
+        await ensureProxyFor(state.project);
+    const firstPort = state.project !== undefined ? state.previewProxyPorts.get(state.project) : undefined;
+    const previewProxyPort = firstPort ?? [...state.previewProxyPorts.values()][0] ?? 0;
+    return {
+        server,
+        port,
+        token,
+        url: `http://127.0.0.1:${port}/?token=${token}`,
+        state,
+        previewProxyPort,
+        previewProxyPorts: [...state.previewProxyPorts.values()],
+    };
 }
 //# sourceMappingURL=server.js.map

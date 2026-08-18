@@ -1,107 +1,139 @@
-// CE-014 P0 + P1 — the two defects that actually cost the operator a morning.
-//
-// 2026-08-16 09:32: Adam opened the app to five empty seats in JDM-RUSH-NEXT and
-// reasonably concluded Superman had died overnight. It had not. Attaching
-// crate-engine-site three hours earlier had torn down jdm-rush-crate's live team
-// as a SIDE EFFECT — one engine per host, `~/.crate/last-project` a single global
-// value — with no prompt and no notice. Nothing was lost only because the team
-// was parked at the operator's own instruction; mid-build, that work evaporates.
-//
-// P1 (the dangerous defect): a switch that would stop a live team must ASK, and
-// must NAME the casualties. P0 (the expensive one): "detached" must not render
-// identically to "crashed" — the system knew the reason and kept it to itself.
+// Workspace lifecycle (PDR dev/pdr/workspace-lifecycle.md) — the successor to
+// the CE-014 pins. The old law was "ASK before stopping another workspace's
+// team"; the new law is stronger: NOTHING aimed at one workspace can touch
+// another, ever, so the question itself is retired. A workspace is Running or
+// Parked BY RECORD (`desired` in workspaces.json, replacing the last-project
+// global), focus is a view fact, and the 2026-08-16 morning — five empty
+// panes read as a crash — can no longer happen by eviction: a seat-less
+// workspace is Parked (calm invitations), and only started-then-died seats
+// are distress (the downchip).
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { workspaceDetachment } from "../src/gui/server.js";
-import { teamPage } from "../src/gui/teampage.js";
+import {
+  desiredRunning,
+  lastFocusedWorkspace,
+  listWorkspaces,
+  migrateLastProject,
+  setWorkspaceDesired,
+  setWorkspaceFocused,
+} from "../src/gui/workspaces.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const src = (rel: string): string => readFileSync(join(ROOT, rel), "utf8");
 
-// ── P0: detached is a STATE, not a fault ───────────────────────────────────
+function mkHome(): string {
+  const home = mkdtempSync(join(tmpdir(), "wl-home-"));
+  mkdirSync(join(home, ".crate"), { recursive: true });
+  return home;
+}
 
-test("workspaceDetachment: the bound workspace is never detached (CE-014 P0)", () => {
-  assert.deepEqual(workspaceDetachment("/p/site", "/p/site"), { detached: false });
-  // Same place reached by a different spelling is still the same place.
-  assert.deepEqual(workspaceDetachment("/p/site", "/p/site/"), { detached: false });
-  assert.deepEqual(workspaceDetachment("/p/site", "/p/other/../site"), { detached: false });
+function mkRig(home: string, name: string): string {
+  const p = join(home, "repos", name);
+  mkdirSync(join(p, ".agents"), { recursive: true });
+  writeFileSync(join(p, ".agents", "rig.conf"), `PROJECT=${name}\n`);
+  return p;
+}
+
+// ── the record: Running/Parked per workspace, focus separate ────────────────
+
+test("desired state is per-workspace and defaults to parked — running is always an explicit record", () => {
+  const home = mkHome();
+  try {
+    const a = mkRig(home, "alpha");
+    const b = mkRig(home, "beta");
+    setWorkspaceFocused(home, a); // focusing is NOT running
+    assert.deepEqual(desiredRunning(home), [], "focus alone never marks running");
+    setWorkspaceDesired(home, a, "running");
+    setWorkspaceDesired(home, b, "running");
+    assert.deepEqual(new Set(desiredRunning(home)), new Set([a, b]), "N workspaces run at once — that IS co-tenancy");
+    setWorkspaceDesired(home, a, "parked"); // a scoped stop parks exactly one
+    assert.deepEqual(desiredRunning(home), [b], "parking one never touches the other");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
-test("workspaceDetachment: an unbound engine claims nothing (CE-014 P0)", () => {
-  // No project bound: the seats are not running, but we cannot blame a
-  // neighbour for it — asserting "detached" here would be a different lie.
-  assert.deepEqual(workspaceDetachment(undefined, "/p/jdm"), { detached: false });
+test("focus is a VIEW fact: newest focusedAt wins the bare-open default; a vanished rig never does", () => {
+  const home = mkHome();
+  try {
+    const a = mkRig(home, "alpha");
+    const b = mkRig(home, "beta");
+    setWorkspaceFocused(home, a);
+    setWorkspaceFocused(home, b);
+    assert.equal(lastFocusedWorkspace(home), b);
+    rmSync(b, { recursive: true, force: true }); // rig gone — not a valid default
+    assert.equal(lastFocusedWorkspace(home), a);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
-test("workspaceDetachment: a foreign workspace is DETACHED, and the note says why (CE-014 P0)", () => {
-  const d = workspaceDetachment("/p/crate-engine-site", "/p/jdm-rush-crate");
-  assert.equal(d.detached, true);
-  assert.equal(d.boundProject, "/p/crate-engine-site");
-  const note = d.detachedNote ?? "";
-  assert.match(note, /DETACHED/);
-  assert.match(note, /Nothing crashed/, "the two words that would have saved the morning");
-  assert.match(note, /crate-engine-site/, "it names who holds the engine");
-  assert.match(note, /one engine per host/, "with the mechanical reason");
-  assert.match(note, /crate open \/p\/jdm-rush-crate/, "and the exact recovery command");
+test("migration: the last-project global folds into the record ONCE (desired=running — it was the auto-booted one), then retires", () => {
+  const home = mkHome();
+  try {
+    const a = mkRig(home, "alpha");
+    const f = join(home, ".crate", "last-project");
+    writeFileSync(f, a + "\n");
+    migrateLastProject(home);
+    assert.ok(!existsSync(f), "the global file is retired");
+    assert.deepEqual(desiredRunning(home), [a]);
+    assert.equal(lastFocusedWorkspace(home), a);
+    migrateLastProject(home); // idempotent — a missing file is a no-op
+    assert.deepEqual(desiredRunning(home), [a]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
-test("/api/team/status is a one-liner over that decision (CE-014 P0)", () => {
-  const server = src("core/src/gui/server.ts");
-  const ep = server.slice(server.indexOf('case "GET /api/team/status"'), server.indexOf('case "POST /api/team/boot"'));
-  assert.match(ep, /workspaceDetachment\(state\.project, proj\)/, "the endpoint delegates — the wording lives in one place");
+test("a corrupt/legacy registry still reads (old entries get desired=parked), and records survive rewrite", () => {
+  const home = mkHome();
+  try {
+    const a = mkRig(home, "alpha");
+    // a pre-lifecycle registry: no desired/focusedAt fields
+    writeFileSync(join(home, ".crate", "workspaces.json"), JSON.stringify([{ path: a, name: "alpha" }]) + "\n");
+    assert.equal(listWorkspaces(home)[0]!.desired, "parked");
+    setWorkspaceDesired(home, a, "running");
+    assert.equal(listWorkspaces(home)[0]!.desired, "running");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
-test("/api/version exposes the BOUND project, so a switch can be checked first (CE-014 P1)", () => {
-  const server = src("core/src/gui/server.ts");
-  const ep = server.slice(server.indexOf('case "GET /api/version"'), server.indexOf('case "POST /api/shutdown"'));
-  assert.match(ep, /project: state\.project \?\? null/, "without this the CLI had to GUESS what it was about to stop");
-});
+// ── the eviction is DEAD — pinned at the source ─────────────────────────────
 
-test("the cockpit renders a DETACHED bar, distinct from the engine-offline bar (CE-014 P0)", () => {
-  const html = teamPage({ project: "jdm-rush-crate", seats: [] });
-  assert.match(html, /class="detbar" id="detbar"/, "there is a place for the reason to appear");
-  assert.match(html, /body\.detached \.detbar\{display:block\}/, "shown only when detached");
-  assert.match(html, /THIS WORKSPACE IS DETACHED — nothing crashed/, "and it leads with 'nothing crashed'");
-  assert.match(html, /ps&&ps\.detached/, "driven by the server's flag, not a client guess");
-  // Amber, not red: a state to explain, not a failure to alarm about.
-  const css = /\.detbar\{[^}]*\}/.exec(html)?.[0] ?? "";
-  assert.match(css, /var\(--amber\)/);
-  assert.doesNotMatch(css, /var\(--bad\)/);
-  // The whole page script must still parse.
-  for (const m of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) new Function(m[1]!);
-});
-
-// ── P1: the guard, pinned at the source ────────────────────────────────────
-// The confirmation runs inside `crate open` before POST /api/attach/execute.
-// Driving it headlessly would mean stopping a real team, so these pin the
-// properties that make it safe — above all that NO TTY means NO.
-
-test("crate open ASKS before stopping another workspace's live team (CE-014 P1)", () => {
+test("crate open carries NO casualty prompt and NO eviction — the one door is /api/workspaces/open, scoped", () => {
   const cli = src("core/src/cli.ts");
-  const guard = cli.slice(cli.indexOf("CE-014 P1"), cli.indexOf("already open — switch it to this project"));
-  assert.ok(guard.length > 0, "the guard sits BEFORE the switch, not after it");
-  assert.match(guard, /api\/version/, "it asks what the engine is bound to");
-  assert.match(guard, /api\/team\/status/, "and which seats are alive");
-  assert.match(guard, /live seats: /, "the casualties are NAMED, not vaguely counted");
-  assert.match(guard, /--stop-others/, "with a deliberate non-interactive override");
-  assert.match(guard, /is untouched/, "and a 'no' leaves the other workspace alone");
-  assert.match(guard, /break;/, "a 'no' actually stops the command");
-  // Fail-open on a probe error is deliberate: an unreachable engine must not
-  // block the operator's own switch. Only a KNOWN live team gates.
-  assert.match(guard, /fail open/, "an unreachable probe does not wedge the command");
-  // And it tells the truth about what survives: rehydrate saves the session,
-  // not the in-flight turn.
-  assert.match(guard, /work IN FLIGHT right now is lost/);
+  assert.ok(!cli.includes("this would STOP a live team"), "the prompt died with the hazard");
+  assert.ok(!cli.includes("confirmTty("), "the yes/no is retired, not orphaned");
+  assert.match(cli, /--stop-others is obsolete/, "a script still passing the flag gets a loud note, not an error");
+  assert.match(cli, /api\/workspaces\/open/, "explicit open goes through the scoped door");
 });
 
-test("confirmTty refuses without a terminal — a piped switch cannot destroy work (CE-014 P1)", () => {
+test("a BARE open boots NOTHING — what runs is what the record says (kills the auto-staff-the-wrong-workspace face)", () => {
   const cli = src("core/src/cli.ts");
-  const fn = cli.slice(cli.indexOf("async function confirmTty"), cli.indexOf("function defaultEngineSource"));
-  assert.match(fn, /!process\.stdin\.isTTY/, "no tty is detected");
-  assert.match(fn, /return false;/, "and answered NO");
-  assert.match(fn, /--stop-others to confirm/, "pointing at the explicit way to say yes");
-  assert.match(fn, /answer === "y" \|\| answer === "yes"/, "and only an explicit yes counts");
+  const openBlock = cli.slice(cli.indexOf("A BARE open boots NOTHING"), cli.indexOf('case "stop"'));
+  assert.match(openBlock, /if \(project\) \{/, "the boot call is gated on an EXPLICIT project");
+  assert.ok(!openBlock.includes("readLastProject"), "no fallback boot from a global");
+});
+
+test("crate stop <path> parks exactly one workspace; bare stop never rewrites any workspace's record", () => {
+  const cli = src("core/src/cli.ts");
+  const stopCase = cli.slice(cli.indexOf('case "stop"'), cli.indexOf('case "gui"'));
+  assert.match(stopCase, /api\/team\/stop\?project=/, "scoped stop hits the per-workspace route");
+  assert.match(stopCase, /recorded parked/, "with a server down, the RECORD still parks it");
+  assert.match(stopCase, /every other workspace untouched/);
+  const bare = stopCase.slice(stopCase.indexOf("const { appUrlPath }"));
+  assert.ok(!bare.includes("setWorkspaceDesired"), "whole-engine shutdown leaves desired state alone — restart-resume reads it back");
+});
+
+test("the detachment costume is retired — no workspace is ever 'detached by a neighbour'", () => {
+  assert.ok(!src("core/src/gui/server.ts").includes("detachedNote"), "the server makes no detachment claims");
+  const page = src("core/src/gui/teampage.ts");
+  assert.ok(!page.includes('id="detbar"'), "the banner element is gone");
+  assert.ok(!page.includes("body.detached"), "and its display machinery with it");
+  assert.match(page, /PARKED by record/, "the successor doctrine is stated where the banner lived");
 });

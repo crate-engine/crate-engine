@@ -32,7 +32,7 @@ test("tunnelPlan: same port both ends, BatchMode + ExitOnForwardFailure, tokened
 
 test("parseAppUrl + tunnelPlan: &pv= (the preview proxy) rides the handshake and gets its own forward", () => {
   const app = parseAppUrl("http://127.0.0.1:58582/start?token=abc&pv=58600\n");
-  assert.deepEqual(app, { port: "58582", token: "abc", previewPort: "58600" });
+  assert.deepEqual(app, { port: "58582", token: "abc", previewPort: "58600", previewPorts: ["58600"] });
   const plan = tunnelPlan(app!, "superman");
   assert.deepEqual(plan.tunnelArgv, [
     "-o", "BatchMode=yes",
@@ -42,6 +42,14 @@ test("parseAppUrl + tunnelPlan: &pv= (the preview proxy) rides the handshake and
     "-L", "58600:127.0.0.1:58600",
     "superman",
   ]);
+  // lifecycle PDR: pv is a comma LIST now — every workspace's proxy gets a forward
+  const multi = parseAppUrl("http://127.0.0.1:58582/team?token=abc&pv=58600,58601");
+  assert.deepEqual(multi!.previewPorts, ["58600", "58601"]);
+  const mplan = tunnelPlan(multi!, "superman").tunnelArgv.join(" ");
+  assert.match(mplan, /-L 58600:127\.0\.0\.1:58600/);
+  assert.match(mplan, /-L 58601:127\.0\.0\.1:58601/);
+  // a junk entry inside a list is dropped, valid neighbours survive
+  assert.deepEqual(parseAppUrl("http://127.0.0.1:1/team?token=t&pv=58600,nope")!.previewPorts, ["58600"]);
   // a pre-preview server (no pv) keeps the single-forward plan byte-identical
   const old = parseAppUrl("http://127.0.0.1:58582/team?token=abc");
   assert.deepEqual(old, { port: "58582", token: "abc" });

@@ -18,24 +18,29 @@ export function parseAppUrl(text) {
     // tunnel is the transport); anything else in the file is not our server.
     if (u.hostname !== "127.0.0.1" || !u.port || token === "")
         return undefined;
-    // pv = the preview-proxy port (satellites, 2026-08-13) — absent on servers
-    // that predate it; the tunnel plan simply forwards one port then.
-    const pv = u.searchParams.get("pv") ?? "";
-    return { port: u.port, token, ...(/^\d+$/.test(pv) ? { previewPort: pv } : {}) };
+    // pv = the preview-proxy port(s) (satellites, 2026-08-13; a comma LIST
+    // since the lifecycle PDR — one proxy per workspace). Absent on servers
+    // that predate it; a single value stays valid (old handshakes).
+    const pv = (u.searchParams.get("pv") ?? "").split(",").filter((x) => /^\d+$/.test(x));
+    return {
+        port: u.port,
+        token,
+        ...(pv.length > 0 ? { previewPort: pv[0], previewPorts: pv } : {}),
+    };
 }
-/** The tunnel + window plan for a parsed remote app. Same port locally —
+/** The tunnel + window plan for a parsed remote app. Same ports locally —
  * deterministic, and the token in the URL keeps a collision honest (a
  * different local app on that port won't answer with our token). */
 export function tunnelPlan(app, host) {
     const p = app.port;
-    const pv = app.previewPort;
+    const pvs = app.previewPorts ?? (app.previewPort ? [app.previewPort] : []);
     return {
         tunnelArgv: [
             "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-N",
             "-L", `${p}:127.0.0.1:${p}`,
-            // the preview proxy rides the same tunnel (satellites + Launch in
-            // Chrome reach every preview through the connection the app has)
-            ...(pv ? ["-L", `${pv}:127.0.0.1:${pv}`] : []),
+            // every workspace's preview proxy rides the same tunnel (satellites +
+            // Launch in Chrome reach each preview through the connection the app has)
+            ...pvs.flatMap((pv) => ["-L", `${pv}:127.0.0.1:${pv}`]),
             host,
         ],
         probeUrl: `http://127.0.0.1:${p}/health?token=${app.token}`,

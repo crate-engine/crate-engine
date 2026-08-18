@@ -71,9 +71,6 @@ body{background:var(--bg);color:var(--fg);font:15.5px/1.55 var(--body);-webkit-f
 /* CE-014 P0: DETACHED IS NOT CRASHED. Amber, not red — nothing is broken;
    this engine is simply serving another workspace. The old UI showed five
    empty 'staff this seat' panes here, visually identical to a crash. */
-.detbar{display:none;background:#2a2210;border-bottom:1px solid var(--amber);color:var(--amber);font:600 10.5px/1.6 var(--mono);letter-spacing:.10em;padding:10px 16px;text-align:center;flex:0 0 auto}
-.detbar code{color:var(--fg);letter-spacing:0}
-body.detached .detbar{display:block}
 body.dead .deadbar{display:block}
 body.dead header,body.dead main{opacity:.4;pointer-events:none}
 header{padding:12px 22px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:16px;flex:0 0 auto}
@@ -1255,17 +1252,10 @@ async function refresh(){
     // can tell UNSTAFFED (invite) from live/dead. The map persists across a
     // failed status poll — a blip must never flip five panes to "unstaffed".
     if(ps&&ps.seats)ps.seats.forEach(x=>{ALIVEMAP[x.seat]={a:x.alive,s:!!x.startedAt};});
-    // CE-014 P0: say WHY the seats are empty. The engine knows (it is bound to
-    // another workspace) and used to keep that to itself — five empty panes read
-    // as a crash and cost the operator a morning on 2026-08-16.
-    if(ps&&ps.detached){
-      document.body.classList.add("detached");
-      const el=document.getElementById("detbar");
-      if(el&&!el.dataset.set){el.dataset.set="1";
-        el.innerHTML='<b>THIS WORKSPACE IS DETACHED — nothing crashed.</b> Its seats are not running because '
-          +'this engine is serving <b>'+esc(ps.boundProject||"another workspace")+'</b> (one engine per host). '
-          +'Bring this team back with <code>crate open '+esc(PROJECT||"&lt;this project&gt;")+'</code>.';}
-    } else { document.body.classList.remove("detached"); }
+    // (The CE-014 detbar is RETIRED — workspace lifecycle: nothing evicts a
+    // workspace anymore, so "detached by a neighbour" is not a state. A
+    // seat-less workspace is PARKED by record: calm invitations, never a
+    // crash costume. Distress stays the downchip's job.)
     (tr.seats||[]).forEach(s=>{const m=ALIVEMAP[s.seat]||{};s._alive=!!m.a;s._started=!!m.s;});
     if(!GATES.length)GATEREL={}; // gate consumed (DEPLOYED) — clear the client-side release memory
     if(!PREVIEWS.length)PVSRC={}; // previews clear at close — a fresh registration re-points the proxy
@@ -1568,12 +1558,16 @@ window.addEventListener("keydown",e=>{
   else if(e.key==="-"||e.key==="_"){e.preventDefault();bumpScale(-0.1);}
   else if(e.key==="0"){e.preventDefault();resetScale();}
 });
-// ── T7-1: the workspace rail ──
+// ── T7-1: the workspace rail — lifecycle glass (PDR workspace-lifecycle S3):
+// every row says Running (with its live seat count) or Parked, straight from
+// the record + the peeked process truth. Switching is a pure view re-point;
+// N workspaces run at once and the rail is where that becomes visible. ──
 function wsStatus(w){
   if(!w.exists)return{cls:"gone",label:"missing"};
   if(!w.rig)return{cls:"gone",label:"not a rig"};
-  if(w.lastActivityMs&&(Date.now()-w.lastActivityMs)<90000)return{cls:"live",label:"active"};
-  return{cls:"idle",label:"idle"};
+  if(w.liveSeats>0)return{cls:"live",label:w.liveSeats+" live"};
+  if(w.desired==="running")return{cls:"idle",label:"resuming"}; // the record says running; seats are on their way (or the engine just came up)
+  return{cls:"idle",label:"parked"};
 }
 function renderRail(){
   const list=document.getElementById("wslist");if(!list)return;
@@ -2102,7 +2096,6 @@ export function teamPage(view: TeamView, opts: { attachCard?: { machine: string;
 <style>${VIEW_STYLE}</style></head>
 <body>
 <div class="deadbar" id="deadbar">engine offline — the app server is not responding. Reopen with <code>crate open</code>.</div>
-<div class="detbar" id="detbar"></div>
 <div class="railback" id="railback"></div>
 <aside class="rail" id="rail">
   <div class="railhd"><h3>Workspaces</h3><button class="rx" id="railclose" title="Close">×</button></div>

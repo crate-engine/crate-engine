@@ -76,11 +76,28 @@ export declare class TeamProcess {
         ok?: boolean;
         reason?: string;
     };
+    /** Park exactly ONE seat, deliberately and visibly (the lifecycle PDR's
+     * opt-in idle knob — workers only; the caller enforces never-the-
+     * orchestrator). The stamp lands BEFORE the stop so the record says why;
+     * the seat then reads as unstaffed (a calm invitation), never as dead. */
+    parkSeat(seat: Seat, note: string): void;
     /** Stop the whole team (SIGTERM every runner; stop every blended seat). */
     stop(): TeamProcStatus;
     status(): TeamProcStatus;
 }
 export declare function teamProcessFor(projectRoot: string, spawner: SeatSpawner, blendStarter?: BlendStarter): TeamProcess;
+/** Read one team's status WITHOUT creating a supervisor (the workspace
+ * rail's live-count read — a peek must never instantiate lifecycle). */
+export declare function peekTeam(projectRoot: string): TeamProcStatus | undefined;
+/** The idle knob's minutes from rig.conf — undefined = OFF (the default:
+ * cmux never reaps your idle terminals; a team runs until Adam parks it). */
+export declare function idleParkMinutes(conf: Record<string, string>): number | undefined;
+/** PURE: which seats the idle knob parks right now. Workers only — NEVER
+ * the orchestrator (the PDR's invariant: it holds the loop's context).
+ * Guards: the knob must be set; the rig must have been quiet for the whole
+ * window (newest turns.log mtime); and each candidate must have been UP at
+ * least that long (a just-booted team with no turns yet gets its grace). */
+export declare function idleParkTargets(st: TeamProcStatus, idleMin: number | undefined, lastActivityMs: number | null, now: number): Seat[];
 /** Test/shutdown helper: drop all supervised teams (kills their seats). */
 export declare function stopAllTeams(): void;
 /** The /api/restart handoff (runner-deaths fix, FLAWS 2026-08-11): stop every

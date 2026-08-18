@@ -27,26 +27,8 @@ const HOME = process.env.HOME ?? "";
 
 /** Dev default engine source = this working clone (gate answer Q3); the
  * product default for Phase 6 is PRODUCT_ENGINE_ORIGIN (see usertier.ts). */
-/** A yes/no at the terminal, for a question whose wrong answer destroys work
- * (CE-014 P1). No TTY = NO: a piped or CI `crate open` must not silently stop
- * somebody's live team, and `--stop-others` is the explicit way to say yes. */
-async function confirmTty(question: string): Promise<boolean> {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    console.log(`${question}\n  (no terminal to ask — refusing. Re-run with --stop-others to confirm.)`);
-    return false;
-  }
-  process.stdout.write(`${question} [y/N] `);
-  const answer = await new Promise<string>((res) => {
-    const onData = (d: Buffer): void => {
-      process.stdin.pause();
-      process.stdin.off("data", onData);
-      res(d.toString("utf8").trim().toLowerCase());
-    };
-    process.stdin.resume();
-    process.stdin.on("data", onData);
-  });
-  return answer === "y" || answer === "yes";
-}
+// (confirmTty retired with the CE-014 casualty prompt — workspace lifecycle
+// removed the eviction the yes/no guarded; see dev/pdr/workspace-lifecycle.md.)
 
 function defaultEngineSource(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -446,7 +428,6 @@ switch (command) {
     {
       try {
         const { openAppWindow, hasDisplay, headlessHandoff } = await import("./gui/appwindow.js");
-        const { writeLastProject } = await import("./usertier.js");
         let url = await appAlive();
         if (url) {
           // Pack 3 (stale-reattach, live-found 2026-08-12): NEVER reattach
@@ -486,72 +467,17 @@ switch (command) {
             /* version probe failed — reattach as before */
           }
         }
-        if (url && project) {
-          // ── CE-014 P1: NEVER STOP ANOTHER WORKSPACE'S LIVE TEAM SILENTLY ──
-          // One engine per host, so switching it to this project stops whatever
-          // team the OTHER workspace has running. On 2026-08-16 that happened
-          // with no prompt and no notice: attaching crate-engine-site tore down
-          // jdm-rush-crate's five live seats, and nothing was lost only because
-          // the team happened to be parked. Mid-build, that work evaporates.
-          //
-          // So: name the casualties and require a yes. --stop-others is the
-          // deliberate non-interactive form; a pipe with live seats and no flag
-          // REFUSES rather than guessing, because guessing here destroys work.
-          const u = new URL(url);
-          const tok = u.searchParams.get("token") ?? "";
-          const hdr = { "X-Crate-Token": tok };
-          let bound: string | undefined;
-          try {
-            const v = (await (
-              await fetch(`${u.origin}/api/version`, { headers: hdr, signal: AbortSignal.timeout(8000) })
-            ).json()) as { project?: string | null };
-            bound = v.project ?? undefined;
-          } catch {
-            /* an unreachable probe must not block the switch — fail open */
-          }
-          if (bound && resolve(bound) !== resolve(project)) {
-            let live: string[] = [];
-            try {
-              const st = (await (
-                await fetch(`${u.origin}/api/team/status?project=${encodeURIComponent(bound)}`, {
-                  headers: hdr,
-                  signal: AbortSignal.timeout(8000),
-                })
-              ).json()) as { seats?: Array<{ seat: string; alive: boolean }> };
-              live = (st.seats ?? []).filter((x) => x.alive).map((x) => x.seat);
-            } catch {
-              /* same fail-open: unknown is not "none", but we cannot block on a probe */
-            }
-            if (live.length > 0) {
-              const forced = rest.includes("--stop-others") || rest.includes("--force");
-              console.log(
-                `\ncrate open: this would STOP a live team.\n\n` +
-                  `  ${basename(bound)}  (${bound})\n` +
-                  `  live seats: ${live.join(", ")}\n\n` +
-                  `One engine runs one workspace on this host, so opening ${basename(project)} stops those seats.\n` +
-                  `Their sessions survive — a reopened seat resumes with its scrollback (CE-014 rehydrate) —\n` +
-                  `but any work IN FLIGHT right now is lost.\n`,
-              );
-              const ok = forced || (await confirmTty(`Stop ${live.length} live seat(s) in ${basename(bound)} and open ${basename(project)}?`));
-              if (!ok) {
-                console.log(
-                  `crate open: cancelled — ${basename(bound)} is untouched.\n` +
-                    `  To open it instead:      crate open ${bound}\n` +
-                    `  To go ahead anyway:      crate open ${project} --stop-others`,
-                );
-                break;
-              }
-            }
-          }
-          // already open — switch it to this project (idempotent attach)
-          try {
-            await fetch(`${u.origin}/api/attach/execute`, {
-              method: "POST",
-              headers: { ...hdr, "Content-Type": "application/json" },
-              body: JSON.stringify({ target: project, create: false }),
-              signal: AbortSignal.timeout(15000),
-            });
-          } catch { /* best-effort switch */ }
+        // Workspace lifecycle S1 (PDR workspace-lifecycle, decision 4): the
+        // CE-014 casualty prompt is GONE because the hazard it guarded is —
+        // opening a workspace never rebinds the server and never touches
+        // another workspace's seats. --stop-others is dead consent for a
+        // dead hazard; a script still passing it gets a loud note, not an
+        // error (openargs keeps parsing it for exactly this notice).
+        if (rest.includes("--stop-others") || rest.includes("--force")) {
+          console.log(
+            "crate open: --stop-others is obsolete — workspaces no longer evict each other " +
+              "(each runs and stops on its own record; see dev/pdr/workspace-lifecycle.md). Ignored.",
+          );
         }
         if (!url) {
           // start the GUI server headless (its own detached process) and wait
@@ -576,9 +502,8 @@ switch (command) {
           }
           if (!url) throw new Error(`the app server did not come up (headless) — check ${guiLogPath(HOME)} and retry \`crate open\`.`);
         }
-        if (project) writeLastProject(home, project);
-        // Land the app window on the TEAM cockpit (headless is GUI-primary), not
-        // the legacy /health welcome — carry the token + the active project.
+        // Land the app window on the TEAM cockpit (headless is GUI-primary),
+        // carrying the token + the opened project as the window's view.
         const u = new URL(url);
         const teamUrl = `${u.origin}/team?token=${u.searchParams.get("token") ?? ""}${project ? `&project=${encodeURIComponent(project)}` : ""}`;
         // A display-less host (linux server over ssh) boots the server exactly
@@ -588,23 +513,23 @@ switch (command) {
         // door, never a browser window.
         const printOnly = rest.includes("--print-url");
         const win = !printOnly && hasDisplay() ? openAppWindow(teamUrl, { home }) : undefined;
-        // boot the team (GUI-owned lifecycle) so the operator lands on a live
-        // rig. S4 battle-test find (Adam, 2026-08-12): the REMOTE daily drive
-        // runs this command from $HOME on the host, so the cwd-resolved
-        // `project` was empty and the boot was silently SKIPPED — the app
-        // opened to five "opens when the team boots" panes every time, and
-        // the operator had to press Boot/Resume by hand. The server already
-        // falls back to its last attached project (the page showed the right
-        // rig all along) — gate the boot on that same truth, not the cwd.
-        const { readLastProject } = await import("./usertier.js");
-        if (project ?? readLastProject(home)) {
+        // Lifecycle S1 (PDR decision 4): an EXPLICIT open is the one door —
+        // register + focus + desired=running + boot-if-parked, scoped to
+        // exactly this workspace. A BARE open boots NOTHING: what runs is
+        // what the record says (restart-resume reads the same record), so
+        // the app can never again auto-staff a workspace the operator is
+        // not looking at (the CE-014 fourth face).
+        if (project) {
           try {
-            await fetch(`${u.origin}/api/team/boot`, {
+            const r = await fetch(`${u.origin}/api/workspaces/open`, {
               method: "POST",
-              headers: { "X-Crate-Token": u.searchParams.get("token") ?? "" },
-              signal: AbortSignal.timeout(15000),
+              headers: { "X-Crate-Token": u.searchParams.get("token") ?? "", "Content-Type": "application/json" },
+              body: JSON.stringify({ path: project }),
+              signal: AbortSignal.timeout(20000),
             });
-          } catch { /* the Team menu can boot it if this misses */ }
+            const j = (await r.json().catch(() => ({}))) as { error?: string; alive?: number };
+            if (!r.ok) console.log(`crate open: ${j.error ?? "could not open the workspace"} — the window still opens; boot from the Team panel.`);
+          } catch { /* the Team panel can boot it if this misses */ }
         }
         if (printOnly) {
           console.log(teamUrl);
@@ -645,6 +570,39 @@ switch (command) {
             `${e instanceof Error ? e.message : String(e)}`,
         );
       }
+      break;
+    }
+    // Lifecycle S1 (PDR decision 8): `crate stop <path>` parks exactly ONE
+    // workspace — its seats stop, its record reads parked, and nothing else
+    // on the host is touched. Bare `crate stop` stays the whole-engine
+    // shutdown; it never rewrites any workspace's desired state, which is
+    // exactly what restart-resume reads back.
+    const scoped = rest.find((a) => !a.startsWith("--"));
+    if (scoped !== undefined) {
+      const target = resolve(scoped);
+      const { setWorkspaceDesired } = await import("./gui/workspaces.js");
+      const { appUrlPath: aup } = await import("./usertier.js");
+      let stoppedLive = false;
+      if (existsSync(aup(HOME))) {
+        try {
+          const su = new URL(readFileSync(aup(HOME), "utf8").trim());
+          const stok = su.searchParams.get("token") ?? "";
+          const r = await fetch(`${su.origin}/api/team/stop?project=${encodeURIComponent(target)}`, {
+            method: "POST",
+            headers: { "X-Crate-Token": stok },
+            signal: AbortSignal.timeout(15000),
+          });
+          stoppedLive = r.ok; // the server also records desired=parked
+        } catch {
+          /* server unreachable — the record below still parks it */
+        }
+      }
+      if (!stoppedLive) setWorkspaceDesired(HOME, target, "parked");
+      console.log(
+        stoppedLive
+          ? `crate stop: ${basename(target)} parked — its seats stopped; every other workspace untouched.`
+          : `crate stop: ${basename(target)} recorded parked (no reachable app server — nothing was running to stop).`,
+      );
       break;
     }
     const { appUrlPath } = await import("./usertier.js");
@@ -737,12 +695,14 @@ switch (command) {
     try {
       const gui = await startGuiServer({ project });
       guiLog(HOME, `serving on port ${gui.port} (pid ${process.pid}${gui.state.project ? `, project ${gui.state.project}` : ""})`);
-      // With a project attached, land on the Start-engine preflight (W1 — the
-      // /health boot screen retired); with none, the welcome/attach flow.
-      const landing0 = gui.state.project ? gui.url.replace("/?token=", "/start?token=") : gui.url;
+      // Cockpit-first: the handshake lands straight in the cockpit (the old
+      // /start hop was a relic 302 since the pages died — one room, no bounce).
+      const landing0 = gui.url.replace("/?token=", "/team?token=");
       // &pv= rides the handshake (satellite previews, 2026-08-13): the remote
-      // open tunnels the preview-proxy port alongside the app port.
-      const landing = gui.previewProxyPort ? `${landing0}&pv=${gui.previewProxyPort}` : landing0;
+      // open tunnels the preview-proxy ports alongside the app port — ALL of
+      // them since the lifecycle PDR (one proxy per workspace, comma list).
+      const pvList = gui.previewProxyPorts.filter((p) => p > 0).join(",");
+      const landing = pvList ? `${landing0}&pv=${pvList}` : landing0;
       console.log(`crate gui — serving on ${landing}`);
       const { writeFileSync: wf, mkdirSync: mkd } = await import("node:fs");
       const ufIdx = rest.indexOf("--url-file");
@@ -758,26 +718,10 @@ switch (command) {
       } catch {
         /* best-effort — the URL is printed above either way */
       }
-      // Runner-deaths fix (FLAWS 2026-08-11): --boot = the /api/restart
-      // handoff. The old server stopped its team before exiting (so the
-      // runners died with EXIT stamps, not as orphans) and passes this flag
-      // iff the team WAS running — we bring it back so the relaunched cockpit
-      // lands on a live rig, not five booted:false seats. Flag-gated: a plain
-      // `crate gui` never auto-boots; boot() is idempotent, so a later
-      // crate-open boot POST landing on top of this is harmless.
-      if (rest.includes("--boot") && gui.state.project && existsSync(join(gui.state.project, ".agents", "rig.conf"))) {
-        try {
-          // The blend starter MUST ride this boot (five-dead-seats fix,
-          // 2026-08-13): a starter-less boot spawns runner children, and
-          // S4's double-consumer refusal kills them on sight — worse, the
-          // starter-less TeamProcess used to stick in the registry.
-          const { teamProcessFor, defaultSeatSpawner, defaultBlendStarter } = await import("./gui/teamproc.js");
-          const st = teamProcessFor(gui.state.project, defaultSeatSpawner(gui.state.cliPath, gui.state.home), defaultBlendStarter(gui.state.home)).boot();
-          guiLog(HOME, `restart handoff: team rebooted — ${st.seats.map((s) => `${s.seat}:${s.pid ?? "?"}`).join(" ")}`);
-        } catch (e) {
-          guiLog(HOME, `restart handoff: team reboot FAILED — ${e instanceof Error ? e.message : String(e)}`);
-        }
-      }
+      // (--boot RETIRED — lifecycle PDR: startGuiServer's restart-resume
+      // boots every desired-running workspace from the RECORD, so restarts,
+      // updates, crashes and host reboots all read one truth. A stray
+      // --boot from an old server is simply ignored.)
       console.log(`  Ctrl+C stops the app server.`);
       await new Promise(() => {}); // serve until interrupted
     } catch (e) {

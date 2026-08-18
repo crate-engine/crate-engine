@@ -215,6 +215,22 @@ export class TeamProcess {
         this.launchSeat(seat); // sessionFile is gone → the new pane opens fresh, on screen
         return { handled: true, ok: true };
     }
+    /** Park exactly ONE seat, deliberately and visibly (the lifecycle PDR's
+     * opt-in idle knob — workers only; the caller enforces never-the-
+     * orchestrator). The stamp lands BEFORE the stop so the record says why;
+     * the seat then reads as unstaffed (a calm invitation), never as dead. */
+    parkSeat(seat, note) {
+        this.stamp(seat, note);
+        const b = this.blends.get(seat);
+        if (b) {
+            b.stop();
+            this.blends.delete(seat);
+        }
+        const p = this.procs.get(seat);
+        if (p && p.child.exitCode === null && !p.child.killed)
+            p.child.kill("SIGTERM");
+        this.procs.delete(seat); // no corpse record — parked is an invitation, not distress
+    }
     /** Stop the whole team (SIGTERM every runner; stop every blended seat). */
     stop() {
         for (const p of this.procs.values()) {
@@ -251,6 +267,32 @@ export function teamProcessFor(projectRoot, spawner, blendStarter) {
         tp.adoptBlendStarter(blendStarter); // a starter-less cached instance upgrades, never sticks
     }
     return tp;
+}
+/** Read one team's status WITHOUT creating a supervisor (the workspace
+ * rail's live-count read — a peek must never instantiate lifecycle). */
+export function peekTeam(projectRoot) {
+    return registry.get(projectRoot)?.status();
+}
+/** The idle knob's minutes from rig.conf — undefined = OFF (the default:
+ * cmux never reaps your idle terminals; a team runs until Adam parks it). */
+export function idleParkMinutes(conf) {
+    const v = Number(conf.IDLE_PARK_MIN);
+    return Number.isFinite(v) && v > 0 ? v : undefined;
+}
+/** PURE: which seats the idle knob parks right now. Workers only — NEVER
+ * the orchestrator (the PDR's invariant: it holds the loop's context).
+ * Guards: the knob must be set; the rig must have been quiet for the whole
+ * window (newest turns.log mtime); and each candidate must have been UP at
+ * least that long (a just-booted team with no turns yet gets its grace). */
+export function idleParkTargets(st, idleMin, lastActivityMs, now) {
+    if (idleMin === undefined)
+        return [];
+    const windowMs = idleMin * 60_000;
+    if (lastActivityMs !== null && now - lastActivityMs < windowMs)
+        return [];
+    return st.seats
+        .filter((s) => s.alive && s.seat !== "orchestrator" && s.startedAt !== null && now - s.startedAt >= windowMs)
+        .map((s) => s.seat);
 }
 /** Test/shutdown helper: drop all supervised teams (kills their seats). */
 export function stopAllTeams() {

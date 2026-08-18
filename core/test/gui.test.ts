@@ -326,9 +326,13 @@ test("preview proxy: point → forward at ROOT paths (absolute assets + the site
   await new Promise<void>((res) => target.listen(0, "127.0.0.1", res));
   const taddr = target.address() as { port: number };
   try {
-    assert.ok(gui.previewProxyPort && gui.previewProxyPort > 0, "the proxy listener is up");
+    // Lifecycle PDR d.7: the proxy is PER WORKSPACE — /api/preview creates/
+    // returns this workspace's own listener (the server-wide singleton died).
+    const pv0 = await call("GET", "/api/preview");
+    const pxPort = pv0.body.proxyPort as number;
+    assert.ok(pxPort > 0, "this workspace's proxy listener is up");
     // un-pointed proxy says so in plain words
-    const cold = await fetch(`http://127.0.0.1:${gui.previewProxyPort}/`);
+    const cold = await fetch(`http://127.0.0.1:${pxPort}/`);
     assert.equal(cold.status, 503);
     assert.match(await cold.text(), /no preview pointed/);
     // pointing requires the token; https targets refuse (they open direct)
@@ -336,25 +340,25 @@ test("preview proxy: point → forward at ROOT paths (absolute assets + the site
     assert.equal(bad.status, 400);
     const point = await call("POST", "/api/preview/point", { url: `http://127.0.0.1:${taddr.port}` });
     assert.equal(point.status, 200);
-    assert.equal(point.body.proxyPort, gui.previewProxyPort);
+    assert.equal(point.body.proxyPort, pxPort, "point answers with the SAME per-workspace port");
     // root path, deep path, and an absolute asset path all forward
     for (const path of ["/", "/find-my-jdm", "/_next/static/app.js", "/api/leads"]) {
-      const pr: Awaited<ReturnType<typeof fetch>> = await fetch(`http://127.0.0.1:${gui.previewProxyPort}${path}`);
+      const pr: Awaited<ReturnType<typeof fetch>> = await fetch(`http://127.0.0.1:${pxPort}${path}`);
       assert.equal(pr.status, 200, path);
       assert.equal(pr.headers.get("x-probe"), "target", "headers pass through");
       assert.equal(await pr.text(), `served:${path}`);
     }
     // GET /api/preview advertises the proxy port to the page
     const pv = await call("GET", "/api/preview");
-    assert.equal(pv.body.proxyPort, gui.previewProxyPort);
+    assert.equal(pv.body.proxyPort, pxPort);
   } finally {
     target.close();
   }
 });
 
 test("preview proxy: a dead target answers 502 in plain words, never a hang", async () => {
-  await call("POST", "/api/preview/point", { url: "http://127.0.0.1:1" }); // nothing listens on port 1
-  const r = await fetch(`http://127.0.0.1:${gui.previewProxyPort}/`);
+  const point = await call("POST", "/api/preview/point", { url: "http://127.0.0.1:1" }); // nothing listens on port 1
+  const r = await fetch(`http://127.0.0.1:${point.body.proxyPort}/`);
   assert.equal(r.status, 502);
   assert.match(await r.text(), /unreachable.*dev server/i);
 });

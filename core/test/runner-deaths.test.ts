@@ -116,12 +116,11 @@ test("handoffStop on a never-booted team reports wasBooted:false (no --boot for 
   assert.deepEqual(handoffStop(), { wasBooted: false, stopped: 0 });
 });
 
-test("restartArgv carries --boot IFF the team was running, and --project only when attached", () => {
-  const withBoot = restartArgv({ cliPath: "/x/cli.js", project: "/proj" }, "/tmp/u", true);
-  assert.deepEqual(withBoot, ["/x/cli.js", "gui", "--url-file", "/tmp/u", "--project", "/proj", "--boot"]);
-  const noBoot = restartArgv({ cliPath: "/x/cli.js", project: "/proj" }, "/tmp/u", false);
-  assert.ok(!noBoot.includes("--boot"), "an idle team never triggers an auto-boot");
-  const noProject = restartArgv({ cliPath: "/x/cli.js" }, "/tmp/u", false);
+test("restartArgv carries NO --boot — restart-resume reads the desired-state record instead (lifecycle PDR)", () => {
+  const withProject = restartArgv({ cliPath: "/x/cli.js", project: "/proj" }, "/tmp/u");
+  assert.deepEqual(withProject, ["/x/cli.js", "gui", "--url-file", "/tmp/u", "--project", "/proj"]);
+  assert.ok(!withProject.includes("--boot"), "what resumes is what the record says — never a restart flag");
+  const noProject = restartArgv({ cliPath: "/x/cli.js" }, "/tmp/u");
   assert.deepEqual(noProject, ["/x/cli.js", "gui", "--url-file", "/tmp/u"]);
 });
 
