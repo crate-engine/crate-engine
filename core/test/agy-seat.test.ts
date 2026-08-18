@@ -10,13 +10,23 @@
 // about the tier story and silent about the wall behaviour, and a hand-written
 // fixture would have encoded whatever I assumed rather than what agy emits.
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { agentProblem, binaryFor, seatAuthProblem } from "../src/detect.js";
-import { renderProfile, renderBwrapArgs, stateDoorsFor } from "../src/sandbox.js";
+import {
+  CLI_DELIVERY,
+  agyTranscriptsSince,
+  assistantTurnStartedAfter,
+  blendEligible,
+  findBlendSessionCandidates,
+  isBlended,
+  verifyDelivered,
+} from "../src/blend.js";
+import { buildInteractiveInvocation } from "../src/ptyseat.js";
+import { preseedAgyProjectTrust, renderProfile, renderBwrapArgs, stateDoorsFor } from "../src/sandbox.js";
 import { buildHeadlessInvocation, parseSessionId, parseUsage } from "../src/turn.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -216,4 +226,167 @@ test("an uninstalled agy is reported as uninstalled, not as a sign-in problem", 
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+// ── blend promotion (probe recipe run 2026-08-18) ───────────────────────────
+// agy earned BlendCli through the three probes. The shapes below are the
+// probe's own captures, and the trust finding is the one that would have hurt:
+// its first-launch modal's default answer EATS the first delivery, which with
+// fresh-per-task workers is a lost brief every task, not a one-off.
+
+test("agy is blend-eligible — its pane IS the session, not the headless fallback", () => {
+  const e = blendEligible("agy");
+  assert.equal(e.ok, true);
+  assert.equal((e as { cli: string }).cli, "agy");
+});
+
+test("blended by default, and opt-out-able like every other eligible CLI", () => {
+  assert.equal(isBlended({}, "coder", "agy"), true);
+  assert.equal(isBlended({ BLEND_CODER: "0" }, "coder", "agy"), false);
+});
+
+test("delivery timing follows the probe: mid-turn write at ~1s, 120s ceiling", () => {
+  const d = CLI_DELIVERY.agy;
+  assert.equal(d.submitDelayMs, 1000, "the separate-CR gap the recipe proves out");
+  assert.equal(d.verifyTimeoutMs, 120_000);
+  assert.ok(d.verifyPollMs <= 1000, "agy writes mid-turn, so polling may be tighter than a turn-end CLI's");
+});
+
+test("a delivery is verified against the CAPTURED user-record shape", () => {
+  const rec = JSON.stringify({
+    type: "USER_INPUT",
+    source: "USER_EXPLICIT",
+    status: "DONE",
+    content: "<USER_REQUEST>\n#abc123 do the thing\n</USER_REQUEST>",
+  });
+  assert.equal(verifyDelivered(rec, "#abc123", "agy"), true);
+});
+
+test("agy's own SYSTEM echoes must NOT satisfy a delivery", () => {
+  // The probe showed CHECKPOINT/SYSTEM records quote the user's text verbatim.
+  // If those counted, the engine would call a delivery verified that the agent
+  // never actually received — delivery verification's whole point, inverted.
+  for (const echo of [
+    { type: "CHECKPOINT", source: "SYSTEM", content: "{{ CHECKPOINT 0 }} … #abc123 …" },
+    { type: "SYSTEM_MESSAGE", source: "SYSTEM", content: "not actually sent by the user … #abc123" },
+    { type: "PLANNER_RESPONSE", source: "MODEL", content: "#abc123 received." },
+  ]) {
+    assert.equal(verifyDelivered(JSON.stringify(echo), "#abc123", "agy"), false, `${echo.type} must not count`);
+  }
+});
+
+test("an assistant turn after the marker disarms the watchdog — null content never throws", () => {
+  // The probe caught PLANNER_RESPONSE records with content: null mid-flight,
+  // so the assistant check must not touch content at all.
+  const user = JSON.stringify({ type: "USER_INPUT", source: "USER_EXPLICIT", content: "#abc123 go" });
+  const live = JSON.stringify({ type: "PLANNER_RESPONSE", source: "MODEL", content: null });
+  assert.doesNotThrow(() => assistantTurnStartedAfter(`${user}\n${live}`, "#abc123", "agy"));
+  assert.equal(assistantTurnStartedAfter(`${user}\n${live}`, "#abc123", "agy"), true);
+  // …and an assistant record BEFORE the marker must not count as attention.
+  assert.equal(assistantTurnStartedAfter(`${live}\n${user}`, "#abc123", "agy"), false);
+});
+
+test("session discovery reads agy's conversation-keyed transcripts, newest first", () => {
+  const home = mkdtempSync(join(tmpdir(), "agy-brain-"));
+  try {
+    const mk = (conv: string, mtime: number) => {
+      const d = join(home, ".gemini", "antigravity-cli", "brain", conv, ".system_generated", "logs");
+      mkdirSync(d, { recursive: true });
+      const f = join(d, "transcript.jsonl");
+      writeFileSync(f, "");
+      utimesSync(f, mtime / 1000, mtime / 1000);
+      return f;
+    };
+    const older = mk("11111111-1111-1111-1111-111111111111", Date.now() - 60_000);
+    const newer = mk("22222222-2222-2222-2222-222222222222", Date.now() - 1_000);
+    const found = agyTranscriptsSince(home, Date.now() - 120_000);
+    assert.deepEqual(found, [newer, older], "newest first — the pre-pin fast path");
+    assert.deepEqual(agyTranscriptsSince(home, Date.now() - 10_000), [newer], "since-spawn filter holds");
+    void older;
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("the session id is the CONVERSATION dir — every transcript is named the same", () => {
+  const home = mkdtempSync(join(tmpdir(), "agy-sid-"));
+  try {
+    const conv = "abcd-1234";
+    const d = join(home, ".gemini", "antigravity-cli", "brain", conv, ".system_generated", "logs");
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, "transcript.jsonl"), "");
+    const [c] = findBlendSessionCandidates("agy", { projectRoot: "/irrelevant", home, sinceMs: Date.now() - 60_000 });
+    assert.equal(c?.sessionId, conv, "derived from the directory, not the filename");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("discovery is NOT cwd-scoped for agy — the self-verifying pin is what keeps it safe", () => {
+  // agy keys transcripts by conversation, so another project's live session is
+  // a legitimate candidate. Documenting that here on purpose: if this ever
+  // becomes cwd-filtered, the pin logic and this comment must move together.
+  const home = mkdtempSync(join(tmpdir(), "agy-scope-"));
+  try {
+    const d = join(home, ".gemini", "antigravity-cli", "brain", "other-proj", ".system_generated", "logs");
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, "transcript.jsonl"), "");
+    const cands = findBlendSessionCandidates("agy", { projectRoot: "/some/unrelated/repo", home, sinceMs: Date.now() - 60_000 });
+    assert.equal(cands.length, 1, "candidates are machine-wide; verification pins the right one");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// ── probe 3's finding: the trust modal, and the seed that disarms it ────────
+
+test("trust pre-seed adds the project and is idempotent", () => {
+  const home = mkdtempSync(join(tmpdir(), "agy-trust-"));
+  try {
+    const dir = join(home, ".gemini", "antigravity-cli");
+    mkdirSync(dir, { recursive: true });
+    const cfg = join(dir, "settings.json");
+    writeFileSync(cfg, JSON.stringify({ colorScheme: "tokyo night", trustedWorkspaces: ["/existing"] }));
+
+    assert.equal(preseedAgyProjectTrust(home, "/repo/x"), true, "first seed writes");
+    const after = JSON.parse(readFileSync(cfg, "utf8")) as { trustedWorkspaces: string[]; colorScheme: string };
+    assert.deepEqual(after.trustedWorkspaces, ["/existing", "/repo/x"], "ADDS — never replaces the operator's list");
+    assert.equal(after.colorScheme, "tokyo night", "unrelated settings survive");
+
+    assert.equal(preseedAgyProjectTrust(home, "/repo/x"), false, "already trusted = no rewrite");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a missing or corrupt agy config NEVER blocks the spawn", () => {
+  const home = mkdtempSync(join(tmpdir(), "agy-trust2-"));
+  try {
+    assert.equal(preseedAgyProjectTrust(home, "/repo/x"), false, "no config — seat spawns as before");
+    const dir = join(home, ".gemini", "antigravity-cli");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "settings.json"), "{ not json");
+    assert.equal(preseedAgyProjectTrust(home, "/repo/x"), false, "corrupt config — still no throw");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("the interactive door is plain `agy`, resuming by conversation", () => {
+  assert.deepEqual(buildInteractiveInvocation("agy", {}), ["agy"]);
+  assert.deepEqual(buildInteractiveInvocation("agy", { model: "gemini-3.7-flash-high", sessionId: "conv-1" }), [
+    "agy",
+    "--model",
+    "gemini-3.7-flash-high",
+    "--conversation",
+    "conv-1",
+  ]);
+});
+
+test("the interactive door does NOT carry --add-dir — that is a print-mode wart", () => {
+  // agy -p writes "artifacts" into its own scratch and needs --add-dir to touch
+  // the project, reporting SUCCESS either way. Interactive agy works on the
+  // trusted dir directly, so carrying the flag here would imply a bug we do
+  // not have and mask the trust seed being the real mechanism.
+  assert.ok(!buildInteractiveInvocation("agy", {}).includes("--add-dir"));
 });

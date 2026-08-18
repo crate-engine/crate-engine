@@ -136,6 +136,44 @@ export function preseedClaudeProjectTrust(home: string, projectRoot: string): bo
   }
 }
 
+/**
+ * PROBE 3 (blend recipe, 2026-08-18): the agy analog of the claude trust
+ * pre-seed. Launching `agy` interactively in a directory it has not seen
+ * raises a modal — "Do you trust the contents of this project?" — that BLOCKS
+ * the composer, and whose default answer is *trust*. So the first Enter
+ * answers the modal and the first delivery is silently DISCARDED: measured
+ * three times running, the opening brief never reached disk while the second
+ * message landed fine. With fresh-per-task workers "first launch" happens
+ * every task, so that is a lost brief per task, not a one-off.
+ *
+ * WHY SEEDING IS LEGITIMATE (same argument as CE-129's claude seed): `crate
+ * open`/attach IS the operator deliberately pointing a team at this repo —
+ * that is the trust decision. The engine writes the same key agy's own dialog
+ * writes, from outside the wall, atomically.
+ *
+ * Verified: with the project path pre-seeded the modal never renders and the
+ * FIRST delivery lands as a USER_INPUT/USER_EXPLICIT record.
+ *
+ * Never blocks a spawn: absent config (agent not signed in) or unparseable
+ * JSON → false, untouched. Only ever ADDS this one project root.
+ */
+export function preseedAgyProjectTrust(home: string, projectRoot: string): boolean {
+  const cfg = join(home, ".gemini", "antigravity-cli", "settings.json");
+  try {
+    const data = JSON.parse(readFileSync(cfg, "utf8")) as { trustedWorkspaces?: unknown };
+    if (typeof data !== "object" || data === null) return false;
+    const list = Array.isArray(data.trustedWorkspaces) ? (data.trustedWorkspaces as unknown[]) : [];
+    if (list.some((w) => w === projectRoot)) return false;
+    data.trustedWorkspaces = [...list, projectRoot];
+    const tmp = `${cfg}.tmp-crate-${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
+    renameSync(tmp, cfg);
+    return true;
+  } catch {
+    return false; // no config / corrupt config — the seat spawns as before
+  }
+}
+
 const DOORS_MARKER = /^.*\{\{DOORS\}\}.*$/m;
 
 /**

@@ -66,6 +66,20 @@ export function buildInteractiveInvocation(agentArg, opts = {}) {
                 argv.push("--model", model);
             return argv;
         }
+        case "agy": {
+            // The interactive door. NOTE the print-mode trap this deliberately
+            // avoids: `agy -p` treats writes as "artifacts" under its own scratch
+            // dir and needs --add-dir to touch the project at all, reporting SUCCESS
+            // either way. Interactive agy works on the trusted project directory
+            // directly, so the blended path never meets that failure.
+            // Resume rides --conversation <id> (proven: num_turns 2, correct recall).
+            const argv = ["agy"];
+            if (model)
+                argv.push("--model", model);
+            if (sessionId)
+                argv.push("--conversation", sessionId);
+            return argv;
+        }
         case "pi": {
             const argv = ["pi"];
             if (model) {
@@ -76,7 +90,7 @@ export function buildInteractiveInvocation(agentArg, opts = {}) {
             return argv;
         }
         default:
-            throw new Error(`the ${agent} seat has no interactive door yet — claude/codex/pi only (v1); ` +
+            throw new Error(`the ${agent} seat has no interactive door yet — claude/codex/pi/agy only; ` +
                 `the pattern extends once the wired seats earn battle-testing.`);
     }
 }
@@ -367,6 +381,14 @@ export async function startSeatTty(opts) {
             if (agent === "claude") {
                 const { preseedClaudeProjectTrust } = await import("./sandbox.js");
                 preseedClaudeProjectTrust(opts.home ?? homedir(), projectRoot);
+            }
+            // Blend probe 3 (2026-08-18): agy's "Do you trust the contents of this
+            // project?" modal blocks the composer on a first launch and its default
+            // answer EATS the first delivery — a lost brief on every fresh-per-task
+            // spawn. Seed the trust the same way, for the same reason.
+            if (agent === "agy") {
+                const { preseedAgyProjectTrust } = await import("./sandbox.js");
+                preseedAgyProjectTrust(opts.home ?? homedir(), projectRoot);
             }
             const sessionId = ttySessionId(projectRoot, seat, agent);
             const inner = buildInteractiveInvocation(agent, { sessionId, model: opts.model, walled, seat });

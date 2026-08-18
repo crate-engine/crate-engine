@@ -2,7 +2,7 @@ import { type Message } from "./mailbox.js";
 import { type TurnResult } from "./runner.js";
 import type { Seat } from "./manifest.js";
 import type { TurnUsage } from "./turn.js";
-export type BlendCli = "claude" | "pi" | "codex";
+export type BlendCli = "claude" | "pi" | "codex" | "agy";
 /** S4 (blend = THE DEFAULT; grill 2026-08-12): a seat blends iff its staffed
  * agent is blend-eligible AND the rig has not opted the seat out
  * (`BLEND_<PREFIX>=0`). The flag INVERTED at S4 — before, `=1` opted in —
@@ -61,6 +61,17 @@ export declare function piSessionsDir(cwd: string, home: string): string;
  * blended seats share one cwd, so one dir holds several live sessions at
  * once — see findBlendSessionCandidates. */
 export declare function sessionFilesIn(dir: string, sinceMs: number): string[];
+/**
+ * agy keeps ONE transcript per conversation at
+ *   ~/.gemini/antigravity-cli/brain/<conversation_id>/.system_generated/logs/transcript.jsonl
+ * — keyed by CONVERSATION, not by cwd (unlike claude's and pi's munged-cwd
+ * dirs). So this cannot filter by project: every live conversation on the
+ * machine is a candidate, including other projects'. That is safe precisely
+ * because discovery is self-verifying — the supervisor PINS the file the
+ * delivery marker actually landed in, so a mis-pin is impossible (the same
+ * physics that already handles five seats sharing one cwd).
+ */
+export declare function agyTranscriptsSince(home: string, sinceMs: number): string[];
 /** Newest *.jsonl in a session dir touched at/after sinceMs → full path. */
 export declare function newestSessionFileIn(dir: string, sinceMs: number): string | undefined;
 /** codex rollout files are date-keyed, NOT cwd-keyed — the first line is a

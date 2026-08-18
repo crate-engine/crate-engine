@@ -59,7 +59,11 @@ export function persistOverridden(conf, seat) {
  * headless path with a plain-words reason — fail-open, never a dead seat. */
 export function blendEligible(agentArg) {
     const a = normalizeAgent(agentArg);
-    if (a === "claude" || a === "pi" || a === "codex")
+    // agy joined 2026-08-18 through the same three probes (recipe): mid-turn
+    // queueing safe (injection landed as its own USER_INPUT and was consumed at
+    // the turn boundary), session shapes pinned below, and probe 3's trust modal
+    // cured by preseedAgyProjectTrust rather than a live handshake.
+    if (a === "claude" || a === "pi" || a === "codex" || a === "agy")
         return { ok: true, cli: a };
     return {
         ok: false,
@@ -148,6 +152,39 @@ export function sessionFilesIn(dir, sinceMs) {
     }
     return out.sort((a, b) => b.m - a.m).map((e) => e.p);
 }
+/**
+ * agy keeps ONE transcript per conversation at
+ *   ~/.gemini/antigravity-cli/brain/<conversation_id>/.system_generated/logs/transcript.jsonl
+ * — keyed by CONVERSATION, not by cwd (unlike claude's and pi's munged-cwd
+ * dirs). So this cannot filter by project: every live conversation on the
+ * machine is a candidate, including other projects'. That is safe precisely
+ * because discovery is self-verifying — the supervisor PINS the file the
+ * delivery marker actually landed in, so a mis-pin is impossible (the same
+ * physics that already handles five seats sharing one cwd).
+ */
+export function agyTranscriptsSince(home, sinceMs) {
+    const brain = join(home, ".gemini", "antigravity-cli", "brain");
+    let convs;
+    try {
+        convs = readdirSync(brain);
+    }
+    catch {
+        return [];
+    }
+    const out = [];
+    for (const c of convs) {
+        const p = join(brain, c, ".system_generated", "logs", "transcript.jsonl");
+        try {
+            const m = statSync(p).mtimeMs;
+            if (m >= sinceMs)
+                out.push({ p, m });
+        }
+        catch {
+            /* no transcript yet / raced a deletion */
+        }
+    }
+    return out.sort((a, b) => b.m - a.m).map((e) => e.p);
+}
 /** Newest *.jsonl in a session dir touched at/after sinceMs → full path. */
 export function newestSessionFileIn(dir, sinceMs) {
     return sessionFilesIn(dir, sinceMs)[0];
@@ -214,6 +251,12 @@ export function findCodexRollout(home, cwd, sinceMs) {
 /** Session id from a session file's path/first line, per CLI shape. */
 function sessionIdOfFile(cli, path) {
     const base = path.slice(path.lastIndexOf("/") + 1, -".jsonl".length);
+    // agy: the id is the conversation DIRECTORY, not the filename (every
+    // transcript is literally named transcript.jsonl).
+    if (cli === "agy") {
+        const parts = path.split("/");
+        return parts.length >= 4 ? parts[parts.length - 4] : undefined;
+    }
     if (cli === "claude")
         return base;
     if (cli === "pi") {
@@ -251,7 +294,9 @@ export function findBlendSessionCandidates(cli, opts) {
         ? sessionFilesIn(claudeProjectDir(root, home), opts.sinceMs)
         : cli === "pi"
             ? sessionFilesIn(piSessionsDir(root, home), opts.sinceMs)
-            : codexRolloutsSince(home, root, opts.sinceMs);
+            : cli === "agy"
+                ? agyTranscriptsSince(home, opts.sinceMs)
+                : codexRolloutsSince(home, root, opts.sinceMs);
     return files.map((p) => {
         const sid = sessionIdOfFile(cli, p);
         return { path: p, ...(sid ? { sessionId: sid } : {}) };
@@ -280,6 +325,14 @@ function textParts(content) {
  * (per-CLI probed shapes). Shared by delivery verification and the early-
  * stop watchdog so both read the same physics. */
 function isUserRecordWithMarker(d, marker, cli) {
+    if (cli === "agy") {
+        // probed: {"type":"USER_INPUT","source":"USER_EXPLICIT","content":"<USER_REQUEST>…"}
+        // `content` is a FLAT STRING (no content-array walk), and `source`
+        // distinguishes a real delivery from agy's own SYSTEM_MESSAGE/CHECKPOINT
+        // records — which also quote the user text, and would otherwise let a
+        // system echo satisfy a delivery the agent never actually received.
+        return d.type === "USER_INPUT" && d.source === "USER_EXPLICIT" && typeof d.content === "string" && d.content.includes(marker);
+    }
     if (cli === "claude") {
         // probed: {"type":"user","message":{"role":"user","content":...}}
         const msg = d.message;
@@ -301,6 +354,10 @@ function isUserRecordWithMarker(d, marker, cli) {
 /** One parsed jsonl record is ASSISTANT-authored (per-CLI probed shapes) —
  * the sign a response turn is underway. */
 function isAssistantRecord(d, cli) {
+    // probed: {"type":"PLANNER_RESPONSE","source":"MODEL",…}. `content` can be
+    // null on an in-flight record, so this must not touch it.
+    if (cli === "agy")
+        return d.type === "PLANNER_RESPONSE" && d.source === "MODEL";
     if (cli === "claude")
         return d.type === "assistant";
     if (cli === "pi") {
@@ -392,6 +449,10 @@ export const CLI_DELIVERY = {
     claude: { submitDelayMs: 1000, verifyTimeoutMs: 120_000, verifyPollMs: 250 },
     pi: { submitDelayMs: 1000, verifyTimeoutMs: 120_000, verifyPollMs: 2000 },
     codex: { submitDelayMs: 1000, verifyTimeoutMs: 120_000, verifyPollMs: 2000 },
+    // agy probe (2026-08-18): the marker reached disk 1.0s after submit — a
+    // MID-TURN write like claude's, not a turn-end one, so a tighter poll is
+    // honest here. The 1s/120s baseline is unchanged.
+    agy: { submitDelayMs: 1000, verifyTimeoutMs: 120_000, verifyPollMs: 1000 },
 };
 // ── the turn-boundary law (2026-08-13; promoted from the ticket-#5 marathon
 // dead letter — six 120s windows lost to one browser-heavy QA turn) ──

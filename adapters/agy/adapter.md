@@ -32,7 +32,37 @@ extend, so complete it from a terminal you control rather than a relayed one.
 ## Launch
 `launch.sh` echoes:  `agy ${1:+--model $1}`
 
-## Headless seat wire (2026-08-18 — WIRED, not yet battle-tested)
+## BLENDED — the first-class path (promoted 2026-08-18 via the probe recipe)
+
+`agy` is blend-eligible: its pane IS the live agent session, and the engine
+delivers team mail into it with on-disk verification. The headless wire below is
+the demoted fallback, kept for completeness.
+
+- **Session file:** `~/.gemini/antigravity-cli/brain/<conversation_id>/.system_generated/logs/transcript.jsonl`
+  — keyed by CONVERSATION, not cwd, so discovery is machine-wide newest-first
+  and the delivery pin is what scopes it (self-verifying discovery).
+- **User record** (the verifier's target):
+  `{"type":"USER_INPUT","source":"USER_EXPLICIT","content":"<flat string>"}`.
+  `source` matters: agy's own `CHECKPOINT`/`SYSTEM_MESSAGE` records quote the
+  user's text verbatim, and counting those would verify a delivery the agent
+  never received.
+- **Assistant record** (watchdog disarm): `{"type":"PLANNER_RESPONSE","source":"MODEL"}`
+  — `content` can be `null` mid-flight, so never touch it.
+- **Timing:** the marker reaches disk ~1.0s after submit (a MID-turn write, like
+  claude). 1s submit gap / 120s verify ceiling.
+- **Mid-turn injection is safe:** a paste delivered while a turn runs lands as
+  its own `USER_INPUT` and is consumed at the turn boundary.
+- **TRUST MODAL (probe 3 — the finding that would have hurt):** launching in a
+  directory agy has not seen raises "Do you trust the contents of this project?",
+  which blocks the composer and whose default answer is *trust* — so the first
+  Enter answers the modal and the FIRST DELIVERY IS SILENTLY DISCARDED. With
+  fresh-per-task workers that is a lost brief every task. Cured by
+  `preseedAgyProjectTrust()` (core/src/sandbox.ts), the same shape and the same
+  justification as CE-129's claude trust seed.
+- **Gauge:** the transcript carries no token usage, so an agy seat honestly
+  shows the dim placeholder gauge.
+
+## Headless seat wire (2026-08-18 — the DEMOTED fallback, not the seat's home)
 The engine's runner drives one turn at a time (turn.ts):
 ```
 agy -p "<prompt>" --output-format stream-json

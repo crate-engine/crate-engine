@@ -9,7 +9,16 @@
 > CLI need nothing — eligibility is per terminal tool, not per model.
 
 Budget: about an hour per CLI, on a scratch rig. Everything below was how
-claude / pi / codex earned their places (live probes, 2026-08-12).
+claude / pi / codex earned their places (live probes, 2026-08-12) — and how
+**agy** earned its own (2026-08-18; findings in `adapters/agy/adapter.md`).
+
+> Harness lesson from the agy run, worth reading before you probe anything:
+> **set the PTY window size.** A probe rig that forks a pty without
+> `TIOCSWINSZ` gets a terminal a TUI will not paint into — agy emitted 566
+> bytes in 45s and its trust modal never rendered, which read exactly like "the
+> CLI silently eats the first paste". At 120x40 the modal appeared instantly.
+> Two probe rounds were spent nearly filing a false blocker against someone
+> else's software.
 
 ## Probe 1 — mid-turn paste queueing (is injection safe while it works?)
 
