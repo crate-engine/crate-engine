@@ -126,20 +126,15 @@ const MODELS = [
   // labels them "not yet battle-tested". Headless wires: turn.ts (flag surfaces
   // verified against the shipping CLIs; first live turn is the remaining
   // confirm). openclaw stays card-only until its run command is confirmed.
-  {
-    agent: "opencode",
-    model: "",
-    display: "OpenCode (your configured provider + model)",
-    billing: "your provider's terms via `opencode auth` (subscription or API key — provider-dependent)",
-    verifiedFor: [] as Seat[],
-  },
-  {
-    agent: "aider",
-    model: "",
-    display: "Aider (pair-programming CLI, your configured model)",
-    billing: "provider API keys from your aider config/env — typically metered",
-    verifiedFor: [] as Seat[],
-  },
+  // RETIRED 2026-08-18 (Adam's call, closing CE-033): opencode and aider were
+  // WIRED on 2026-07-14 and never earned a live authed turn in the month since —
+  // neither is even installed on either machine. The catalog's job is to offer
+  // seats the engine can stand behind, and "not yet battle-tested" carried for a
+  // month is not a label, it is a promise nobody intends to keep. The wires stay
+  // in turn.ts/detect.ts so a hand-edited rig.conf still runs (fail-open: never
+  // a dead seat), and adapters/{opencode,aider}/adapter.md keep the recipe back
+  // in. Same reasoning that retired the gemini SLICE: stop carrying pending work
+  // nobody is going to do.
   {
     agent: "agy",
     model: "",
@@ -1482,11 +1477,31 @@ export async function startGuiServer(
           // "unknown" (not-booted ≠ provably dead).
           const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
           const st = teamProcessFor(state.project, spawnerFor(), defaultBlendStarter(state.home), state.home).status();
-          const seats = st.seats.map((s) => ({
-            seat: s.seat,
-            liveness: s.alive ? "live" : s.startedAt ? "dead" : "unknown",
-            detail: s.alive ? "runner alive" : s.startedAt ? "runner exited — relaunch to restart" : "not booted",
-          }));
+          // CE-143: an ALIVE process is not a usable seat. A blended seat whose
+          // model refuses (usage limit) or whose auth went stale keeps its
+          // child running and every process-shaped check green, while doing
+          // nothing at all — nine silent minutes on Adam's own account, with
+          // the cockpit showing five live seats and a verified delivery. So a
+          // live seat's pane gets the last word on USABILITY.
+          const { paneUsability } = await import("../health.js");
+          const { readPaneHistory } = await import("../ptyseat.js");
+          const seats = st.seats.map((s) => {
+            if (s.alive) {
+              let problem: { liveness: string; detail: string } | undefined;
+              try {
+                problem = paneUsability(readPaneHistory(state.project!, s.seat));
+              } catch {
+                /* no pane mirror (headless seat, fresh spawn) — stay with the process verdict */
+              }
+              if (problem) return { seat: s.seat, liveness: problem.liveness, detail: problem.detail };
+              return { seat: s.seat, liveness: "live", detail: "runner alive" };
+            }
+            return {
+              seat: s.seat,
+              liveness: s.startedAt ? "dead" : "unknown",
+              detail: s.startedAt ? "runner exited — relaunch to restart" : "not booted",
+            };
+          });
           return json(res, 200, {
             project: state.project,
             booted: st.booted,
@@ -1566,12 +1581,27 @@ export async function startGuiServer(
       const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
       const st = teamProcessFor(state.project, spawnerFor(), defaultBlendStarter(state.home), state.home).status();
       if (!st.booted) return; // team not booted — nothing to monitor
-      // Map the lifecycle status to the reviver's SeatHealth shape.
-      const seats = st.seats.map((s) => ({
-        seat: s.seat, title: s.seat, agent: "", model: "",
-        liveness: (s.alive ? "live" : s.startedAt ? "dead" : "unknown") as Liveness,
-        detail: s.alive ? "runner alive" : "runner exited",
-      }));
+      // Map the lifecycle status to the reviver's SeatHealth shape. CE-143:
+      // a usage-limited seat reports its real state here too. It is not
+      // strictly required — the reviver only ever acts on "dead" — but a
+      // monitor that privately believes a stuck seat is "live" is one refactor
+      // away from relaunching it, and relaunching cannot fix a spent quota:
+      // it would just respawn into the same refusal on a backoff loop.
+      const { paneUsability } = await import("../health.js");
+      const { readPaneHistory } = await import("../ptyseat.js");
+      const seats = st.seats.map((s) => {
+        let live: Liveness = s.alive ? "live" : s.startedAt ? "dead" : "unknown";
+        let detail = s.alive ? "runner alive" : "runner exited";
+        if (s.alive) {
+          try {
+            const problem = paneUsability(readPaneHistory(state.project!, s.seat));
+            if (problem) { live = problem.liveness; detail = problem.detail; }
+          } catch {
+            /* no pane mirror — keep the process verdict */
+          }
+        }
+        return { seat: s.seat, title: s.seat, agent: "", model: "", liveness: live, detail };
+      });
       const notes = await reviver.tick(seats, "headless");
       if (notes.length) {
         state.reviveNotes = [...(state.reviveNotes ?? []), ...notes].slice(-20);

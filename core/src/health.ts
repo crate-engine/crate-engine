@@ -8,7 +8,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Seat } from "./manifest.js";
 
-export type Liveness = "live" | "signed-out" | "dead" | "unknown";
+export type Liveness = "live" | "signed-out" | "usage-limited" | "dead" | "unknown";
 
 /**
  * Run #12 finding: a long-running claude seat's OAuth token can go stale
@@ -18,6 +18,70 @@ export type Liveness = "live" | "signed-out" | "dead" | "unknown";
  * Relaunch. (Kept for the turn-log scan; liveness ≠ usability.)
  */
 export const AUTH_STALE_RE = /API Error: 401|Invalid authentication credentials|OAuth token has expired/;
+
+/**
+ * CE-143 — a blended seat whose MODEL refuses for usage reasons is invisibly
+ * dead. Observed live on Adam's own account 2026-08-18: the pane carried
+ * "You've reached your Fable 5 limit. Run /usage-credits to continue or switch
+ * models with /model." and the seat then did nothing for nine minutes, while
+ * the engine reported booted: true, all five seats alive: true, and the
+ * delivery stamped "verified in 254ms" — because the mail genuinely DID land;
+ * the model simply never acted on it. The process is alive, so every
+ * process-shaped check says healthy. Liveness is about USABILITY, not aliveness.
+ *
+ * This is the same family as the run #12 auth-stale finding above (harness up,
+ * every request 401s), which is why both are decided here by one scanner.
+ */
+export const USAGE_LIMIT_RE =
+  /reached your [^\n]{0,40}limit|usage limit reached|\/usage-credits|out of (?:usage )?credits|RESOURCE_EXHAUSTED|quota exceeded/i;
+
+/**
+ * A pane's bytes are raw ANSI. Strip in THIS order or the text is unreadable:
+ * kitty graphics first (its payload is base64 that otherwise survives as noise
+ * and can itself contain sequence-looking bytes), then OSC, then CSI.
+ */
+export function normalizePaneText(raw: string | Buffer): string {
+  const s = typeof raw === "string" ? raw : raw.toString("utf8");
+  return s
+    .replace(/\x1b_G.*?\x1b\\/gs, "")
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+}
+
+/** How much of the pane's END counts as "what the seat is stuck on". */
+export const PANE_TAIL_CHARS = 2000;
+
+/**
+ * Why a seat that LOOKS alive is not usable — or undefined if nothing is wrong.
+ *
+ * Deliberately reads only the pane's TAIL, and that is the whole defence
+ * against a nasty false positive: a seat is perfectly capable of DISCUSSING
+ * usage limits — reviewing rate-limit code, writing an error message, reading
+ * this very file — and a naive whole-pane scan would declare a hard-working
+ * seat usage-limited. A seat that is still working produces output AFTER
+ * whatever it was discussing, so the banner drops out of the tail. A seat that
+ * is genuinely stuck on the refusal has it as its last word.
+ *
+ * In other words: SILENCE is the detector, the banner only NAMES the cause.
+ */
+export function paneUsability(raw: string | Buffer | undefined): { liveness: Liveness; detail: string } | undefined {
+  if (raw === undefined || raw.length === 0) return undefined;
+  const text = normalizePaneText(raw);
+  const tail = text.slice(-PANE_TAIL_CHARS);
+  if (USAGE_LIMIT_RE.test(tail)) {
+    return {
+      liveness: "usage-limited",
+      detail: "model unavailable — the pane's last output is a usage/quota limit; the seat is alive but cannot work (top up, or staff a different model)",
+    };
+  }
+  if (AUTH_STALE_RE.test(tail)) {
+    return {
+      liveness: "signed-out",
+      detail: "signed out — the pane's last output is an auth failure; an in-session /login does NOT recover it, relaunch the seat",
+    };
+  }
+  return undefined;
+}
 
 export interface SeatHealth {
   seat: Seat;

@@ -75,13 +75,45 @@ serve_cmd() {
 # CE-107: there is ALWAYS a backend. A seat sandbox has neither systemd --user
 # nor launchd, and returning 1 there made the whole tool unusable exactly where
 # the coder needs it — so the last rung is `bare`: unsupervised, but running.
+# CE-144 (probe rig, 2026-08-18; reproduced inside a rendered coder wall on the
+# Mac): the launchd rung used to be chosen on a READ probe — `launchctl print`
+# SUCCEEDS inside a seat's wall — while the thing the backend must actually DO is
+# WRITE ~/Library/LaunchAgents/<name>.plist, which the wall denies ("Operation
+# not permitted", and `launchctl bootstrap` then fails 5: I/O error). Probing the
+# wrong capability made macOS seats fall off a cliff Linux seats never hit:
+# superman's seats get systemd supervision, Mac seats got a hard error, and every
+# `dev-server restart` runbook dead-ended inside the wall. So the probe now tests
+# what the backend needs — can we write the plist?
+ld_writable() {
+  local d="$HOME/Library/LaunchAgents" probe
+  mkdir -p "$d" 2>/dev/null || return 1
+  probe="$d/.crate-writetest.$$"
+  # A real write, not a permission-bit check: a sandbox denial does not show up
+  # in the mode bits, which is exactly how this hid.
+  ( : > "$probe" ) 2>/dev/null || return 1
+  rm -f "$probe" 2>/dev/null || true
+  return 0
+}
+
 backend() {
   if [ "${DEV_BACKEND:-}" = "bare" ]; then
     echo bare
   elif command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
     echo systemd
   elif [ "$(uname -s)" = "Darwin" ] && launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
-    echo launchd
+    if ld_writable; then
+      echo launchd
+    else
+      # Say it, don't just do it — the asymmetry with Linux is the thing that
+      # confuses people, so name it once, on the commands that act. stderr, so
+      # the note never lands in $(backend).
+      case "$CMD" in
+        up|install|restart)
+          echo "dev-server: launchd is present but $HOME/Library/LaunchAgents is not writable from here (a walled seat) — using the BARE backend instead: the server runs and \`dev-server restart\` works, but there is NO auto-restart and no supervisor memory cap. Run it outside the wall for a supervised server." >&2
+          ;;
+      esac
+      echo bare
+    fi
   else
     echo bare
   fi
@@ -223,7 +255,7 @@ ld_run() {
       ld_write
       launchctl bootout "gui/$LD_UID/$NAME" 2>/dev/null || true
       kill_adhoc; sleep 1
-      launchctl bootstrap "gui/$LD_UID" "$(ld_plist)" || { echo "dev-server: launchctl bootstrap failed" >&2; exit 1; }
+      launchctl bootstrap "gui/$LD_UID" "$(ld_plist)" || { echo "dev-server: launchctl bootstrap failed (if this is a sandboxed seat, re-run with DEV_BACKEND=bare — see CE-144)" >&2; exit 1; }
       launchctl kickstart "gui/$LD_UID/$NAME" 2>/dev/null || true
       echo "UP  $NAME -> $BIND:$PORT (heap ${HEAP}MB · launchd KeepAlive · logs: $(ld_log))"
       ;;
