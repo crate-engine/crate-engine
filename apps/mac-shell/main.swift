@@ -364,30 +364,9 @@ final class PanelActions: NSObject, NSMenuItemValidation {
     }
     cockpit()?.evaluateJavaScript("window.crateOpenStudio && window.crateOpenStudio()", completionHandler: nil)
   }
-  /// UPDATE menu (Adam, 2026-08-15): one click updates BOTH sides. The page
-  /// bridge runs the engine-host update through the API (correct for remote
-  /// topologies — the engine lives where the repos live) with the existing
-  /// compat report + restart confirm; and when the topology IS remote, this
-  /// machine's own engine copy + app bundle need the same update (the
-  /// by-hand fan-out ritual, made a door) — run local `crate update` too.
-  @objc func updateNow(_ sender: Any?) {
-    cockpit()?.evaluateJavaScript("window.crateUpdate && window.crateUpdate()", completionHandler: nil)
-    let remote = readRemoteHost()
-    if !remote.isEmpty {
-      DispatchQueue.global(qos: .utility).async {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: home + "/.local/bin/crate")
-        p.arguments = ["update"]
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = "\(home)/.local/bin:/usr/local/bin:/opt/homebrew/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
-        p.environment = env
-        try? p.run()
-        p.waitUntilExit()
-      }
-    }
-  }
-  @objc func checkUpdates(_ sender: Any?) { open("health") }
+  // (updateNow/checkUpdates RETIRED 2026-08-18 with the top-level Update
+  // menu — the app-menu "Update Crate Engine…" updates the WHOLE fleet via
+  // the hub; the Health panel keeps its per-engine page button.)
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { cockpit() != nil }
 }
 
@@ -441,7 +420,7 @@ final class FleetActions: NSObject, NSMenuDelegate {
       let name = host["host"] as? String ?? "?"
       let state = host["state"] as? String ?? "unknown"
       let skew = host["skew"] as? Bool ?? false
-      let header = NSMenuItem(title: "\(name)\(skew ? "  ⚠ engine differs — Update menu fans out" : "")", action: nil, keyEquivalent: "")
+      let header = NSMenuItem(title: "\(name)\(skew ? "  ⚠ engine differs — Update Crate Engine (app menu) fans out" : "")", action: nil, keyEquivalent: "")
       header.isEnabled = false
       menu.addItem(header)
       let workspaces = host["workspaces"] as? [[String: Any]] ?? []
@@ -493,6 +472,42 @@ final class FleetActions: NSObject, NSMenuDelegate {
       _ = fetchJSON(url, method: "POST", body: body, timeout: 150) // dial + boot can take a while; reopen the menu when done
     }
   }
+
+  /// Adam's ask (2026-08-18): crate-update lives IN the app — the app-menu
+  /// item (where Preferences would be) updates the hub + EVERY remembered
+  /// host in one click, then reports per host. Running engines keep their
+  /// loaded code until relaunch — the Fleet menu's ⚠ skew markers are the
+  /// honest "restart to finish" signal. The old top-level Update menu (which
+  /// only covered the viewed host + a REMOTE=-gated local fan-out) retires:
+  /// one home per control.
+  @objc func updateFleet(_ sender: Any?) {
+    guard let url = hubFleetURL("/api/fleet/update") else {
+      let a = NSAlert()
+      a.messageText = "Fleet brain not up yet"
+      a.informativeText = "The local engine hasn't answered — give it a few seconds and try again."
+      a.runModal()
+      return
+    }
+    DispatchQueue.global(qos: .userInitiated).async { [self] in
+      // npm install per host — minutes, not seconds
+      let res = fetchJSON(url, method: "POST", body: Data("{}".utf8), timeout: 900)
+      DispatchQueue.main.async {
+        let a = NSAlert()
+        if let results = res?["results"] as? [[String: Any]] {
+          a.messageText = "Crate Engine updated across the fleet"
+          a.informativeText = results.map { r in
+            let host = r["local"] as? Bool == true ? "This Mac" : (r["host"] as? String ?? "?")
+            let ok = r["ok"] as? Bool == true ? "✓" : "✗"
+            return "\(ok) \(host) — \(r["note"] as? String ?? "")"
+          }.joined(separator: "\n") + "\n\nRunning engines pick this up at their next relaunch (the Fleet menu shows ⚠ on anyone still behind)."
+        } else {
+          a.messageText = "Fleet update did not answer"
+          a.informativeText = "The hub stopped responding mid-update — check the Fleet menu, or run `crate update` in a terminal to see the detail."
+        }
+        a.runModal()
+      }
+    }
+  }
 }
 
 // Minimal real menus — copy/paste and Cmd-Q must work inside the cockpit
@@ -501,6 +516,12 @@ let mainMenu = NSMenu()
 let appItem = NSMenuItem(); mainMenu.addItem(appItem)
 let appMenu = NSMenu()
 appMenu.addItem(withTitle: "About Crate Engine", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+appMenu.addItem(NSMenuItem.separator())
+// Adam's ask (2026-08-18): the updater lives where Preferences would —
+// one click, whole fleet (⌘U kept from the retired Update menu).
+let fleetUpdItem = NSMenuItem(title: "Update Crate Engine…", action: #selector(FleetActions.updateFleet(_:)), keyEquivalent: "u")
+fleetUpdItem.target = FleetActions.shared
+appMenu.addItem(fleetUpdItem)
 appMenu.addItem(NSMenuItem.separator())
 appMenu.addItem(withTitle: "Hide Crate Engine", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
 appMenu.addItem(withTitle: "Quit Crate Engine", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -538,15 +559,8 @@ let fleetMenu = NSMenu(title: "Fleet")
 fleetMenu.delegate = FleetActions.shared // rows rebuilt from /api/fleet each open
 fleetMenu.autoenablesItems = false
 fleetItem.submenu = fleetMenu
-let updateItem = NSMenuItem(); mainMenu.addItem(updateItem)
-let updateMenu = NSMenu(title: "Update")
-let updNowItem = NSMenuItem(title: "Update Engine Now", action: #selector(PanelActions.updateNow(_:)), keyEquivalent: "u")
-updNowItem.target = PanelActions.shared
-updateMenu.addItem(updNowItem)
-let updCheckItem = NSMenuItem(title: "Check for Updates", action: #selector(PanelActions.checkUpdates(_:)), keyEquivalent: "")
-updCheckItem.target = PanelActions.shared
-updateMenu.addItem(updCheckItem)
-updateItem.submenu = updateMenu
+// (The top-level Update menu RETIRED 2026-08-18 — the fleet-wide updater
+// lives in the app menu now; the Health panel keeps its per-engine button.)
 app.mainMenu = mainMenu
 
 let delegate = AppDelegate()

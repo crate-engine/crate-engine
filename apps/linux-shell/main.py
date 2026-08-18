@@ -320,6 +320,9 @@ class Shell:
         app_root = Gtk.MenuItem(label="Crate Engine")
         app_menu = Gtk.Menu()
         app_root.set_submenu(app_menu)
+        # Adam's ask (2026-08-18): the updater lives where Preferences would —
+        # one click, whole fleet (ctrl+U kept from the retired Update menu).
+        item(app_menu, "Update Crate Engine…", Gdk.KEY_u, Gdk.ModifierType.CONTROL_MASK, self.on_fleet_update)
         item(app_menu, "Quit", Gdk.KEY_q, Gdk.ModifierType.CONTROL_MASK, lambda *_: Gtk.main_quit())
         bar.append(app_root)
 
@@ -351,11 +354,6 @@ class Shell:
         self.view_items.append(studio)
         bar.append(view_root)
 
-        # UPDATE menu (Adam, 2026-08-15): one click updates BOTH sides — the
-        # page bridge updates the ENGINE HOST via the API (compat report +
-        # restart confirm), and when the topology is remote this machine's
-        # own engine copy + shell need the same update: local `crate update`
-        # fans out (its linux-shell hook refreshes this very app).
         # THE FLEET RAIL, F2 (PDR fleet-rail): the window is the multiplexer.
         # Rows rebuilt from the hub's /api/fleet on every open (the "show"
         # signal); click swaps the webview to that workspace's cockpit. The
@@ -365,17 +363,9 @@ class Shell:
         fleet_root.set_submenu(fleet_menu)
         fleet_menu.connect("show", self.on_fleet_open)
         bar.append(fleet_root)
-        upd_root = Gtk.MenuItem(label="Update")
-        upd_menu = Gtk.Menu()
-        upd_root.set_submenu(upd_menu)
-        upd_now = item(upd_menu, "Update Engine Now", Gdk.KEY_u, Gdk.ModifierType.CONTROL_MASK, self.on_update)
-        upd_now.set_sensitive(False)
-        self.view_items.append(upd_now)
-        upd_check = item(upd_menu, "Check for Updates", None, None,
-                         lambda *_: self.run_js("window.crateOpenPanel && window.crateOpenPanel('health')"))
-        upd_check.set_sensitive(False)
-        self.view_items.append(upd_check)
-        bar.append(upd_root)
+        # (The top-level Update menu RETIRED 2026-08-18 — the fleet-wide
+        # updater lives in the Crate Engine app menu now; the Health panel
+        # keeps its per-engine button.)
         return bar
 
     # ── the Fleet menu (PDR fleet-rail F2) ──
@@ -409,7 +399,7 @@ class Shell:
             menu.show_all()
             return
         for host in fleet.get("hosts", []):
-            skew = "  ⚠ engine differs — Update menu fans out" if host.get("skew") else ""
+            skew = "  ⚠ engine differs — Update Crate Engine (app menu) fans out" if host.get("skew") else ""
             row(f"{host.get('host', '?')}{skew}")
             if host.get("state") == "connected" or host.get("local"):
                 # CE-136: an empty host must never dead-end — the ＋ new rig
@@ -440,17 +430,38 @@ class Shell:
                 pass
         threading.Thread(target=work, daemon=True).start()
 
-    def on_update(self, *_):
-        self.run_js("window.crateUpdate && window.crateUpdate()")
-        if read_remote_host():
-            def fan_out():
-                env = dict(os.environ)
-                env["PATH"] = f"{HOME}/.local/bin:/usr/local/bin:" + env.get("PATH", "/usr/bin:/bin")
-                try:
-                    subprocess.run([CRATE, "update"], capture_output=True, timeout=300, env=env)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
-            threading.Thread(target=fan_out, daemon=True).start()
+    def on_fleet_update(self, *_):
+        # Adam's ask (2026-08-18): one click updates the hub + EVERY
+        # remembered host (POST /api/fleet/update — minutes, off-thread).
+        # Running engines keep loaded code until relaunch; the Fleet menu's
+        # ⚠ skew markers are the honest "restart to finish" signal.
+        api = self._hub_api("/api/fleet/update")
+        if not api:
+            self._fleet_update_report("Fleet brain not up yet — the local engine hasn't answered; try again shortly.")
+            return
+
+        def work():
+            try:
+                req = urllib.request.Request(api, data=b"{}", headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=900) as r:
+                    results = json.load(r).get("results", [])
+                lines = []
+                for res in results:
+                    host = "this machine" if res.get("local") else res.get("host", "?")
+                    lines.append(("✓" if res.get("ok") else "✗") + f" {host} — {res.get('note', '')}")
+                msg = "\n".join(lines) + "\n\nRunning engines pick this up at their next relaunch (the Fleet menu shows ⚠ on anyone still behind)."
+            except OSError:
+                msg = "Fleet update did not answer — check the Fleet menu, or run `crate update` in a terminal to see the detail."
+            GLib.idle_add(self._fleet_update_report, msg)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _fleet_update_report(self, msg):
+        d = Gtk.MessageDialog(transient_for=self.win, modal=True, message_type=Gtk.MessageType.INFO,
+                              buttons=Gtk.ButtonsType.OK, text="Crate Engine fleet update")
+        d.format_secondary_text(msg)
+        d.run()
+        d.destroy()
+        return False
 
     def active_view(self):
         w = self.win.get_window()

@@ -94,6 +94,27 @@ export interface FleetLocalDeps {
  * never dials and never blocks on ssh — the menu must open instantly.
  */
 export declare function fleetView(deps: FleetLocalDeps, exec?: FleetExec): FleetView;
+export interface FleetUpdateResult {
+    host: string;
+    local: boolean;
+    ok: boolean;
+    /** Plain words: "engine X → Y" / "already current" / the failure. */
+    note: string;
+}
+/** ONE update for the whole fleet (Adam's ask, 2026-08-18: "build
+ * crate-update into the app itself"): the hub updates its own engine, then
+ * every remembered host over the operator's ssh — the by-hand both-machines
+ * ritual becomes one app-menu click. Sequential on purpose (update output
+ * stays legible per host); failures are per-host and never stop the rest.
+ * Running engines stay on their loaded code until relaunch — the Fleet
+ * menu's skew markers show exactly who is behind, which is the honest
+ * "restart to finish" signal. */
+export declare function updateFleet(home: string, localUpdate: () => {
+    before: string;
+    after: string;
+}, exec?: FleetExec): Promise<FleetUpdateResult[]>;
+/** ssh leg for a remote update (BatchMode, same posture as boot/appUrl). */
+export declare function updateArgv(host: string): string[];
 /** The explicit connect (POST /api/fleet/connect and the menu's Retry):
  * dial NOW, refresh rows, answer with the row. */
 export declare function connectHost(host: string, deps: Pick<FleetLocalDeps, "hubSha" | "home">, exec?: FleetExec): Promise<FleetHostRow>;

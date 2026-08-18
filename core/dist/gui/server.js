@@ -1346,6 +1346,14 @@ export async function startGuiServer(opts = {}) {
                         })),
                     }));
                 }
+                case "POST /api/fleet/update": {
+                    // Adam's ask (2026-08-18): crate-update lives IN the app — one
+                    // click updates the hub + every remembered host. Long call by
+                    // nature (npm install per host); the shell runs it off-thread.
+                    const { updateFleet } = await import("./fleet.js");
+                    const results = await updateFleet(state.home, () => updateEngine(state.home));
+                    return json(res, 200, { results });
+                }
                 case "POST /api/fleet/connect": {
                     const { connectHost } = await import("./fleet.js");
                     const { validRemoteHost } = await import("./remotes.js");

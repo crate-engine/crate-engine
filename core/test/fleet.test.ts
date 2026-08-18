@@ -153,6 +153,39 @@ test("a pre-lifecycle remote degrades to name-only rows — display the truth, n
   }
 });
 
+// ── the fleet-wide updater (Adam's ask, 2026-08-18) ─────────────────────────
+
+test("updateFleet: local first, then every remembered host over ssh — per-host results, one failure never stops the rest", async () => {
+  clearFleetLinks();
+  const home = mkHome();
+  try {
+    addRemote(home, "superman");
+    addRemote(home, "deadbox");
+    const { exec, calls } = fakeExec({
+      run: async (_cmd, args) => {
+        const line = args.join(" ");
+        calls.push(line);
+        if (line.includes("deadbox")) throw Object.assign(new Error("ssh timeout"), { stderr: "Operation timed out" });
+        return { stdout: "crate2 update — engine aaa1111 → bbb2222 (fast-forward)\n", stderr: "" };
+      },
+    });
+    const results = await import("../src/gui/fleet.js").then((m) =>
+      m.updateFleet(home, () => ({ before: "aaa1111", after: "ccc3333" }), exec),
+    );
+    assert.equal(results[0]!.local, true);
+    assert.match(results[0]!.note, /aaa1111 → ccc3333/);
+    const sup = results.find((r) => r.host === "superman")!;
+    assert.equal(sup.ok, true);
+    assert.match(sup.note, /engine aaa1111 → bbb2222/, "the remote's own update line rides the report");
+    const dead = results.find((r) => r.host === "deadbox")!;
+    assert.equal(dead.ok, false, "a dead host fails ITS row — the rest updated anyway");
+    assert.ok(calls.some((c) => c.includes('"$HOME/.local/bin/crate" update')), "the remote leg is the standard update, BatchMode ssh");
+  } finally {
+    clearFleetLinks();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 // ── the shells carry the menu (string pins, the linux-shell precedent) ──────
 
 test("both shells ship the Fleet menu wired to the hub, and ensure the local hub even on a remote window", () => {
@@ -160,10 +193,10 @@ test("both shells ship the Fleet menu wired to the hub, and ensure the local hub
   assert.ok(swift.includes("/api/fleet"), "mac: menu reads the hub");
   assert.ok(swift.includes("menuNeedsUpdate"), "mac: rows rebuilt on open");
   assert.ok(swift.includes('launchEngine(remote: "")'), "mac: the local hub is ensured even when the window is remote");
-  assert.match(swift, /engine differs — Update menu fans out/, "mac: skew is honesty, not action");
+  assert.match(swift, /engine differs — Update Crate Engine \(app menu\) fans out/, "mac: skew is honesty, not action");
   const py = readFileSync(join(ROOT, "apps", "linux-shell", "main.py"), "utf8");
   assert.ok(py.includes("/api/fleet"), "linux: menu reads the hub");
   assert.ok(py.includes("on_fleet_open"), "linux: rows rebuilt on open");
   assert.ok(py.includes('launch_engine("")'), "linux: the local hub is ensured even when the window is remote");
-  assert.match(py, /engine differs — Update menu fans out/, "linux: skew is honesty, not action");
+  assert.match(py, /engine differs — Update Crate Engine \(app menu\) fans out/, "linux: skew is honesty, not action");
 });

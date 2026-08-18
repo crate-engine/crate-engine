@@ -44,18 +44,26 @@ test("cockpitReady flips only on the MAIN webview finishing a loopback load — 
   assert.ok(fn.includes('"127.0.0.1"') && fn.includes('"localhost"'), "only the engine's loopback door counts");
 });
 
-// ── the UPDATE menu (Adam, 2026-08-15): one click updates BOTH sides ──
-test("UPDATE is a top-level menu on both shells: Update Engine Now (cmd/ctrl+U) drives ONE page routine; remote topologies fan out locally", () => {
+// ── the updater (Adam, 2026-08-15; FLEET-WIDE + moved into the app menu at
+// Adam's ask, 2026-08-18): one click updates the hub + EVERY remembered
+// host; the old top-level Update menu retired — one home per control. ──
+test("Update Crate Engine lives in the APP menu on both shells (cmd/ctrl+U), fleet-wide via the hub; the Update menu is retired", () => {
   const pyShell = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), "..", "..", "apps", "linux-shell", "main.py"), "utf8");
-  assert.ok(html.includes("window.crateUpdate=") && html.includes("async function runEngineUpdate"), "one routine, two doors — Health button and menu share it");
+  // the page keeps its per-engine routine for the Health panel's button
+  assert.ok(html.includes("window.crateUpdate=") && html.includes("async function runEngineUpdate"), "the Health panel's per-engine door survives");
   assert.ok(html.includes('if(r.before===r.after){await uiNotice("Already current'), "an already-current update says so plainly");
-  assert.ok(shell.includes('NSMenu(title: "Update")') && shell.includes('"Update Engine Now"') && shell.includes('keyEquivalent: "u"'), "mac: top-level Update menu, cmd-U");
-  assert.ok(shell.includes("window.crateUpdate && window.crateUpdate()"), "mac: the menu drives the page bridge (engine-host update)");
-  const macUpd = shell.slice(shell.indexOf("@objc func updateNow"), shell.indexOf("@objc func checkUpdates"));
-  assert.ok(macUpd.includes("readRemoteHost()") && macUpd.includes('["update"]'), "mac: remote topology also runs LOCAL crate update — the by-hand fan-out is a door now");
-  assert.ok(pyShell.includes('label="Update"') && pyShell.includes('"Update Engine Now"') && pyShell.includes("Gdk.KEY_u"), "linux: same menu, ctrl-U");
-  assert.ok(pyShell.includes("window.crateUpdate && window.crateUpdate()") && pyShell.includes("read_remote_host()"), "linux: same bridge + same fan-out");
+  // mac: app menu item, fleet-wide, off-thread, honest per-host report
+  assert.ok(!shell.includes('NSMenu(title: "Update")'), "mac: the top-level Update menu is gone");
+  assert.ok(shell.includes('"Update Crate Engine…"') && shell.includes('keyEquivalent: "u"'), "mac: the updater sits in the app menu, cmd-U kept");
+  const macUpd = shell.slice(shell.indexOf("@objc func updateFleet"));
+  assert.ok(macUpd.includes("/api/fleet/update"), "mac: it updates the WHOLE fleet through the hub");
+  assert.ok(macUpd.includes("timeout: 900"), "mac: npm-install-per-host honesty — minutes, off-thread");
+  assert.ok(macUpd.includes("next relaunch"), "mac: the report says how the update finishes");
+  // linux: same shape
+  assert.ok(!pyShell.includes('label="Update"'), "linux: the top-level Update menu is gone");
+  assert.ok(pyShell.includes("Update Crate Engine…") && pyShell.includes("on_fleet_update"), "linux: app-menu updater");
+  assert.ok(pyShell.includes("/api/fleet/update") && pyShell.includes("timeout=900"), "linux: fleet-wide, off-thread");
 });
 
 test("the installer ends with a NATIVE APP on both platforms — plain-words fallbacks, never sudo", () => {

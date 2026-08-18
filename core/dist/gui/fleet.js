@@ -196,6 +196,48 @@ export function fleetView(deps, exec = defaultFleetExec()) {
     }
     return { hubSha: deps.hubSha, hosts };
 }
+/** ONE update for the whole fleet (Adam's ask, 2026-08-18: "build
+ * crate-update into the app itself"): the hub updates its own engine, then
+ * every remembered host over the operator's ssh — the by-hand both-machines
+ * ritual becomes one app-menu click. Sequential on purpose (update output
+ * stays legible per host); failures are per-host and never stop the rest.
+ * Running engines stay on their loaded code until relaunch — the Fleet
+ * menu's skew markers show exactly who is behind, which is the honest
+ * "restart to finish" signal. */
+export async function updateFleet(home, localUpdate, exec = defaultFleetExec()) {
+    const results = [];
+    try {
+        const r = localUpdate();
+        results.push({
+            host: "local",
+            local: true,
+            ok: true,
+            note: r.before === r.after ? `already current (${r.after.slice(0, 7)})` : `engine ${r.before.slice(0, 7)} → ${r.after.slice(0, 7)}`,
+        });
+    }
+    catch (e) {
+        results.push({ host: "local", local: true, ok: false, note: e instanceof Error ? e.message : String(e) });
+    }
+    for (const r of listRemotes(home)) {
+        try {
+            const out = await exec.run("ssh", [...updateArgv(r.host)], 600_000);
+            const line = out.stdout.split("\n").find((l) => /engine .*→|already/.test(l)) ?? "updated";
+            results.push({ host: r.host, local: false, ok: true, note: line.trim() });
+            const link = links.get(r.host);
+            if (link)
+                link.fetchedAt = undefined; // the sha cache is stale — next fleet read re-proves skew
+        }
+        catch (e) {
+            const tail = (e.stderr ?? "").trim().split("\n").pop();
+            results.push({ host: r.host, local: false, ok: false, note: tail || (e instanceof Error ? e.message : String(e)) });
+        }
+    }
+    return results;
+}
+/** ssh leg for a remote update (BatchMode, same posture as boot/appUrl). */
+export function updateArgv(host) {
+    return ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, '"$HOME/.local/bin/crate" update'];
+}
 /** The explicit connect (POST /api/fleet/connect and the menu's Retry):
  * dial NOW, refresh rows, answer with the row. */
 export async function connectHost(host, deps, exec = defaultFleetExec()) {
