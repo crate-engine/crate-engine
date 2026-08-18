@@ -93,10 +93,30 @@ export function buildHeadlessInvocation(
       if (walled) argv.push("--approval-mode", "yolo");
       if (model) argv.push("-m", model);
       break;
+    case "agy":
+      // Antigravity CLI — Google's sanctioned replacement for the gemini wire,
+      // which died upstream for EVERY consumer tier on 2026-06-18 (CE-138's
+      // correction). Flag surface verified against the SHIPPING binary's --help
+      // (1.1.14, 2026-08-18) and every frame below captured from a real run,
+      // not read from docs — the docs were wrong about the tier story and silent
+      // about the wall behaviour.
+      //   -p                     one-shot headless (aliases --print/--prompt)
+      //   --output-format        stream-json = NDJSON init/step_update/result
+      //   --conversation <id>    resume BY ID — PROVEN live (num_turns: 2 and
+      //                          correct recall), which is exactly the ambiguity
+      //                          that kept gemini stateless (index-vs-id).
+      // --dangerously-skip-permissions rides ONLY inside a rendered wall, the
+      // same defense-in-depth as claude/codex/opencode above. NEVER pass agy's
+      // own --sandbox under our wall: both are Seatbelt and Seatbelt doesn't nest.
+      argv = ["agy", "-p", prompt, "--output-format", "stream-json"];
+      if (walled) argv.push("--dangerously-skip-permissions");
+      if (model) argv.push("--model", model);
+      if (sessionId) argv.push("--conversation", sessionId);
+      break;
     default:
       throw new Error(
         `agent "${agent}" has no headless wire (pi/claude/codex are battle-tested; ` +
-          `opencode/aider/gemini are wired, not yet battle-tested) — ` +
+          `agy/opencode/aider/gemini are wired, not yet battle-tested) — ` +
           `staffing refuses until a wire exists (D2).`,
       );
   }
@@ -134,6 +154,19 @@ export function parseUsage(agent: string, line: string): TurnUsage | undefined {
     const t = (d as { properties?: { info?: { tokens?: { input?: number; output?: number } } } }).properties?.info?.tokens;
     if (t && (t.input !== undefined || t.output !== undefined)) return { inputTokens: t.input ?? 0, outputTokens: t.output ?? 0 };
   }
+  if (agent === "agy") {
+    // CAPTURED from a real stream-json run (2026-08-18): the result frame is
+    // {"event":"result","result":{conversation_id,status,response,num_turns,
+    //  duration_seconds,usage:{input_tokens,output_tokens,thinking_tokens,
+    //  cache_read_tokens,total_tokens}}} — note usage is NESTED under `result`,
+    // not top-level as in claude/codex. step_update frames carry an incremental
+    // usage of the same shape; the result frame is the authoritative total, so
+    // only it counts (double-counting deltas would inflate every turn).
+    const r = (d as { result?: { usage?: { input_tokens?: number; output_tokens?: number } } }).result;
+    if (d.event === "result" && r?.usage) {
+      return { inputTokens: r.usage.input_tokens ?? 0, outputTokens: r.usage.output_tokens ?? 0 };
+    }
+  }
   if (agent === "gemini") {
     // gemini -o stream-json: stats ride the result frame (shape confirms live).
     const u = (d as { stats?: { input_tokens?: number; output_tokens?: number } }).stats;
@@ -151,6 +184,19 @@ export function parseSessionId(agent: string, line: string): string | undefined 
     d = JSON.parse(line) as Record<string, unknown>;
   } catch {
     return undefined;
+  }
+  if (agent === "agy") {
+    // CAPTURED (2026-08-18): the `init` frame — and ONLY the init frame — carries
+    // conversation_id at TOP level; step_update/result bury it inside their own
+    // sub-object. Read both homes so a truncated stream (no init) still yields
+    // the id from the result frame rather than silently starting a new
+    // conversation on the next turn.
+    const top = (d as { conversation_id?: string }).conversation_id;
+    if (typeof top === "string" && top) return top;
+    const nested =
+      (d as { result?: { conversation_id?: string } }).result?.conversation_id ??
+      (d as { step_update?: { conversation_id?: string } }).step_update?.conversation_id;
+    if (typeof nested === "string" && nested) return nested;
   }
   if (agent === "claude" && typeof d.session_id === "string") return d.session_id;
   if (agent === "codex" && d.type === "thread.started" && typeof d.thread_id === "string") return d.thread_id as string;

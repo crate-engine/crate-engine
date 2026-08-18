@@ -62,6 +62,22 @@ export function stateDoorsFor(agent) {
         return ["~/.claude", "~/.claude.json", "~/.claude.json.backup"];
     if (agent === "codex")
         return ["~/.codex"]; // auth.json, config.toml, sessions, history
+    // agy (Antigravity CLI) — PROVEN 2026-08-18 on BOTH backends. Its credential
+    // lives in the OS keyring and rides mach services / the session bus, so auth
+    // works walled with no door at all; what FAILS is the conversation store:
+    //   seatbelt: ~/.gemini/antigravity-cli/conversations/<id>.<uuid>.tmp
+    //             -> "operation not permitted"
+    //   bwrap:    same path -> "read-only file system"
+    // and the turn STILL returns status: SUCCESS with full token accounting, so a
+    // walled agy seat looks perfectly healthy while silently losing every session:
+    // `--conversation <id>` then fails with "conversation not found" and each turn
+    // restarts from zero. Measured, not inferred (door-less resume ERRORed; with
+    // the door, num_turns: 2 and correct recall).
+    // DIRECTORY-granular deliberately: agy writes `<file>.<uuid>.tmp` then renames,
+    // the pattern that defeated claude's single-FILE door on Linux (CE-129) — a
+    // rename cannot cross a single-file bind mount, but stays inside a dir bind.
+    if (agent === "agy")
+        return ["~/.gemini/antigravity-cli"];
     return []; // pi: the templates already carry {{HOME}}/.pi
 }
 /**

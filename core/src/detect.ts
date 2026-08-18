@@ -39,6 +39,7 @@ export function binaryFor(agent: string): string | undefined {
   if (agent === "opencode") return "opencode";
   if (agent === "aider") return "aider";
   if (agent === "gemini") return "gemini";
+  if (agent === "agy") return "agy"; // Antigravity CLI (the gemini wire's replacement)
   if (agent === "openclaw") return "openclaw";
   return undefined;
 }
@@ -121,6 +122,34 @@ export function seatAuthProblem(agent: string, home: string, models: string[] = 
       fix: "OpenCode is installed but has no provider signed in — run `opencode auth login` and connect a provider",
     };
   }
+  if (agent === "agy") {
+    // Antigravity CLI keeps its credential in the OS KEYRING (Keychain /
+    // libsecret) — there is no dotfile to stat the way gemini had
+    // oauth_creds.json. The only stat-able signal is the onboarding marker.
+    //
+    // THIS MARKER MAY NEVER, ON ITS OWN, MEAN READY. It records that someone
+    // completed onboarding ONCE — not that the credential is live, not that the
+    // tier is eligible. That distinction is the whole CE-048/CE-138 family:
+    // claude's hasCompletedOnboarding needed pairing with oauthAccount, and
+    // gemini's oauth_creds.json was valid-LOOKING and unservable. So the marker
+    // is used in the NEGATIVE direction only — absent means definitely not
+    // signed in, and we say so cheaply. The positive proof is the deep probe in
+    // agentProblem (`agy models`, which requires auth), run at the moments of
+    // truth. Shallow "ready" here is the same optimism claude's markers get,
+    // and it carries the same caveat.
+    try {
+      const j = JSON.parse(
+        readFileSync(join(home, ".gemini", "antigravity-cli", "cache", "onboarding.json"), "utf8"),
+      ) as { onboardingComplete?: unknown };
+      if (j.onboardingComplete === true) return undefined;
+    } catch {
+      /* absent / unreadable — fall through to the honest problem */
+    }
+    return {
+      agent: "agy",
+      fix: "Antigravity CLI is installed but not signed in — run `agy` in a terminal, complete the Google sign-in in the browser it opens (approve the keyring prompt), then /quit",
+    };
+  }
   if (agent === "gemini") {
     // CE-138 (battle test 2026-08-18): Google KILLED the CLI's free
     // individual tier (IneligibleTierError → "migrate to Antigravity"), so
@@ -164,6 +193,31 @@ export function agentProblem(
   }
   const marker = seatAuthProblem(agent, home, models);
   if (marker) return marker;
+  if (opts.deep && agent === "agy") {
+    // The POSITIVE proof the onboarding marker cannot give. `agy models` needs a
+    // live credential and returns the model list the picker wants anyway, so it
+    // pays twice. Failure is treated as not-ready ON PURPOSE: the safe direction
+    // for a wrong answer here is a false NOT-ready (the operator re-checks) —
+    // never a false READY, which is what wedged a live seat in CE-138. Deep runs
+    // only at the moments of truth (doctor row, boot refusal), not on dashboard
+    // polls, so the network cost is bounded.
+    try {
+      const out = execFileSync(whichBin("agy", opts)!, ["models"], {
+        encoding: "utf8",
+        timeout: 30000,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      if (/\S/.test(out.replace(/Fetching available models\.\.\.?/g, ""))) return undefined;
+    } catch {
+      /* fall through to the honest problem */
+    }
+    return {
+      agent: "agy",
+      fix:
+        "Antigravity CLI's saved sign-in isn't usable right now (its keyring credential is missing, expired, or unreadable from this account) — " +
+        "run `agy` once in a terminal, complete the Google sign-in, approve the keyring prompt, then try again",
+    };
+  }
   if (opts.deep && (agent === "claude" || agent === "claude-code")) {
     try {
       const out = execFileSync(whichBin("claude", opts)!, ["auth", "status"], {

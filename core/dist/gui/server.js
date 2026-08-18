@@ -118,6 +118,19 @@ const MODELS = [
         verifiedFor: [],
     },
     {
+        agent: "agy",
+        model: "",
+        // CE-138's correction: `gemini` is a dead HARNESS, not a dead model family.
+        // Antigravity CLI is Google's sanctioned replacement and the ONLY route to
+        // Gemini models on a consumer Google AI subscription. It is also not
+        // Gemini-only — it fronts Claude and GPT-OSS too, so the display must not
+        // imply otherwise (a seat staffed agy + claude-opus-4-6-thinking runs Opus
+        // billed to Google).
+        display: "Antigravity CLI (Google — Gemini 3.x, Claude 4.6, GPT-OSS)",
+        billing: "your Google AI subscription (OAuth sign-in) — no API key",
+        verifiedFor: [],
+    },
+    {
         agent: "gemini",
         model: "",
         display: "Gemini CLI (Google, account-default model)",
