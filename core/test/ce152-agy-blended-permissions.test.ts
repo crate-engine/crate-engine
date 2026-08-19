@@ -65,24 +65,59 @@ test("every blended CLI that can be walled bypasses its approvals when it is", (
     // pi takes its permissions from its own config and has never prompted in a
     // seat; if that changes it belongs above, not here.
     pi: "no interactive approval prompt observed in a seat",
-    // KNOWN GAP, recorded in CE-152's ledger entry rather than fixed blind.
-    // turn.ts runs `codex exec --dangerously-bypass-approvals-and-sandbox`
-    // headlessly and the catalog row PROMISES "Codex's own approvals bypassed
-    // within it, same posture as Claude" — but this builder emits a bare
-    // `codex` / `codex resume <id>`, so the promise is true only on the path
-    // that no longer runs. It is NOT fixed here because, unlike agy, it was
-    // never observed failing live, and the flag's placement relative to the
-    // `resume` SUBCOMMAND is a guess — shipping a guessed flag onto a
-    // verifiedFor-coder seat unattended is how a working seat breaks.
-    codex: "SEE CE-152: inferred gap, not live-observed — needs a live probe before a flag lands",
+    // codex was the gap this guard found on the day it was written (CE-153).
+    // It is FIXED now, so it must NOT be listed here — if it reappears in this
+    // map, someone has regressed the flag and papered over the guard.
   };
   for (const cli of ["claude", "codex", "agy", "pi"]) {
     const walled = buildInteractiveInvocation(cli, { walled: true, seat: "coder" }).join(" ");
-    const bypasses = /skip-permissions|bypassPermissions|--yolo|--full-auto/.test(walled);
+    const bypasses = /skip-permissions|bypassPermissions|bypass-approvals|--yolo|--full-auto/.test(walled);
     if (bypasses) continue;
     assert.ok(
       cli in NO_BYPASS_NEEDED,
       `${cli} runs walled with its approvals ON and is not listed as exempt — CE-152 was exactly this`,
     );
   }
+});
+
+// ── CE-153: the gap this file's guard found on the day it was written ────────
+
+test("a WALLED codex seat bypasses its approvals — CE-153", () => {
+  // The catalog row has always promised this ("Codex's own approvals bypassed
+  // within it, same posture as Claude") and turn.ts delivered it headlessly.
+  // The blended pane IS the session now, so the promise lived on the path that
+  // stopped running. Adam's ruling 2026-08-18 makes it the standing posture.
+  assert.deepEqual(buildInteractiveInvocation("codex", { walled: true }), [
+    "codex",
+    "--dangerously-bypass-approvals-and-sandbox",
+  ]);
+});
+
+test("codex's flag sits AHEAD of the session id, never after it", () => {
+  // Placement checked against `codex resume --help`, which lists the flag among
+  // the SUBCOMMAND's options. `codex resume [OPTIONS] [SESSION_ID] [PROMPT]` —
+  // a flag appended after the id risks being read as the trailing PROMPT.
+  assert.deepEqual(buildInteractiveInvocation("codex", { walled: true, sessionId: "thr-9", model: "gpt-5.5" }), [
+    "codex",
+    "resume",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "thr-9",
+    "--model",
+    "gpt-5.5",
+  ]);
+});
+
+test("an UNWALLED codex seat does NOT bypass — the P8 law is untouched", () => {
+  // Adam's ruling is "approvals off"; the wall is what makes that safe. Bypassing
+  // on a bare host is the thing the walling law exists to prevent, and the ruling
+  // did not change it.
+  assert.deepEqual(buildInteractiveInvocation("codex", { walled: false, sessionId: "thr-9" }), ["codex", "resume", "thr-9"]);
+});
+
+test("pi stays exempt for a TRUE reason, not a convenient one", () => {
+  // `pi --approve/-a` trusts project-local FILES for a run — it is not a tool
+  // approvals switch. There is no flag to pass, so Adam's ruling cannot be
+  // expressed for pi as an argv change. If pi ever grows one, the guard above
+  // starts failing and that is the intended prompt to revisit this.
+  assert.deepEqual(buildInteractiveInvocation("pi", { walled: true }), ["pi"]);
 });

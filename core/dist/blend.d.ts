@@ -277,6 +277,9 @@ export declare function createStaleTracker(): StaleTracker;
 export declare function watchTaskEnds(projectRoot: string, onTaskEnd: () => void, opts?: {
     pollMs?: number;
 }): () => void;
+/** How much of the replay counts as "what is on screen right now". A TUI
+ * repaints, so the live screen is the tail; everything before it is history. */
+export declare const BOOT_MODAL_TAIL_CHARS = 4000;
 /** codex's first launch in a new cwd blocks on a directory-trust dialog
  * (live-probed; fires per rig dir, then remembered) — with fresh-per-task
  * workers that is the FIRST spawn in every rig. The pending modal would eat
@@ -302,11 +305,37 @@ export declare function claudeTrustHandshake(readReplay: () => string, tty: Pick
     pollMs?: number;
     sleep?: (ms: number) => Promise<void>;
 }): Promise<boolean>;
-export declare function codexTrustHandshake(readReplay: () => string, tty: Pick<BlendTtyHandle, "inject">, opts?: {
+/** codex's "Update available" modal (CE-155). Its FIRST option is preselected
+ * and runs `curl … | sh`, so this needle exists to make sure the sweeper below
+ * chooses "Skip" explicitly and never answers this one with a bare CR. */
+export declare function needsUpdateSkip(replayText: string): boolean;
+/** Answer codex's BOOT MODALS until the composer is clear (CE-155).
+ *
+ * This replaced a one-shot trust handshake, which could not work: a boot that
+ * puts two modals in front of the composer — in an order nothing controls —
+ * defeats "poll for one needle, answer it, return" by construction. Live proof
+ * on 2026-08-18: the same seat showed the trust dialog on one boot and the
+ * update prompt on the next, because codex checks for updates on its own
+ * schedule. So a codex seat blocked at boot INTERMITTENTLY, on one of several
+ * modals, which is the kind of failure that gets written off as a fluke.
+ *
+ * The loop answers what it recognises and keeps looking until a full poll finds
+ * nothing new. Unknown modals are deliberately left alone: a seat honestly stuck
+ * is recoverable, a seat with something guessed into it is not.
+ *
+ * Each modal is answered AT MOST ONCE, and that is load-bearing rather than
+ * tidiness: `readReplay` hands back the pane's CUMULATIVE buffer, so a dialog's
+ * text is still in it long after the dialog is gone. A sweeper that just
+ * re-matched would keep typing "1" and CR into a live composer — junk delivered
+ * to the agent as if the operator had typed it.
+ *
+ * Returns how many modals it answered (0 = a clean boot, which is normal).
+ */
+export declare function codexBootModals(readReplay: () => string, tty: Pick<BlendTtyHandle, "inject">, opts?: {
     timeoutMs?: number;
     pollMs?: number;
     sleep?: (ms: number) => Promise<void>;
-}): Promise<boolean>;
+}): Promise<number>;
 export interface BlendedTurnOpts {
     projectRoot: string;
     seat: string;

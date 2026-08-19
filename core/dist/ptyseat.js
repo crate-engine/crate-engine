@@ -61,7 +61,28 @@ export function buildInteractiveInvocation(agentArg, opts = {}) {
             // resume-first (T0: `codex resume <thread>` continues the thread the
             // headless turns built). Model only when staffed non-empty — the codex
             // catalog entry deliberately rides the account default.
-            const argv = sessionId ? ["codex", "resume", sessionId] : ["codex"];
+            //
+            // CE-153: WALLED-ONLY approvals bypass, the same posture claude and agy
+            // hold here and the same one `turn.ts` already gave codex headlessly
+            // (`codex exec --dangerously-bypass-approvals-and-sandbox`). The catalog
+            // row has always PROMISED it — "Codex's own approvals bypassed within it,
+            // same posture as Claude" — but the promise lived on the path that stopped
+            // being the one that runs when seats went blended. Adam's ruling
+            // 2026-08-18 makes bypass-inside-the-wall the standing posture for every
+            // blended seat rather than a per-harness call; the wall is what makes it
+            // safe, and the gate below is what keeps the P8 law (never on a bare host).
+            //
+            // Placement is checked, not assumed: `codex resume --help` lists the flag
+            // among the SUBCOMMAND's own options, so it goes right after `resume` and
+            // ahead of the session id — appending it after the id could be read as
+            // resume's trailing [PROMPT] positional.
+            const argv = ["codex"];
+            if (sessionId)
+                argv.push("resume");
+            if (opts.walled)
+                argv.push("--dangerously-bypass-approvals-and-sandbox");
+            if (sessionId)
+                argv.push(sessionId);
             if (model)
                 argv.push("--model", model);
             return argv;

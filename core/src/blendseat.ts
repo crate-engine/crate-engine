@@ -20,7 +20,7 @@ import {
   blendedLoop,
   blendEligible,
   claudeTrustHandshake,
-  codexTrustHandshake,
+  codexBootModals,
   createStaleTracker,
   findBlendSessionCandidates,
   isBlended,
@@ -278,14 +278,16 @@ export class BlendedSeat implements BlendedSeatHandle {
           if (answered) this.stamp(`claude folder-trust dialog answered (fresh spawn in this rig dir)`);
         }
         if (this.o.cli === "codex" && !r.reattached) {
-          // codex's first launch in a new cwd blocks on a trust dialog
-          // (live-probed) — answer it before deliveries; an already-trusted
-          // dir just times the window out (3s, overlapping the settle wait).
-          const answered = await codexTrustHandshake(() => this.tty?.replay().toString("utf8") ?? "", r.tty, {
-            timeoutMs: 3000,
+          // codex puts one or more modals in front of the composer on a fresh
+          // spawn — directory trust, and an "Update available" prompt on its own
+          // schedule (CE-155: the same seat showed a different one on each of two
+          // consecutive boots). Sweep them all; a pending modal eats the first
+          // delivery's CR. A clean boot answers nothing and just costs the window.
+          const answered = await codexBootModals(() => this.tty?.replay().toString("utf8") ?? "", r.tty, {
+            timeoutMs: 8000,
             sleep,
           });
-          if (answered) this.stamp(`codex trust dialog answered (first spawn in this rig dir)`);
+          if (answered > 0) this.stamp(`codex boot modals answered: ${answered} (fresh spawn in this rig dir)`);
         }
         this.stamp(`blended pane ${r.reattached ? "reattached" : "opened"} — ${reason}`);
         return r.tty;

@@ -40,6 +40,7 @@ import { claudeProjectDir } from "./ptyseat.js";
 import { RIG_PREFIX } from "./staffing.js";
 import type { Seat } from "./manifest.js";
 import { normalizeAgent } from "./wall.js";
+import { normalizePaneText } from "./health.js";
 import type { TurnUsage } from "./turn.js";
 
 export type BlendCli = "claude" | "pi" | "codex" | "agy";
@@ -808,13 +809,47 @@ export function watchTaskEnds(
 
 // ── codex spawn handshake (trust dialog) ──────────────────────────────────
 
+/** A pane as a NEEDLE-MATCHABLE string: the canonical ANSI strip (health.ts,
+ * corrected in CE-151) plus a whitespace collapse. A TUI paints its spacing with
+ * cursor-forward sequences rather than space characters, so every dialog needle
+ * in this file is written space-free and matched against this. */
+function flattenPane(replayText: string): string {
+  return normalizePaneText(replayText).replace(/\s+/g, "");
+}
+
+/** How much of the replay counts as "what is on screen right now". A TUI
+ * repaints, so the live screen is the tail; everything before it is history. */
+export const BOOT_MODAL_TAIL_CHARS = 4000;
+
+/** The CURRENT SCREEN, flattened for needle matching.
+ *
+ * CE-155 (live, 2026-08-18): the sweeper first matched the whole cumulative
+ * replay, and `replay()` never forgets. codex showed its update prompt, the
+ * sweeper answered it, and codex then auto-trusted the directory on its own
+ * (the approvals bypass does that) — so the trust dialog resolved itself while
+ * its text stayed in the buffer forever. The sweeper matched that history and
+ * typed "1" + CR into a live composer, which codex SUBMITTED as a turn. A modal
+ * answer aimed at a screen that is already gone is worse than a missed modal:
+ * it puts words in the agent's mouth. */
+function currentScreen(replayText: string): string {
+  return flattenPane(replayText.slice(-BOOT_MODAL_TAIL_CHARS));
+}
+
 /** codex's first launch in a new cwd blocks on a directory-trust dialog
  * (live-probed; fires per rig dir, then remembered) — with fresh-per-task
  * workers that is the FIRST spawn in every rig. The pending modal would eat
  * an injected CR, so the supervisor answers it before marking the seat
  * ready. */
 export function needsTrustAnswer(replayText: string): boolean {
-  return /Do you trust the contents/i.test(replayText);
+  // CE-154 (codex live probe 2026-08-18): this used to test
+  // /Do you trust the contents/i against the RAW replay, and so matched NOTHING,
+  // ever — a live pane renders its spacing as cursor-forward sequences, not
+  // spaces, so a literal-space needle cannot hit it. Every blended codex seat sat
+  // on this dialog at boot while the engine reported it live. The lesson was
+  // already written down one function below, on claude's matcher, which was fixed
+  // for exactly this; codex's never was. Detection now runs over the SAME
+  // normalisation both use, against a space-free needle.
+  return /Doyoutrustthecontents/i.test(currentScreen(replayText));
 }
 
 /** claude's folder-trust dialog (live proof, 2026-08-12): a FRESH claude TUI
@@ -827,8 +862,11 @@ export function needsTrustAnswer(replayText: string): boolean {
  * spacing as cursor-forward sequences, so a literal-space needle never
  * matches the raw stream. */
 export function needsClaudeTrustAnswer(replayText: string): boolean {
-  const flat = replayText.replace(/\x1b\[[0-9;?]*[A-Za-z~]/g, "").replace(/\s+/g, "");
-  return /Yes,Itrustthisfolder|projectyoucreatedoroneyoutrust/i.test(flat);
+  // CE-154: was a SECOND, hand-rolled ANSI strip whose `[0-9;?]*` parameter
+  // class is the very one CE-151 had to widen to the full ECMA-48 range. Two
+  // copies of a stripper means the next fix lands on only one of them; this now
+  // goes through the canonical one.
+  return /Yes,Itrustthisfolder|projectyoucreatedoroneyoutrust/i.test(flattenPane(replayText));
 }
 
 /** Answer claude's folder-trust dialog with a bare CR — option 1 ("Yes, I
@@ -854,25 +892,76 @@ export async function claudeTrustHandshake(
   return false; // no dialog inside the window — an already-trusted dir, fine
 }
 
-export async function codexTrustHandshake(
+/** codex's "Update available" modal (CE-155). Its FIRST option is preselected
+ * and runs `curl … | sh`, so this needle exists to make sure the sweeper below
+ * chooses "Skip" explicitly and never answers this one with a bare CR. */
+export function needsUpdateSkip(replayText: string): boolean {
+  return /Updateavailable!/i.test(currentScreen(replayText));
+}
+
+/** Answer codex's BOOT MODALS until the composer is clear (CE-155).
+ *
+ * This replaced a one-shot trust handshake, which could not work: a boot that
+ * puts two modals in front of the composer — in an order nothing controls —
+ * defeats "poll for one needle, answer it, return" by construction. Live proof
+ * on 2026-08-18: the same seat showed the trust dialog on one boot and the
+ * update prompt on the next, because codex checks for updates on its own
+ * schedule. So a codex seat blocked at boot INTERMITTENTLY, on one of several
+ * modals, which is the kind of failure that gets written off as a fluke.
+ *
+ * The loop answers what it recognises and keeps looking until a full poll finds
+ * nothing new. Unknown modals are deliberately left alone: a seat honestly stuck
+ * is recoverable, a seat with something guessed into it is not.
+ *
+ * Each modal is answered AT MOST ONCE, and that is load-bearing rather than
+ * tidiness: `readReplay` hands back the pane's CUMULATIVE buffer, so a dialog's
+ * text is still in it long after the dialog is gone. A sweeper that just
+ * re-matched would keep typing "1" and CR into a live composer — junk delivered
+ * to the agent as if the operator had typed it.
+ *
+ * Returns how many modals it answered (0 = a clean boot, which is normal).
+ */
+export async function codexBootModals(
   readReplay: () => string,
   tty: Pick<BlendTtyHandle, "inject">,
   opts: { timeoutMs?: number; pollMs?: number; sleep?: (ms: number) => Promise<void> } = {},
-): Promise<boolean> {
+): Promise<number> {
   const sleep = opts.sleep ?? realSleep;
   const timeoutMs = opts.timeoutMs ?? 15_000;
   const pollMs = opts.pollMs ?? 250;
   const t0 = Date.now();
+  let answered = 0;
+  // Each entry picks its option BY NUMBER. Never a bare CR: the update modal
+  // preselects "Update now", which pipes a network installer into sh inside the
+  // seat's wall.
+  const modals: Array<{ hit: (t: string) => boolean; choice: string }> = [
+    { hit: needsTrustAnswer, choice: "1" }, // "Yes, continue"
+    // "Skip", NOT "Skip until next version" — the seat gets past without writing
+    // a preference into the operator's own ~/.codex that would also suppress the
+    // notice in his own terminal.
+    { hit: needsUpdateSkip, choice: "2" },
+  ];
+  const done = new Set<number>();
   while (Date.now() - t0 < timeoutMs) {
-    if (needsTrustAnswer(readReplay())) {
-      tty.inject("1");
+    if (done.size === modals.length) return answered; // nothing left we know how to answer
+    const replay = readReplay();
+    const i = modals.findIndex((m, idx) => !done.has(idx) && m.hit(replay));
+    if (i >= 0) {
+      done.add(i);
+      tty.inject(modals[i]!.choice);
       await sleep(250);
+      // Look again before committing: if the modal resolved itself in that
+      // 250ms (codex auto-trusts under the approvals bypass), the CR would land
+      // in the composer and submit whatever the choice keystroke left there.
+      if (!modals[i]!.hit(readReplay())) continue;
       tty.inject("\r");
-      return true;
+      answered += 1;
+      await sleep(pollMs); // let the next screen paint before looking again
+      continue;
     }
     await sleep(pollMs);
   }
-  return false; // no dialog inside the window — already-trusted dir, fine
+  return answered; // window expired — 0 means a clean boot, which is normal
 }
 
 // ── the blended turn + loop (the flagged seat's runner replacement) ───────

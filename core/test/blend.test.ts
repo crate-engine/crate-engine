@@ -15,7 +15,9 @@ import {
   codexRolloutMatches,
   codexSessionIdOf,
   claudeTrustHandshake,
-  codexTrustHandshake,
+  codexBootModals,
+  needsUpdateSkip,
+  BOOT_MODAL_TAIL_CHARS,
   composerQuiet,
   createStaleTracker,
   deliverToBlendedSeat,
@@ -420,21 +422,84 @@ test("watchTaskEnds: only NEW task-end events fire; history at boot is not a bou
 
 // ── codex trust handshake ──
 
-test("needsTrustAnswer + codexTrustHandshake: dialog answered '1'+CR; no dialog → false, no injection", async () => {
+test("needsTrustAnswer + codexBootModals: dialog answered '1'+CR; no dialog → 0, no injection", async () => {
   assert.equal(needsTrustAnswer("… Do you trust the contents of this directory? …"), true);
   assert.equal(needsTrustAnswer("plain composer"), false);
   const tty = fakeTty();
   let replay = "booting…";
   setTimeout(() => (replay = "Do you trust the contents of this directory?"), 5);
-  const answered = await codexTrustHandshake(() => replay, tty, { timeoutMs: 500, pollMs: 5 });
-  assert.equal(answered, true);
+  const answered = await codexBootModals(() => replay, tty, { timeoutMs: 500, pollMs: 5 });
+  assert.equal(answered, 1);
+  // Exactly once, even though the replay buffer keeps showing the dialog: the
+  // buffer is CUMULATIVE, so re-matching would type "1" + CR into a live
+  // composer and deliver junk to the agent as if the operator had typed it.
   assert.deepEqual(tty.injected, ["1", "\r"]);
 
   const quietTty = fakeTty();
-  const none = await codexTrustHandshake(() => "already trusted", quietTty, { timeoutMs: 20, pollMs: 5 });
-  assert.equal(none, false);
+  const none = await codexBootModals(() => "already trusted", quietTty, { timeoutMs: 20, pollMs: 5 });
+  assert.equal(none, 0);
   assert.deepEqual(quietTty.injected, [], "no dialog → nothing injected (already-trusted dir)");
 });
+
+// ── CE-154 / CE-155: the codex boot SEQUENCE ────────────────────────────────
+
+test("CE-154: the trust needle survives cursor-forward spacing (the live pane's real shape)", () => {
+  // The shipped needle was /Do you trust the contents/i against the RAW replay,
+  // and a TUI paints its spacing as cursor-forward sequences rather than spaces —
+  // so it matched NOTHING, ever, and every blended codex seat sat on this dialog
+  // at boot. This is the live render, verbatim in shape.
+  const live =
+    "\x1b[1mDo\x1b[3Cyou\x1b[3Ctrust\x1b[3Cthe\x1b[3Ccontents\x1b[3Cof\x1b[3Cthis\x1b[3Cdirectory?\x1b[0m";
+  assert.equal(needsTrustAnswer(live), true, "the literal-space needle never matched a real pane");
+  assert.equal(needsTrustAnswer("nothing to answer here"), false);
+});
+
+test("CE-155: the update modal is answered with SKIP — never a bare CR", async () => {
+  // Its first option is preselected and runs `curl … | sh`. Answering this the
+  // way claude's folder-trust dialog is answered — a bare CR — would run an
+  // unattended network install inside the seat's wall.
+  const pane = "✨ Update available! 0.144.1 -> 0.148.0 › 1. Update now (runs `sh -c 'curl -fsSL …| sh'`) 2. Skip";
+  assert.equal(needsUpdateSkip(pane), true);
+  const tty = fakeTty();
+  const n = await codexBootModals(() => pane, tty, { timeoutMs: 200, pollMs: 5 });
+  assert.ok(n >= 1);
+  assert.equal(tty.injected[0], "2", "must SELECT Skip by number; option 1 pipes an installer into sh");
+  assert.ok(!tty.injected.slice(0, 1).includes("\r"), "a bare CR would take the preselected 'Update now'");
+});
+
+test("CE-155: BOTH modals get answered, in either order — one-shot could not", async () => {
+  // The live failure: the same seat showed trust on one boot and the update
+  // prompt on the next, because codex checks for updates on its own schedule.
+  // A handshake that answers one needle and returns is defeated by construction.
+  for (const order of [["trust", "update"], ["update", "trust"]]) {
+    const tty = fakeTty();
+    let step = 0;
+    const read = (): string => {
+      const which = order[step];
+      if (which === "trust") return "Do you trust the contents of this directory?";
+      if (which === "update") return "✨ Update available! 0.144.1 -> 0.148.0";
+      return "composer ready";
+    };
+    const origInject = tty.inject.bind(tty);
+    tty.inject = (d: string) => {
+      origInject(d);
+      if (d === "\r") step += 1; // the CR advances to the next screen
+    };
+    const n = await codexBootModals(read, tty, { timeoutMs: 2000, pollMs: 5 });
+    assert.equal(n, 2, `both modals must be answered when they arrive as ${order.join(" then ")}`);
+  }
+});
+
+test("CE-155: an UNKNOWN modal is left alone rather than guessed at", async () => {
+  // A seat honestly stuck is recoverable; a seat with something guessed into it
+  // is not. This is why the sweeper answers a known list, not "whatever looks
+  // like a menu".
+  const tty = fakeTty();
+  const n = await codexBootModals(() => "› 1. Delete everything  2. Cancel", tty, { timeoutMs: 40, pollMs: 5 });
+  assert.equal(n, 0);
+  assert.deepEqual(tty.injected, []);
+});
+
 
 test("needsClaudeTrustAnswer + claudeTrustHandshake: the folder-trust dialog is answered with a bare CR; needle survives cursor-forward spacing", async () => {
   // literal-space render
@@ -1143,4 +1208,38 @@ process.on("exit", () => {
   } catch {
     /* best effort */
   }
+});
+
+test("CE-155 live: a modal that has SCROLLED INTO HISTORY is not answered again", async () => {
+  // The live failure this guards. codex showed its update prompt, the sweeper
+  // answered it, and codex then auto-trusted the directory on its own (the
+  // approvals bypass does that) — so the trust dialog resolved itself while its
+  // text stayed in the cumulative replay forever. Matching that history typed
+  // "1" + CR into a live composer and codex SUBMITTED it as a turn. Putting
+  // words in the agent's mouth is worse than missing a modal.
+  const history = "Do you trust the contents of this directory? 1. Yes, continue";
+  const sinceThen = "x".repeat(BOOT_MODAL_TAIL_CHARS) + "\ncomposer ready, agent idle\n";
+  assert.equal(needsTrustAnswer(history + sinceThen), false, "history must not read as the current screen");
+  assert.equal(needsTrustAnswer(sinceThen + history), true, "…but the same text ON SCREEN must still be answered");
+
+  const tty = fakeTty();
+  const n = await codexBootModals(() => history + sinceThen, tty, { timeoutMs: 40, pollMs: 5 });
+  assert.equal(n, 0);
+  assert.deepEqual(tty.injected, [], "nothing may be typed at a composer that is not showing a modal");
+});
+
+test("CE-155 live: a modal that resolves ITSELF mid-answer never gets the CR", async () => {
+  // The 250ms between the choice keystroke and the CR is a real window: codex
+  // auto-trusts under the bypass flag. If the screen changed in it, the CR would
+  // submit whatever the keystroke left in the composer.
+  const tty = fakeTty();
+  let onScreen = true;
+  setTimeout(() => (onScreen = false), 60);
+  const n = await codexBootModals(
+    () => (onScreen ? "Do you trust the contents of this directory?" : "composer ready"),
+    tty,
+    { timeoutMs: 600, pollMs: 5 },
+  );
+  assert.equal(n, 0, "a modal that vanished mid-answer was never actually answered");
+  assert.deepEqual(tty.injected, ["1"], "the choice may have gone out; the CR must not follow it");
 });
