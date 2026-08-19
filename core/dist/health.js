@@ -31,14 +31,34 @@ export const USAGE_LIMIT_RE = /reached your [^\n]{0,40}limit|usage limit reached
 /**
  * A pane's bytes are raw ANSI. Strip in THIS order or the text is unreadable:
  * kitty graphics first (its payload is base64 that otherwise survives as noise
- * and can itself contain sequence-looking bytes), then OSC, then CSI.
+ * and can itself contain sequence-looking bytes), then OSC, then CSI, then the
+ * two-byte escapes CSI never covered.
+ *
+ * CE-151 (battle test 2026-08-18): the CSI parameter class used to be `[0-9;?]`.
+ * ECMA-48 defines the parameter bytes as the whole range 0x30–0x3F — the four
+ * this omitted (`:`, `<`, `=`, `>`) are exactly the ones terminals use for
+ * PRIVATE modes, so `ESC[>4;2m`, `ESC[=1;1u`, `ESC[<u`, `ESC[>1u` and `ESC[>0q`
+ * all survived "normalisation" and went straight into the window
+ * `paneUsability()` reads. On the live rig every one of five seats had a tail
+ * that was 100% surviving escapes and ZERO characters of text. It bit `agy`
+ * hardest because an idle agy pane GROWS ~638 B/min of this chatter (an idle
+ * claude pane is static), so a usage-limit banner scrolled out of the 2000-char
+ * window after about four minutes and the seat read LIVE again — CE-143's own
+ * scar, reopened, and its 11 tests never noticed because they feed panes made of
+ * clean text. Ranges here are written as explicit hex so the next reader can
+ * check them against the spec instead of counting punctuation.
  */
 export function normalizePaneText(raw) {
     const s = typeof raw === "string" ? raw : raw.toString("utf8");
-    return s
+    return (s
         .replace(/\x1b_G.*?\x1b\\/gs, "")
         .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
-        .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+        // CSI: ESC [ , parameter bytes 0x30-0x3F, intermediate 0x20-0x2F, final 0x40-0x7E
+        .replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, "")
+        // what CSI never covered: ESC 7 / ESC 8 (DECSC/DECRC), ESC = / ESC > (keypad
+        // modes), ESC ( B and friends (charset selection). Runs LAST so it can only
+        // ever see what the three passes above left behind.
+        .replace(/\x1b[\x20-\x2f]*[\x30-\x7e]/g, ""));
 }
 /** How much of the pane's END counts as "what the seat is stuck on". */
 export const PANE_TAIL_CHARS = 2000;

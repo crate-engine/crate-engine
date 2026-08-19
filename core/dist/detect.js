@@ -169,6 +169,18 @@ export function seatAuthProblem(agent, home, models = []) {
     }
     return undefined; // other agents (aider, openclaw, …) manage their own auth (adapter-specific)
 }
+/** Agents whose credential CANNOT be proven by stat-ing a dotfile — the marker
+ * they leave is optimism, and only the deep probe inside `agentProblem` is proof.
+ *
+ * CE-148 (battle test 2026-08-18) is why this is a LIST and not a hardcoded name
+ * in each reader: `agy` grew a deep branch below while the staffing catalog's
+ * cache in `gui/server.ts` still read `if (agent !== "claude") return undefined`,
+ * so the newest harness — the one whose credential lives in the OS keyring where
+ * nothing can stat it — was offered READY on its onboarding marker alone. Adding
+ * a deep branch below WITHOUT adding the agent here is that same bug again; the
+ * drift guard in `core/test/ce148-deep-probe-enrollment.test.ts` reads this file
+ * and fails if the two ever disagree. */
+export const DEEP_PROBED = ["claude", "claude-code", "agy"];
 /** Full detection for one agent: not installed beats not signed in; undefined
  * means READY (installed + authenticated for the given models' providers).
  * `deep` (run #10): the ~/.claude.json markers can say "signed in" while the
@@ -179,6 +191,12 @@ export function seatAuthProblem(agent, home, models = []) {
  * moments of truth (the Check screen's doctor row and the boot refusal),
  * not on every dashboard poll. */
 export function agentProblem(agent, home, models = [], opts = {}) {
+    // CE-148: the catalog runs the deep probe on a REQUEST path in a
+    // single-threaded server, so it passes a tighter ceiling than the doctor's.
+    // `agy models` is a network call (~2s healthy here); 30s of execFileSync would
+    // freeze every other route with it. A timeout is a NOT-ready, which is the
+    // safe direction.
+    const deepTimeout = opts.deepTimeoutMs ?? 30000;
     const bin = binaryFor(agent);
     if (bin && !whichBin(bin, opts)) {
         const fixes = {
@@ -202,7 +220,7 @@ export function agentProblem(agent, home, models = [], opts = {}) {
         try {
             const out = execFileSync(whichBin("agy", opts), ["models"], {
                 encoding: "utf8",
-                timeout: 30000,
+                timeout: deepTimeout,
                 stdio: ["ignore", "pipe", "pipe"],
             });
             if (/\S/.test(out.replace(/Fetching available models\.\.\.?/g, "")))
@@ -221,7 +239,7 @@ export function agentProblem(agent, home, models = [], opts = {}) {
         try {
             const out = execFileSync(whichBin("claude", opts), ["auth", "status"], {
                 encoding: "utf8",
-                timeout: 15000,
+                timeout: Math.min(15000, deepTimeout),
                 stdio: ["ignore", "pipe", "pipe"],
             });
             if (JSON.parse(out).loggedIn === true)

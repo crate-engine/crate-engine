@@ -83,6 +83,17 @@ export function buildInteractiveInvocation(
       // directly, so the blended path never meets that failure.
       // Resume rides --conversation <id> (proven: num_turns 2, correct recall).
       const argv = ["agy"];
+      // CE-152 (battle test 2026-08-18, rung B4): WALLED-ONLY, exactly as the
+      // claude case above and the headless turn wire (turn.ts) already do.
+      // Without it an agy seat stops on its own approval modal at the FIRST
+      // thing it is asked to do — read its role binder, which lives behind the
+      // .agents/config symlink and so reads as "outside workspace" — and the
+      // modal renders into a pane nobody can answer while the engine reports the
+      // seat live. The flag is global in agy (not print-mode), and the seat is
+      // genuinely walled (resolveHeadlessWall returns a seatbelt plan for agy),
+      // so the P8 posture is unchanged: approvals are bypassed only inside a
+      // rendered wall, never on a bare host.
+      if (opts.walled) argv.push("--dangerously-skip-permissions");
       if (model) argv.push("--model", model);
       if (sessionId) argv.push("--conversation", sessionId);
       return argv;

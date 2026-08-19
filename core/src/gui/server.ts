@@ -9,7 +9,7 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import { connect as netConnect } from "node:net";
 import { stringify } from "yaml";
 import { executeAttach, listDirs, makeDir, planAttach, resolveTarget, type AttachPlan } from "../attach.js";
-import { agentLabel, agentProblem, agentStatus, binaryFor, whichBin } from "../detect.js";
+import { agentLabel, DEEP_PROBED, agentProblem, agentStatus, binaryFor, whichBin } from "../detect.js";
 import { heavyDeps, installHeavyDeps, runDoctor } from "../doctor.js";
 import { isBlended } from "../blend.js";
 import { autoReviveEnabled, makeAutoReviver, type Liveness, type ReviveNote } from "../health.js";
@@ -245,28 +245,52 @@ export function restartArgv(state: Pick<GuiState, "cliPath" | "project">, urlFil
 // (the moment sign-ins actually change) re-asks naturally.
 // READY caches for the whole boot; a PROBLEM re-asks after 30s so the wizard's
 // live "notices your sign-in by itself" behavior survives the cache.
-let deepClaudeVerdict: { problem: ReturnType<typeof agentProblem>; at: number } | undefined;
-function cachedDeepClaudeProblem(
+//
+// CE-148 (battle test 2026-08-18): this was hardcoded to claude, so when `agy`
+// arrived — the one agent whose credential lives in the OS KEYRING, where no
+// dotfile stat can reach it — it was offered READY on its onboarding marker
+// alone. A machine whose agy sign-in was gone answered /api/staffing with
+// `agy ready:true`, which is Flaw 4 verbatim on a newer harness (and CE-138,
+// which wedged a live seat). The enrollment now comes from detect's own
+// DEEP_PROBED list, so an agent cannot grow a deep probe without the surface
+// that staffs it asking the question. The cache is per agent: the catalog holds
+// several rows per agent (claude has four) and must still pay one probe each.
+const deepVerdicts = new Map<string, { problem: ReturnType<typeof agentProblem>; at: number }>();
+function cachedDeepProblem(
   agent: string,
   home: string,
   pathOpt: { path?: string },
 ): ReturnType<typeof agentProblem> {
-  if (agent !== "claude") return undefined;
+  if (!DEEP_PROBED.includes(agent)) return undefined;
   const now = Date.now();
-  if (!deepClaudeVerdict || (deepClaudeVerdict.problem !== undefined && now - deepClaudeVerdict.at > 30_000)) {
-    deepClaudeVerdict = { problem: agentProblem("claude", home, [], { ...pathOpt, deep: true }), at: now };
-  }
-  return deepClaudeVerdict.problem;
+  // Keyed on everything the ANSWER depends on, not just the agent: the verdict
+  // is a property of (agent, HOME, PATH), and a key that drops the last two
+  // hands one server's verdict to a server booted on a different account. One
+  // app process serves one home today, so this is a latent edge rather than a
+  // live bug — it surfaced in CE-148's own suite, where two servers on two
+  // homes shared a cache slot and the second read the first's answer.
+  const key = `${agent}\u0000${home}\u0000${pathOpt.path ?? ""}`;
+  const cached = deepVerdicts.get(key);
+  if (cached && (cached.problem === undefined || now - cached.at <= 30_000)) return cached.problem;
+  // Tighter ceiling than the doctor's: this runs on a request path in a
+  // single-threaded server, and `agy models` is a network call.
+  const fresh = { problem: agentProblem(agent, home, [], { ...pathOpt, deep: true, deepTimeoutMs: 6000 }), at: now };
+  deepVerdicts.set(key, fresh);
+  return fresh.problem;
 }
 
 /** GET /api/staffing — seats with current resolution+provenance, + the catalog
  * with per-entry detection (ready = its agent is installed + signed in for that
  * entry's provider), + a per-agent summary for the page's honest note. */
-function staffingCatalog(state: GuiState, detectPath?: string) {
+function staffingCatalog(state: GuiState, detectPath?: string, project?: string) {
+  // CE-150 (battle test 2026-08-18): the project arrives EXPLICITLY. This read
+  // `state.project` — the ACTIVE workspace — while POST /api/staffing/seat right
+  // beside it honoured `?project`, so the picker showed one rig's staffing and
+  // wrote to another. Taking it as a parameter is the cure and the guard: the
+  // function can no longer reach the active workspace even by accident.
   // Provenance needs a brain: prefer the current project's, else the user tier's clone.
-  const brain =
-    state.project !== undefined ? deriveBrainRoot(state.project) : tierPaths(state.home).engineDir;
-  const confFile = state.project ? join(state.project, ".agents", "rig.conf") : undefined;
+  const brain = project !== undefined ? deriveBrainRoot(project) : tierPaths(state.home).engineDir;
+  const confFile = project ? join(project, ".agents", "rig.conf") : undefined;
   const conf = confFile && existsSync(confFile) ? parseRigConf(readFileSync(confFile, "utf8")) : {};
   const userDefaults = loadUserDefaults(state.home);
   const titles: Record<Seat, string> = {
@@ -295,7 +319,7 @@ function staffingCatalog(state: GuiState, detectPath?: string) {
   });
   const pathOpt = detectPath !== undefined ? { path: detectPath } : {};
   const curated = MODELS.map((m) => {
-    const problem = agentProblem(m.agent, state.home, [m.model], pathOpt) ?? cachedDeepClaudeProblem(m.agent, state.home, pathOpt);
+    const problem = agentProblem(m.agent, state.home, [m.model], pathOpt) ?? cachedDeepProblem(m.agent, state.home, pathOpt);
     return { ...m, ready: problem === undefined, ...(problem ? { fix: problem.fix } : {}) };
   });
   // Pi model discovery (PDR pi-model-discovery, 2026-07-26): whatever Pi can
@@ -664,6 +688,7 @@ export async function startGuiServer(
             const { hostname, platform } = await import("node:os");
             const machine = platform() === "darwin" ? "This Mac" : hostname();
             // dismissable iff there is a rig to go back to (the summoned form)
+            // project-global: "is there ANY rig to go back to" — not a fact about the window's rig
             return html(res, teamPage({ project: "", seats: [] }, { attachCard: { machine, dismissable: Boolean(state.project) } }));
           }
           const { readTeamView } = await import("./teamview.js");
@@ -1274,7 +1299,7 @@ export async function startGuiServer(
           // (ff-only on the pristine clone + the overlay compatibility pass).
           return json(res, 200, updateEngine(state.home));
         case "GET /api/staffing":
-          return json(res, 200, staffingCatalog(state, opts.detectPath));
+          return json(res, 200, staffingCatalog(state, opts.detectPath, url.searchParams.get("project") ?? state.project));
         case "POST /api/crew/terminal": {
           // bring-your-crew sign-in (W0, audit C2): the button ACTS — on macOS
           // it opens Terminal with the agent's sign-in command running; the
@@ -1286,18 +1311,21 @@ export async function startGuiServer(
           const { openSignInTerminal } = await import("./terminal.js");
           return json(res, 200, { cmd, ...openSignInTerminal(cmd) });
         }
-        case "GET /api/agents":
+        case "GET /api/agents": {
           // pass-through to core: readiness of the STAFFED agents (detection —
           // the engine never installs or signs in agents; boot refusal backstops)
+          // CE-149: staffing is per-RIG, so the window's project wins.
+          const proj = url.searchParams.get("project") ?? state.project;
           return json(
             res,
             200,
             agentStatus({
               home: state.home,
-              ...(state.project !== undefined ? { project: state.project } : {}),
+              ...(proj !== undefined ? { project: proj } : {}),
               ...(opts.detectPath !== undefined ? { path: opts.detectPath } : {}),
             }),
           );
+        }
         case "POST /api/defaults": {
           const body = await readBody(req);
           return json(res, 200, writeDefaults(state, body.seats as Record<string, { agent: string; model: string }>));
@@ -1446,37 +1474,51 @@ export async function startGuiServer(
         case "GET /api/deps": {
           // run #7: the Arm screen lists the project's outstanding heavy deps
           // (own step now, no longer riding the attach result)
-          if (!state.project) return json(res, 400, { error: "no project attached yet" });
-          return json(res, 200, await heavyDeps(state.project));
+          const proj = url.searchParams.get("project") ?? state.project;
+          if (!proj) return json(res, 400, { error: "no project attached yet" });
+          return json(res, 200, await heavyDeps(proj));
         }
         case "POST /api/deps/install": {
           // P6-1: run the DISCLOSED heavy installs (the GUI's confirm button)
-          if (!state.project) return json(res, 400, { error: "no project attached yet" });
-          const deps = await heavyDeps(state.project);
+          const proj = url.searchParams.get("project") ?? state.project;
+          if (!proj) return json(res, 400, { error: "no project attached yet" });
+          const deps = await heavyDeps(proj);
           return json(res, 200, await installHeavyDeps(deps));
         }
         case "POST /api/deps/install-one": {
           // run #11: the Arm screen installs deps ONE AT A TIME so it can show
           // live per-tool progress instead of a single long silent button
-          if (!state.project) return json(res, 400, { error: "no project attached yet" });
+          const proj = url.searchParams.get("project") ?? state.project;
+          if (!proj) return json(res, 400, { error: "no project attached yet" });
           const body = await readBody(req);
-          const deps = await heavyDeps(state.project);
+          const deps = await heavyDeps(proj);
           const dep = deps.find((d) => d.name === body.name);
           if (!dep) return json(res, 200, { name: body.name, ok: true, detail: "already installed" });
           return json(res, 200, (await installHeavyDeps([dep]))[0]);
         }
         case "GET /api/doctor": {
-          if (!state.project) return json(res, 400, { error: "no project attached yet" });
-          return json(res, 200, await runDoctor(state.project));
+          const proj = url.searchParams.get("project") ?? state.project;
+          if (!proj) return json(res, 400, { error: "no project attached yet" });
+          return json(res, 200, await runDoctor(proj));
         }
         case "GET /api/health": {
-          if (!state.project) return json(res, 400, { error: "no project attached yet — attach one first" });
+          // CE-149 (battle test 2026-08-18): this read state.project — the
+          // server-global ACTIVE workspace — while the cockpit page polls with
+          // `&project=` for the rig ITS window is showing. One engine serves N
+          // workspaces, so those are routinely different paths, and the window
+          // was answered about someone else's rig: five live seats reported as
+          // "not booted", and in the mirror case a green cockpit over a team
+          // that is not there. `crate open` deliberately does NOT rebind the
+          // active workspace (CE-014's cure), which is exactly why the callee
+          // has to honour the parameter.
+          const proj = url.searchParams.get("project") ?? state.project;
+          if (!proj) return json(res, 400, { error: "no project attached yet — attach one first" });
           // T8a: health = the GUI-owned team lifecycle (teamproc), not cmux
           // read-screen. A seat with a live runner child is "live"; a child
           // that exited is "dead" (auto-revive can act); a seat never booted is
           // "unknown" (not-booted ≠ provably dead).
           const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
-          const st = teamProcessFor(state.project, spawnerFor(), defaultBlendStarter(state.home), state.home).status();
+          const st = teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home), state.home).status();
           // CE-143: an ALIVE process is not a usable seat. A blended seat whose
           // model refuses (usage limit) or whose auth went stale keeps its
           // child running and every process-shaped check green, while doing
@@ -1489,7 +1531,12 @@ export async function startGuiServer(
             if (s.alive) {
               let problem: { liveness: string; detail: string } | undefined;
               try {
-                problem = paneUsability(readPaneHistory(state.project!, s.seat));
+                // CE-150: this stayed on state.project when CE-149 scoped the
+                // rest of the route, so the payload mixed two rigs — process
+                // liveness from the window's, CE-143 usability from the active
+                // one. A seat reported usage-limited because ANOTHER repo's seat
+                // hit a cap is CE-143 handed the wrong evidence.
+                problem = paneUsability(readPaneHistory(proj, s.seat));
               } catch {
                 /* no pane mirror (headless seat, fresh spawn) — stay with the process verdict */
               }
@@ -1503,18 +1550,22 @@ export async function startGuiServer(
             };
           });
           return json(res, 200, {
-            project: state.project,
+            // CE-149: the echoed project and the auto-revive switch are both
+            // per-RIG — echoing the ACTIVE one here is what made the wrong
+            // answer legible in the first place.
+            project: proj,
             booted: st.booted,
             seats,
-            autoRevive: autoReviveEnabled(state.project),
+            autoRevive: autoReviveEnabled(proj),
             reviveNotes: state.reviveNotes ?? [],
           });
         }
         case "GET /api/loop": {
           // The LOOP dashboard (read-only): what the team is doing, from the
           // same ground truth the agents use — events.log is authoritative.
-          if (!state.project) return json(res, 400, { error: "no project attached yet" });
-          const stateDir = join(state.project, ".agents", "state");
+          const proj = url.searchParams.get("project") ?? state.project;
+          if (!proj) return json(res, 400, { error: "no project attached yet" });
+          const stateDir = join(proj, ".agents", "state");
           const read = (f: string): string => {
             try {
               return readFileSync(join(stateDir, f), "utf8");
