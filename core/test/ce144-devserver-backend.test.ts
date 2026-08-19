@@ -13,8 +13,8 @@
 // These tests drive the REAL bash functions out of the shipped script rather
 // than reimplementing them, so drift in the script fails here.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execSync, spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -118,4 +118,79 @@ test("the probe is a real WRITE, not a permission-bit check", () => {
   assert.ok(!/\[\s*-w\s/.test(fn), "a -w test cannot see a sandbox denial");
   assert.match(fn, /:\s*>\s*"\$probe"/, "it must actually attempt the write");
   assert.match(fn, /rm -f "\$probe"/, "…and clean up after itself");
+});
+
+// ── CE-156: the same lesson, on the other OS ────────────────────────────────
+//
+// CE-144 taught the launchd branch to "say it, don't just do it" — and its own
+// comment names the reason: "the asymmetry with Linux is the thing that confuses
+// people". The note was then written into the launchd branch ONLY. Inside a
+// bwrap wall `systemctl --user show-environment` cannot reach the user bus, so
+// backend() fell past systemd to its final else and answered `bare` in silence:
+// no auto-restart, no MemoryMax, and every "the supervisor brings it back"
+// runbook quietly wrong. Found by engine-qa's first run on Linux.
+
+/** A PATH dir whose `systemctl` EXISTS but whose user bus is unreachable — a
+ * walled seat, or a session with no user bus (CE-107). */
+function systemctlWithoutBus(): string {
+  const dir = mkdtempSync(join(tmpdir(), "ce156-bin-"));
+  writeFileSync(join(dir, "systemctl"), "#!/bin/sh\nexit 1\n");
+  chmodSync(join(dir, "systemctl"), 0o755);
+  return dir;
+}
+
+test("CE-156: systemd present but its bus unreachable → bare, and it SAYS so", () => {
+  const bin = systemctlWithoutBus();
+  try {
+    const { backend, note } = chooseBackend({ PATH: `${bin}:${process.env.PATH}` });
+    assert.equal(backend, "bare", "an unreachable user bus must demote, not fail");
+    assert.match(note, /systemd is present but its user bus is not reachable/i);
+    assert.match(note, /NO auto-restart/i, "the note must name what is LOST");
+    assert.match(note, /restart` works/i, "…and what still works, or the seat thinks it is dead in the water");
+  } finally {
+    rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+test("CE-156: the note rides stderr and never contaminates $(backend)", () => {
+  const bin = systemctlWithoutBus();
+  try {
+    const { backend } = chooseBackend({ PATH: `${bin}:${process.env.PATH}` });
+    assert.equal(backend, "bare", "a note captured into stdout would make the backend string unusable");
+  } finally {
+    rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+test("CE-156: only the ACTING commands explain themselves", () => {
+  // `status` and `logs` ask a question; answering with a paragraph about lost
+  // supervision is noise. Same gate the launchd branch uses.
+  const bin = systemctlWithoutBus();
+  try {
+    const { note } = chooseBackend({ PATH: `${bin}:${process.env.PATH}` }, "status");
+    assert.equal(note, "");
+  } finally {
+    rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+test("CE-156: a host with NO supervisor at all stays quiet — nothing was lost", () => {
+  // The distinction the launchd branch never has to make. Warning about a
+  // feature the machine never had is noise, not honesty.
+  //
+  // Built portably rather than by emptying PATH (which loses `bash` itself, as
+  // the first cut of this test discovered): a jail holding only a bash to run
+  // with and a `uname` that says Linux, so BOTH supervisor branches are false on
+  // either host and the final else is what answers.
+  const jail = mkdtempSync(join(tmpdir(), "ce156-nobin-"));
+  try {
+    symlinkSync(execSync("command -v bash").toString().trim(), join(jail, "bash"));
+    writeFileSync(join(jail, "uname"), '#!/bin/sh\necho Linux\n');
+    chmodSync(join(jail, "uname"), 0o755);
+    const { backend, note } = chooseBackend({ PATH: jail });
+    assert.equal(backend, "bare");
+    assert.equal(note, "", "there is no supervisor on this host — there is nothing to announce");
+  } finally {
+    rmSync(jail, { recursive: true, force: true });
+  }
 });

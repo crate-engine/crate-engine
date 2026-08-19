@@ -98,8 +98,24 @@ ld_writable() {
 backend() {
   if [ "${DEV_BACKEND:-}" = "bare" ]; then
     echo bare
-  elif command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
-    echo systemd
+  elif command -v systemctl >/dev/null 2>&1; then
+    if systemctl --user show-environment >/dev/null 2>&1; then
+      echo systemd
+    else
+      # CE-156 (engine-qa, first Linux run): systemd is INSTALLED but its user
+      # bus is unreachable — a walled seat, or a session with no user bus
+      # (CE-107). That is a demotion, and CE-144's lesson was that a silent one
+      # leaves every "the supervisor brings it back" runbook quietly wrong. Same
+      # words, same stderr, same acting-commands-only gate as the launchd branch
+      # below; this branch simply never got them. When there is NO supervisor on
+      # the host at all we stay quiet (the final else): nothing was lost.
+      case "$CMD" in
+        up|install|restart)
+          echo "dev-server: systemd is present but its user bus is not reachable from here (a walled seat, or a session with no user bus) — using the BARE backend instead: the server runs and \`dev-server restart\` works, but there is NO auto-restart and no supervisor memory cap. Run it outside the wall for a supervised server." >&2
+          ;;
+      esac
+      echo bare
+    fi
   elif [ "$(uname -s)" = "Darwin" ] && launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
     if ld_writable; then
       echo launchd

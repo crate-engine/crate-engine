@@ -42,6 +42,22 @@ These are not suggestions. Each one is a scar.
 
 ## Phase A — mechanical (no seats, no cost, fully unattended)
 
+> **RUN THIS AS A COMMAND, not by hand:**
+> ```
+> node dev/qa/engine-qa.mjs            # the installed engine
+> node dev/qa/engine-qa.mjs --engine ~/Projects/crate-engine-2.0   # a workshop build
+> ```
+> `dev/qa/engine-qa.mjs` is Phase A plus the platform rungs, executable: it builds
+> its own throwaway rig, prints evidence rather than summaries, and exits non-zero
+> on any FAIL. It is OS-aware — it asserts what THIS platform should do rather
+> than skipping, which is how CE-156 was found (11/11 on macOS, then a FAIL on its
+> first Linux run). The prose below is kept as the SPEC each check implements; if
+> the two ever disagree, that is itself a finding.
+>
+> **Run it on BOTH hosts.** The Linux paths — bwrap walls, the systemd
+> dev-server rung — are the least-exercised code in the product, because the Linux
+> host normally has a live team on it and cannot be experimented with.
+
 Everything here is a shell command with a checkable answer. Run it first: it is
 free, and it catches the class of bug where a fix shipped but never reached the
 product.
@@ -208,6 +224,48 @@ and an empty registry reads as an honest empty state.
 ### D6 — a stale dev server is not tested by mistake
 Restart the dev server after a commit before runtime QA. **PASS:** QA exercises
 the new code. (The `:3005` stale-module scar.)
+
+---
+
+## Phase L — Linux and cross-machine (the rungs the Mac cannot reach)
+
+These need the Linux host FREE, which is rare: `jdm-rush-crate` normally has five
+live seats and rail 2 forbids touching it. When Superman is genuinely idle, this
+phase is the perishable opportunity — take it before the Mac work, which keeps.
+Superman suspends ~22:30, so the window is shorter than it looks.
+
+### L1 — the wall renders on bwrap AND actually contains
+`node dev/qa/engine-qa.mjs --only L1` on the Linux host.
+**PASS:** `backend=bwrap`, and a write aimed OUTSIDE the rig from inside the
+prefix is refused. **The containment half is the point** — a wall that renders
+but does not contain is walled in name only, and the plan alone cannot tell you
+which you have.
+
+### L2 — the dev-server demotion is ANNOUNCED, not just correct
+**PASS:** `systemd` outside the wall (with `MemoryMax`), `bare` inside it, AND a
+note naming what is lost and what still works. Both platforms picked the right
+backend long before either explained itself; CE-156 was the silent Linux half of
+CE-144, and it survived because the note was written into the launchd branch only.
+
+### L3 — a WALLED LINUX SEAT CAN ACTUALLY BUILD
+The Linux twin of B4, and never driven before 2026-08-18. Boot a scratch rig on
+the Linux host, deliver a small real edit to the coder.
+**PASS:** the change lands in the project working tree, from inside a bwrap wall.
+**FAIL if** the seat sits on a boot modal (CE-154/CE-155), or the write is denied
+by the wall it is supposed to be able to work inside.
+*First run: codex coder, both files written in 20s, boot modals swept.*
+
+### L4 — the remote window reaches the other machine
+From the Mac: `crate open --remote <host> --print-url`, then ask the printed URL.
+**PASS:** `/api/version` reports the REMOTE engine's pid and sha, `/api/workspaces`
+lists the REMOTE host's paths, and the local hub is still separately alive on its
+own port. **FAIL if** the tunnel silently serves the local engine — the failure
+mode that makes a fleet look healthy from the wrong machine.
+
+### L5 — both hosts run the SAME engine
+`/api/version` on each. **PASS:** identical `loadedSha`, and `updateAvailable:
+false` on both. A fleet split across two engines is how a fix "that shipped" is
+still absent where the team actually runs.
 
 ---
 
