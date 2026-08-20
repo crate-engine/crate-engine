@@ -366,6 +366,33 @@ grid-template-rows:var(--r1,1fr) 1px var(--r2,1fr)}
 .staffdoor{color:var(--amber)!important}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 @media (max-width:820px){main{display:flex;flex-direction:column;overflow-y:auto}.gut{display:none}.tile{min-height:320px;flex:0 0 auto}}
+
+/* ── CE-157: the first-run welcome — the stranger's on-ramp. Two variants
+   (crew-less machine vs agents-ready), Adam's copy verbatim; the modal is the
+   MOMENT (create-click has the stranger's full attention), the strip is the
+   quiet echo that survives a dismissed modal + a night's sleep. ── */
+.welcome{position:fixed;inset:0;background:rgba(4,6,10,.72);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center;z-index:95}
+.welcome .wbox{background:var(--panel);border:1px solid var(--line2);width:min(430px,92vw);padding:30px 34px 26px;box-shadow:0 16px 60px rgba(0,0,0,.6);text-align:center}
+.welcome .wbolt{width:30px;height:30px;margin:0 auto 14px;display:block}
+.welcome .wbolt path{fill:var(--amber)}
+.welcome h2{font:400 17px/1.4 var(--disp);color:var(--fg);letter-spacing:.02em;margin-bottom:8px}
+.welcome .wsub{font:400 13.5px/1.55 var(--body);color:var(--dim);margin-bottom:18px}
+.welcome .wsteps{text-align:left;display:flex;flex-direction:column;gap:12px;margin:16px 0 22px}
+.welcome .wstep{display:flex;gap:12px;align-items:baseline}
+.welcome .wnum{font:600 11px/1 var(--mono);color:var(--amber);flex:none}
+.welcome .wtext{font:500 13.5px/1.5 var(--body);color:var(--alu)}
+.welcome .wagents{margin-top:7px;display:flex;flex-direction:column;gap:5px}
+.welcome .wagent{font:400 11px/1.55 var(--mono);color:var(--faint)}
+.welcome .wagent.wready{color:var(--ok)}
+.welcome .wgo{font:600 12px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;background:var(--amber);color:#0b0e14;border:0;padding:12px 26px;cursor:pointer}
+.welcome .wgo:hover{background:var(--amber-hi)}
+.crewstrip{display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line2);border-left:2px solid var(--amber);padding:9px 14px;margin:8px 10px 0;font:500 12.5px/1 var(--body);color:var(--alu);cursor:pointer}
+.crewstrip:hover{border-color:var(--amber)}
+.crewstrip .cb{color:var(--amber)}
+/* the zero-words pointer: on modal dismiss, the staff doors pulse twice */
+@keyframes staffpulse{0%,100%{box-shadow:0 0 0 0 transparent}50%{box-shadow:0 0 0 2px var(--amber)}}
+.staffpulse{animation:staffpulse 1.1s ease-in-out 2}
+
 `;
 const VIEW_JS = `
 const TOKEN=new URLSearchParams(location.search).get("token");
@@ -411,6 +438,64 @@ function pickFolder(title){return new Promise(res=>{
 // runner, no runner started this boot, no live blended PTY. (A runner that
 // started and DIED is distress, not an invitation — the downchip carries it.)
 function seatUnstaffed(s){return !s._alive&&!s._started&&!s.ptyStartedAt;}
+// ── CE-157: the first-run welcome (the fresh-account run's cliff, 2026-08-19).
+// A stranger's first project landed on five unstaffable seats with no call to
+// action — "done, clean, but not sure what to do next." The modal spends the
+// one moment we have their full attention; every fact it shows comes LIVE from
+// /api/agents (one source — never a second copy of install guidance).
+let AGENTS_INFO=null;
+async function agentsInfo(){try{const r=await fetch(api("/api/agents"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());if(Array.isArray(r))AGENTS_INFO=r;}catch(e){}return AGENTS_INFO||[];}
+async function showWelcome(){
+  if(document.querySelector(".welcome"))return;
+  const ag=await agentsInfo();
+  const ready=ag.some(a=>a.ready);
+  const bolt='<svg class="wbolt" viewBox="0 0 24 24" aria-hidden="true"><path d="M13.2 2 4.8 13.4h5L8.6 22l10.6-13.2h-6.2L13.2 2z"/></svg>';
+  // fix lines minus their redundant lead-in ("X isn't installed on this machine — ")
+  const rows=()=> (AGENTS_INFO||[]).map(a=>'<div class="wagent'+(a.ready?' wready':'')+'">'
+    +(a.ready?'\u2713 '+esc(a.label)+' \u2014 signed in':esc(a.label)+' \u2014 '+esc((a.fix||'not detected').replace(/^[^\u2014]*\u2014 */,'')))+'</div>').join('');
+  const inner= ready
+    ? '<h2>Your rig is built.</h2>'
+      +'<div class="wsteps">'
+      +'<div class="wstep"><span class="wnum">1</span><span class="wtext">Click a seat to staff it \u2014 your agents are listed there</span></div>'
+      +'<div class="wstep"><span class="wnum">2</span><span class="wtext">Tell the Orchestrator what to build</span></div>'
+      +'</div><button class="wgo" id="wgo">Let\u2019s go</button>'
+    : '<h2>Your rig needs a crew.</h2>'
+      +'<div class="wsub">Seats run on your own AI agents. This machine has none yet.</div>'
+      +'<div class="wsteps">'
+      +'<div class="wstep"><span class="wnum">1</span><span class="wtext">Install an agent on this machine \u2014 Claude Code, Codex, Pi<div class="wagents" id="wagents">'+rows()+'</div></span></div>'
+      +'<div class="wstep"><span class="wnum">2</span><span class="wtext">Crate detects your agents when they\u2019re signed in</span></div>'
+      +'<div class="wstep"><span class="wnum">3</span><span class="wtext">Back in Crate, click a seat to staff it</span></div>'
+      +'</div><button class="wgo" id="wgo">Got it</button>';
+  const d=document.createElement("div");d.className="welcome";d.innerHTML='<div class="wbox">'+bolt+inner+'</div>';
+  document.body.appendChild(d);
+  // Live green-flip: the server re-asks a failed agent every ~30s; polling
+  // while open means a Terminal sign-in flips its row without a Refresh hunt.
+  const t=ready?0:setInterval(async()=>{await agentsInfo();const w=document.getElementById("wagents");if(w)w.innerHTML=rows();},5000);
+  const done=()=>{if(t)clearInterval(t);d.remove();crewStripTick();
+    // the zero-words pointer: the staff doors pulse twice, the eye lands there
+    document.querySelectorAll(".staffdoor").forEach(el=>{el.classList.add("staffpulse");setTimeout(()=>el.classList.remove("staffpulse"),2600);});
+  };
+  document.getElementById("wgo").onclick=done;
+  d.addEventListener("click",e=>{if(e.target===d)done();});
+}
+// The quiet echo: a slim strip under the header while the machine has NO ready
+// agent and nothing has ever run — retires by itself once either changes.
+async function crewStripTick(){
+  const ag=await agentsInfo();
+  const need=ag.length>0&&!ag.some(a=>a.ready)&&!(SEATSVIEW||[]).some(s=>!seatUnstaffed(s));
+  let st=document.getElementById("crewstrip");
+  if(need&&!st){st=document.createElement("div");st.id="crewstrip";st.className="crewstrip";
+    st.innerHTML='<span class="cb">\u26a1</span><span>No agents on this machine yet \u2014 setup steps</span>';
+    st.onclick=()=>showWelcome();
+    const h=document.querySelector("header");if(h)h.insertAdjacentElement("afterend",st);}
+  else if(!need&&st)st.remove();
+}
+setInterval(crewStripTick,30000);setTimeout(crewStripTick,1500);
+// welcome=1 rides the attach redirect ONCE; strip it so a reload doesn't re-fire
+if(new URLSearchParams(location.search).get("welcome")==="1"){
+  try{const u=new URL(location.href);u.searchParams.delete("welcome");history.replaceState(null,"",u);}catch(e){}
+  setTimeout(showWelcome,600);
+}
 let CHAT=[];
 let GATES=[];
 let PREVIEWS=[];
@@ -1961,7 +2046,7 @@ if(CARD){
       const r=await fetch(api("/api/attach/execute"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},
         body:JSON.stringify({target,create,gitInit:gi?gi.checked:false,githubRepo:gh?gh.checked:false})}).then(r=>r.json()).catch(()=>null);
       if(!r||r.error){btn.disabled=false;btn.textContent="Attach the team";acFail((r&&r.error)||"attach failed — engine unreachable");return;}
-      location.href="/team?token="+TOKEN+"&project="+encodeURIComponent(r.project);
+      location.href="/team?token="+TOKEN+"&project="+encodeURIComponent(r.project)+"&welcome=1";
     };
   }
   // ── the three repo doors ──

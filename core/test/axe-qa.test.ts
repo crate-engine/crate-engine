@@ -59,12 +59,18 @@ test("degrade-don't-fail is pinned in the tool (honest AXE NOT VERIFIED, exit 0)
 
 test("doctrine pins: regression FIRST, report order, axe step, perf conditional, loadout entry", () => {
   const tester = readFileSync(join(ROOT, "config", "tester.md"), "utf8");
-  assert.match(tester, /Regression first: drive the `AGENTS\.md` Critical Paths/);
-  assert.match(tester, /regression result FIRST/);
+  // CE-007 (Adam's ruling 2026-08-19): the floor SPLIT — mechanical universal,
+  // judgment scoped + rotating. These needles pin the ruling in BOTH docs that
+  // carry it; updating one and not the other is the two-copies trap (CE-154).
+  assert.match(tester, /Mechanical floor, UNIVERSAL/);
+  assert.match(tester, /rotation debt/);
+  assert.match(tester, /ALL paths when this loop ends at the merge gate/);
+  assert.match(tester, /smoke result FIRST/);
   assert.match(tester, /axe-check --base/);
   assert.match(tester, /declares a perf budget.*verify and report|declares a perf budget/s);
   const method = readFileSync(join(ROOT, "config", "skills", "qa-method.md"), "utf8");
-  assert.match(method, /## 2\. Regression — the accrued critical paths, BEFORE the new thing/);
+  assert.match(method, /## 2\. Regression — the SPLIT floor, BEFORE the new thing/);
+  assert.match(method, /rotation debt/);
   assert.match(method, /## 5\. Accessibility pass on the CHANGED pages/);
   assert.match(method, /REGRESSION LEADS/);
   const loadout = readFileSync(join(ROOT, "config", "loadouts", "tester.yaml"), "utf8");

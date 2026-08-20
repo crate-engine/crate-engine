@@ -17,21 +17,28 @@ Run `qa-sweep --project . --out <evidence-dir>` and READ its JSON. It gives you
 per-route × viewport: console errors on load, responses ≥400, horizontal overflow,
 screenshots. Anything it flags becomes a numbered finding with the JSON as evidence.
 
-## 2. Regression — the accrued critical paths, BEFORE the new thing (P7-T3)
+## 2. Regression — the SPLIT floor, BEFORE the new thing (CE-007, 2026-08-19)
 
-Drive every `AGENTS.md` Critical Path behaviorally (the sweep's load checks are
-the floor, not the drive): mobile-first (390×844 before desktop), unhappy paths
-included (invalid input must show its plain-words message — absence of an error
-message IS the bug); tap-targets ≥44px and overflow per binder.
+**Mechanical floor first, UNIVERSAL:** `node .agents/bin/smoke-check.js --base
+<dev url> --agents-md AGENTS.md` over EVERY Critical Path, every run — seconds,
+and it keeps the cross-cutting net (the regressions that hurt most hit paths no
+diff named). **Then judgment drives, SCOPED + ROTATING:** full behavioral drives
+go to the paths YOUR diff reading says the change could touch, plus any path with
+3+ loops of rotation debt (tracked in `.agents/state/qa-paths.md` — missing file
+or unlisted path = DUE), plus ALL paths on a merge-gate loop. Drive them
+mobile-first (390×844 before desktop), unhappy paths included (invalid input must
+show its plain-words message — absence of an error message IS the bug);
+tap-targets ≥44px and overflow per binder.
 
 The viewport command is `agent-browser set viewport <w> <h>` (e.g.
 `agent-browser set viewport 390 844`) — note the `set`. CE-133: the bare form
 (`agent-browser viewport …`) errors "Unknown command" but the session KEEPS its
 previous size, so a following screenshot silently captures the wrong width.
 After setting, treat any "Unknown command" from the set as a HARD stop — a
-mobile finding proven at desktop width is not evidence. The accrued
-list is what the team already PROVED — re-prove it first, and LEAD your
-verdict with its result.
+mobile finding proven at desktop width is not evidence. The accrued list is what
+the team already PROVED — the smoke floor re-proves all of it every run, the
+drives cover what the diff and the rotation owe, and your verdict LEADS with
+both results plus what you deferred.
 
 ## 3. Intent test — the HAPPY PATH with the claimed output, verified EXACTLY
 
@@ -114,8 +121,9 @@ budget = skip silently.
 
 ## 6. Verdict + evidence, protocol shape — REGRESSION LEADS
 
-[PASS] or [BUGS_FOUND], reported in this order: (a) the regression result per
-accrued path, (b) intent/exploratory findings, (c) the axe pass or its degrade
-note. Numbered bugs each with repro steps, severity (BLOCKER / SHOULD-FIX /
+[PASS] or [BUGS_FOUND], reported in this order: (a) the smoke result verbatim
+(`SMOKE-RESULT: n/m`), (b) the full drives — which paths, why those
+(diff-touched vs rotation-due), pass/fail each, and what you deferred,
+(c) intent/exploratory findings, (d) the axe pass or its degrade note. Numbered bugs each with repro steps, severity (BLOCKER / SHOULD-FIX /
 NIT), and an evidence path; name what you did NOT verify.
 Then deliver per the report skill (state file first — `.agents/state/tester.md`, full prefix).

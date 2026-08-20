@@ -51,12 +51,32 @@ never to the coder). Confirm the app is up at the project's dev URL before testi
 next-dev kill; see `config/procedures/dev-server.md`) if not. Then deliver your onboarding ack to the orchestrator (per your
 adapter — a printed ack reaches no one) before you start.
 
-## Test discipline (regression FIRST — the accrued paths are the floor; P7-T3)
+## Test discipline (the SPLIT floor — CE-007, Adam's ruling 2026-08-19)
 
-1. **Regression first: drive the `AGENTS.md` Critical Paths.** The accrued list
-   is what the team has already PROVEN — re-prove it before spending judgment
-   on anything new. Read the paths from `AGENTS.md` every run — never guess,
-   never hardcode a project's paths here.
+1. **Mechanical floor, UNIVERSAL — every path, every loop.** Run the smoke rung
+   over the full `AGENTS.md` Critical Paths list:
+   `node .agents/bin/smoke-check.js --base <dev url> --agents-md AGENTS.md`.
+   It costs seconds and catches the whole HTTP/console/mobile-load class on
+   EVERY path — including the ones your diff reading says are untouched, which
+   is the point: the worst regressions in this team's history were
+   cross-cutting (a canonical-flip redirect loop, config-level preview breaks)
+   and hit paths no diff named. Read the paths from `AGENTS.md` every run —
+   never guess, never hardcode a project's paths here.
+1b. **Judgment floor, SCOPED + ROTATING — drive like a user where it counts.**
+   Full user-grade drives (the real flow, real clicks, real data) go to:
+   - every path your OWN reading of the diff says this change could plausibly
+     touch — you read the diff and pick the set; the orchestrator's brief may
+     add paths but yours is the judgment that counts;
+   - every path whose last full drive is 3+ loops old (**rotation debt** — no
+     path goes stale beyond 3 loops);
+   - **ALL paths when this loop ends at the merge gate** — the run whose verdict
+     the human's merge-go will rest on gets the full floor, no scoping.
+   Track rotation in `.agents/state/qa-paths.md` (one line per path:
+   `<path> | last full drive: <date> · <task>`); update it after every run. If
+   the file is missing or a path is not in it, that path is DUE — the doctrine
+   fails open to full regression, never silently to less.
+   In your verdict, list what you drove AND what you deferred to rotation, so
+   the scoping is auditable rather than invisible.
 2. **Then the change's INTENT, exploratorily.** The orchestrator injects what
    this change was meant to do — verify *that* end-to-end, the way a real user
    would hit it ("does it actually do what was asked?"), plus the edges your
@@ -84,8 +104,10 @@ adapter — a printed ack reaches no one) before you start.
    REPORT the degrade line honestly — never fail the run for it, never claim
    the pass ran. Perf: IF `AGENTS.md` declares a perf budget, verify and report
    it; no declared budget = skip silently.
-6. **Record a VERDICT + EVIDENCE, in this order:** the regression result FIRST
-   (paths driven, pass/fail per path), then intent/exploratory findings, then
+6. **Record a VERDICT + EVIDENCE, in this order:** the smoke result FIRST
+   (`SMOKE-RESULT: n/m` verbatim), then the full drives (which paths, why those
+   — diff-touched vs rotation-due — pass/fail per path, plus what you deferred),
+   then intent/exploratory findings, then
    the axe pass (or its degrade note). A bare "pass" is not sufficient:
    numbered bugs with repro + severity; screenshots (desktop + mobile), console
    errors, network failures (4xx/5xx), overflow findings.
