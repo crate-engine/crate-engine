@@ -100,6 +100,10 @@ const MODELS = [
     // Walled-coder live proof 2026-07-12: real codex inside the rendered
     // standard wall built the asked-for file; its own escape attempt was
     // blocked; TUI boot + enter-submit verified.
+    // RE-AFFIRMED by Adam 2026-08-20 on this week's record: the Crate-and-Cup
+    // C-loop's coder seat (the first complete loop, WCAG rework included), B4
+    // by hand and under the battle driver, boot modals swept (CE-154/155),
+    // approvals bypassed in-wall (CE-153).
     verifiedFor: ["coder"] as Seat[],
   },
   {
@@ -146,7 +150,12 @@ const MODELS = [
     // billed to Google).
     display: "Antigravity CLI (Google — Gemini 3.x, Claude 4.6, GPT-OSS)",
     billing: "your Google AI subscription (OAuth sign-in) — no API key",
-    verifiedFor: [] as Seat[],
+    // PROMOTED to coder by Adam, 2026-08-20 — the milestone the agy PDR named.
+    // Evidence, all live: B4 by hand (2026-08-18, two files in the project
+    // working tree in 10s, inside the wall, post-CE-152) and B4 under the
+    // battle driver (2026-08-20, unattended, no rescue). No other seat has
+    // been driven with agy — the tag stays exactly as wide as the proof.
+    verifiedFor: ["coder"] as Seat[],
   },
   {
     agent: "gemini",
