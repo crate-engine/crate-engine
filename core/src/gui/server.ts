@@ -1330,6 +1330,43 @@ export async function startGuiServer(
           const body = await readBody(req);
           return json(res, 200, writeDefaults(state, body.seats as Record<string, { agent: string; model: string }>));
         }
+        case "POST /api/fs/native-pick": {
+          // CE-159 (Adam, fresh-account re-run 2026-08-20): the in-page folder
+          // choreography let a real stranger nest Desktop/My-app/My-app/my-app
+          // out of one intention. Where the server runs ON the operator's Mac,
+          // in their GUI session, the OS already has the premium answer: a real
+          // NSSavePanel via osascript — navigate anywhere, type the name, one
+          // Create button (the Xcode shape). This route TRIES native and
+          // answers {unavailable:true} when it cannot (Linux, headless, or a
+          // REMOTE window — a native Mac dialog cannot browse another host's
+          // disk, which is why the in-page picker survives as the fallback).
+          // async execFile on purpose: the panel waits on a human, and a sync
+          // call would freeze every poll loop in the cockpit while they think.
+          if (process.platform !== "darwin") return json(res, 200, { unavailable: true });
+          const body = await readBody(req);
+          const mode = body.mode === "choose-folder" ? "choose-folder" : "create-project";
+          const defName = String(body.defaultName ?? "my-app").replace(/[^A-Za-z0-9._ -]/g, "").slice(0, 60) || "my-app";
+          const script =
+            mode === "choose-folder"
+              ? 'POSIX path of (choose folder with prompt "Choose your project folder")'
+              : `POSIX path of (choose file name with prompt "Name your project \u2014 and choose where it lives" default name "${defName}")`;
+          try {
+            const { execFile } = await import("node:child_process");
+            const { promisify } = await import("node:util");
+            const r = await promisify(execFile)("osascript", ["-e", 'tell application "System Events" to activate', "-e", script], {
+              timeout: 600_000, // the human is thinking; never rush a save panel
+              encoding: "utf8",
+            });
+            const picked = (r.stdout || "").trim().replace(/\/+$/, "");
+            if (!picked.startsWith("/")) return json(res, 200, { unavailable: true });
+            return json(res, 200, { path: picked });
+          } catch (e) {
+            // user hit Cancel (osascript exits 1, "User canceled") vs no GUI at all
+            const msg = e instanceof Error ? String(e.message) : String(e);
+            if (/canceled|cancelled|-128/i.test(msg)) return json(res, 200, { cancelled: true });
+            return json(res, 200, { unavailable: true });
+          }
+        }
         case "GET /api/fs/dirs": {
           // the attach picker. Jail = home + where rigs live (derived from
           // the registered workspaces — the headless-era amendment; Adam's

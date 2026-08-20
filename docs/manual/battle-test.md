@@ -281,6 +281,19 @@ GUI walks the sign-in; no step sends the user to a terminal without saying so.
 Adam reads the diff and says "merge go". **PASS:** nothing merges before that,
 from any surface.
 
+### E4 — the three untested doors (from the 2026-08-20 E1 re-run)
+Every first-hour door that has been walked has produced a finding; these three
+have never been walked:
+- **Browse** (attach an existing folder) — HUMAN: the native choose-folder panel
+  needs real hands. PASS: feels like the Save panel minus the name field; the
+  picked folder attaches, no nesting surprises.
+- **Clone from GitHub** — DRIVABLE: an in-page flow; the autonomous driver can
+  point it at the public dist repo. PASS: clone + attach + team page, no manual
+  rescue.
+- **+ Add a server** (the fleet door) — MOSTLY DRIVABLE against the Linux host:
+  the machinery is proven (L4) but the GUI door — host entry, tunnel, the rig
+  list appearing — has never been driven as a user experiences it.
+
 ### E3 — the design-lock confirm on a real device
 Desktop + phone, both viewports, at the hold. **PASS:** Adam can actually judge
 the design from what the engine handed him.

@@ -598,23 +598,33 @@ async function restaffDialog(seat){
   try{cat=await fetch(api("/api/staffing"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());}catch(e){}
   if(!cat||!cat.models){await uiNotice("Could not load the staffing catalog.");return;}
   const ready=cat.models.filter(m=>m.ready);
+  // CE-158 (Adam, fresh-account re-run 2026-08-20): "each model should only
+  // show the NAME — no other explanations. It does not feel premium." The
+  // picker is a CONTROL, not a catalog: strip the harness parenthetical and
+  // the tier explainer from the display string; explaining lives on the
+  // welcome modal and the Check screen, where explaining is the job.
+  // NO regex literals here on purpose: this sits inside the page TEMPLATE, where
+  // backslash escapes cook away (\s -> s) — the first cut emitted a regex that
+  // ate the names and left ")" husks on Adam's screen. split() has no escapes
+  // to lose. Name = everything before the first "(" or em-dash.
+  const name=m=>esc(String(m.display||m.model||m.agent).split("(")[0].split("\u2014")[0].trim());
   // lab groups, frontier-first — the server's catalog order IS the layout;
   // a header row opens each company block
   let lastCo="";
   const rows=ready.map((m,i)=>{
     const v=(m.verifiedFor||[]).indexOf(seat)>=0;
     const head=(m.company&&m.company!==lastCo)?(lastCo=m.company,'<div class="pkco">'+esc(m.company)+'</div>'):'';
-    return head+'<button class="pkrow" data-i="'+i+'"><span style="flex:1;text-align:left">'+esc(m.display)+'</span>'
+    return head+'<button class="pkrow" data-i="'+i+'"><span style="flex:1;text-align:left">'+name(m)+'</span>'
       +(v?'<span class="pktag">verified</span>':'')+'</button>'; // no tag = no claim — quality is the operator's judgment (Adam)
   }).join('')||'<div style="padding:14px 20px;color:var(--faint);font-size:12.5px">no ready agents detected on this machine</div>';
   // S2 (PDR decision 5): the picker carries the old Welcome page's honesty
   // INLINE — the ready rows above are the green tier; the bench below shows
   // every supported agent that is not offerable, amber (installed, one
   // sign-in away — with the one command) or grey (not installed).
+  // CE-158: the bench is greyed NAMES, full stop — "the model being dark or
+  // greyed out is enough info." No state chips, no fix paragraphs here.
   const bench=(cat.agents||[]).filter(a=>!a.ready).map(a=>
-    '<div class="pkrow" style="cursor:default"><span style="flex:1;color:'+(a.installed?'var(--warn)':'var(--faint)')+'">'+esc(a.label)+'</span>'
-    +'<span style="font:600 9px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:'+(a.installed?'var(--warn)':'var(--faint)')+'">'+(a.installed?'not signed in':'not installed')+'</span></div>'
-    +(a.fix?'<div style="padding:4px 20px 10px;color:var(--faint);font:400 10.5px/1.5 var(--mono);border-bottom:1px solid var(--line)">'+esc(a.fix)+'</div>':'')
+    '<div class="pkrow" style="cursor:default;opacity:.45"><span style="flex:1;color:var(--faint)">'+esc(a.label)+'</span></div>'
   ).join('');
   const sv=SEATSVIEW.find(x=>x.seat===seat);
   const fresh=sv?seatUnstaffed(sv):false;
@@ -2049,12 +2059,34 @@ if(CARD){
       location.href="/team?token="+TOKEN+"&project="+encodeURIComponent(r.project)+"&welcome=1";
     };
   }
+  // CE-159: native where native is true. The SERVER raises a real macOS
+  // Save/Open panel when it can (local Mac, GUI session) and says
+  // "unavailable" when it can't (Linux, headless, a remote window) — then the
+  // in-page picker below is the honest fallback. Buttons disable while the
+  // panel is up: the human is thinking in another window.
+  let NATIVEBUSY=false;
+  async function nativePick(mode,defName){
+    if(NATIVEBUSY)return {cancelled:true};
+    NATIVEBUSY=true;
+    try{return await fetch(api("/api/fs/native-pick"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({mode,defaultName:defName})}).then(r=>r.json());}
+    catch(e){return {unavailable:true};}
+    finally{NATIVEBUSY=false;}
+  }
   // ── the three repo doors ──
   document.getElementById("acbrowse").onclick=async()=>{
+    const n=await nativePick("choose-folder");
+    if(n&&n.path){acAttach(n.path,false);return;}
+    if(n&&n.cancelled)return;
     const p=await acPicker("Choose your project folder — browsing "+CARD.machine+"'s disk");
     if(p)acAttach(p,false);
   };
-  document.getElementById("acnew").onclick=()=>{
+  document.getElementById("acnew").onclick=async()=>{
+    // one native panel does BOTH halves — navigate anywhere, type the name,
+    // Create. The nested-folder class (Desktop/My-app/My-app/my-app) cannot
+    // happen here: what you see in the panel is exactly what you get.
+    const nat=await nativePick("create-project","my-app");
+    if(nat&&nat.path){acAttach(nat.path,true,{gh:true});return;}
+    if(nat&&nat.cancelled)return;
     const body=document.getElementById("acbody");acClear();
     body.innerHTML='<label>Name your project</label><input type="text" id="acname" placeholder="my-app" autocomplete="off">'
       +'<div class="acnote" id="acwhere"></div>'
