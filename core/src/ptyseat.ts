@@ -737,19 +737,26 @@ export async function startSeatTty(opts: StartTtyOpts): Promise<StartTtyResult> 
     while (outLog.length > 0 && outLog[0]![0] < Date.now() - 60_000) outLog.shift();
     for (const cb of subs) cb({ data: b });
   });
-  proc.onExit(({ exitCode }) => {
-    tty.exited = { code: exitCode };
+  proc.onExit(({ exitCode, signal }) => {
+    // CE-165 (battle-driver run #1): node-pty reports a SIGNAL death as
+    // exitCode 0 + signal N, and this handler used to drop the signal — a
+    // SIGKILLed session stamped "exit 0", indistinguishable from a polite
+    // quit. The stamp IS the crash record (downchip, revive ceiling, incident
+    // reads all key off it), so it names the signal now. CE-140 cured this
+    // exact lie for runner seats; this was its unfixed blended sibling.
+    tty.exited = { code: exitCode, ...(signal ? { signal } : {}) };
+    const how = signal ? `killed by signal ${signal}` : `exit ${exitCode}`;
     try { rmSync(ptyPidFile); } catch { /* stale-safe: the reader alive-checks */ }
     if (blended) {
       // No hand-back seam: one door, nothing forked — the engine tracked the
       // session id continuously, so no re-point. The blend supervisor reads
       // this event (subscribe) and decides respawn; the stamp is the record.
-      stamp(`blended ${agent} session exited (exit ${exitCode}) — the blend supervisor decides respawn`);
+      stamp(`blended ${agent} session exited (${how}) — the blend supervisor decides respawn`);
     } else {
       try { rmSync(attendedFile(projectRoot, seat)); } catch { /* stale-safe */ }
       const sid = repointSessionAfterTty(projectRoot, seat, agent, startedAtMs - 2000, opts.home);
       stamp(
-        `operator left — native ${agent} TUI closed (exit ${exitCode}); deliveries resume` +
+        `operator left — native ${agent} TUI closed (${how}); deliveries resume` +
           (sid ? `; session re-pointed to ${sid.slice(0, 8)}… (the human-driven fork)` : ""),
       );
     }

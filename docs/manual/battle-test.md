@@ -42,7 +42,22 @@ These are not suggestions. Each one is a scar.
 
 ## Phase A — mechanical (no seats, no cost, fully unattended)
 
-> **RUN THIS AS A COMMAND, not by hand:**
+> **THE WHOLE LADDER AS A COMMAND (2026-08-20):**
+> ```
+> node dev/qa/battle-driver.mjs                     # everything, both rigs, unattended
+> node dev/qa/battle-driver.mjs --phases a,l,docker # the free phases only
+> ```
+> `battle-driver` runs engine-qa on BOTH hosts, the containerized stranger
+> install (Superman's Docker), one live build-proof seat per detected harness
+> (B3/B4), the full loop with itself as operator (C — design confirm, gate
+> release, DEPLOYED assertion), and D2/D3 injection on the spent team. It NEVER
+> rescues: a stall is a FAIL with the event log attached, pre-drafted as a
+> ledger entry. Phases b and c staff real seats on real subscriptions; the rest
+> are free. Every rung it drives was driven by a human first — the manual runs
+> below remain the SPEC and the deep end (a human eye still finds what
+> assertions cannot; CE-135/136/137/158/163 were all eyes-only finds).
+>
+> **The mechanical floor alone:**
 > ```
 > node dev/qa/engine-qa.mjs            # the installed engine
 > node dev/qa/engine-qa.mjs --engine ~/Projects/crate-engine-2.0   # a workshop build

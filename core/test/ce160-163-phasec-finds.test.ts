@@ -156,3 +156,20 @@ test("CE-163: the desktop studio stays fluid", () => {
 test("cleanup", () => {
   rmSync(scratch, { recursive: true, force: true });
 });
+
+// ── CE-165: a murdered session must never stamp a clean exit ────────────────
+//
+// Battle-driver run #1, D2's aimed probe: SIGKILL to the coder pane's own
+// recorded pid stamped "blended claude session exited (exit 0)". node-pty
+// reports signal deaths as exitCode 0 + signal N and the handler dropped the
+// signal — CE-140's lie, alive on the blended path. The stamp IS the crash
+// record; it names the signal now. Live-proven: "killed by signal 9".
+
+test("CE-165: the pty exit handler carries the SIGNAL on both stamp paths", () => {
+  const src = readFileSync(new URL("../src/ptyseat.ts", import.meta.url), "utf8");
+  assert.match(src, /onExit\(\(\{ exitCode, signal \}\)/, "destructuring only exitCode drops the murder weapon");
+  assert.match(src, /killed by signal/, "the record must distinguish murder from retirement");
+  const stamps = src.match(/\$\{how\}/g) ?? [];
+  assert.ok(stamps.length >= 2, "BOTH exits (blended + operator-left) must stamp honestly");
+  assert.match(src, /\.\.\.\(signal \? \{ signal \} : \{\}\)/, "tty.exited carries the signal for programmatic readers");
+});
