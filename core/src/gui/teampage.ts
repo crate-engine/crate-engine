@@ -1159,6 +1159,14 @@ let GATEREL={};
 function gateBarHtml(){
   if(!GATES.length)return"";
   const g=GATES[0];
+  // CE-161: the design-lock hold, raised by the ENGINE the moment the state
+  // lands. Confirm sends the operator's word through the same one door the
+  // human always uses (the orchestrator); Reopen asks what to change first.
+  if(g.kind==="design"){
+    return '<div id="gatebar"><span class="gbdot"></span>'
+      +'<span class="gbwhat" id="gbwhat">design ready — <b>'+esc(g.branch)+'</b> · review it in the Studio, then</span>'
+      +'<button id="gbconfirm">Confirm design</button><button id="gbreopen">Reopen…</button><span class="gberr" id="gberr"></span></div>';
+  }
   if(g.released||GATEREL[g.task]){
     return '<div id="gatebar" class="released"><span class="gbdot"></span>'
       +'<span class="gbwhat" id="gbwhat">released — the coder is merging <b>'+esc(g.branch)+'</b>; DEPLOYED will confirm</span></div>';
@@ -1175,6 +1183,28 @@ function renderGateBar(){
   const g=GATES[0];
   if(g.released||GATEREL[g.task])gb.outerHTML=gateBarHtml();
 }
+async function designHoldAct(confirm){
+  const err=document.getElementById("gberr");if(err)err.textContent="";
+  let text="Design confirmed \u2014 proceed to implementation.";
+  if(!confirm){
+    const notes=await uiPrompt("Reopen the design \u2014 what should change?");
+    if(!notes)return;
+    text="Reopen the design: "+notes;
+  }
+  const r=await fetch(api("/api/chat"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({text})}).then(r=>r.json()).catch(()=>null);
+  if(!r||r.error){if(err)err.textContent=(r&&r.error)||"the orchestrator did not answer";return;}
+  const w=document.getElementById("gbwhat");if(w)w.textContent=confirm?"confirmed \u2014 the orchestrator is briefing the coder":"reopen requested \u2014 back to the designer";
+}
+function uiPrompt(title){return new Promise(res=>{
+  const d=uiDialog('<h3>'+esc(title)+'</h3><input type="text" id="uipv" style="width:100%;background:transparent;border:1px solid var(--line2);color:var(--fg);font:500 13px var(--body);padding:8px 10px;outline:none" autocomplete="off">'
+    +'<div class="btns"><button id="uipc">Cancel</button><button class="pri" id="uipok">Send</button></div>');
+  const inp=d.querySelector("#uipv");inp.focus();
+  const done=v=>{d.remove();res(v);};
+  d.querySelector("#uipok").onclick=()=>done(inp.value.trim());
+  d.querySelector("#uipc").onclick=()=>done(null);
+  inp.addEventListener("keydown",e=>{if(e.key==="Enter")done(inp.value.trim());if(e.key==="Escape")done(null);});
+  d.addEventListener("click",e=>{if(e.target===d)done(null);});
+});}
 async function releaseFromBar(){
   const inp=document.getElementById("gbinput");const err=document.getElementById("gberr");
   const phrase=(inp.value||"").trim();if(!phrase||!GATES.length)return;
@@ -1601,6 +1631,8 @@ function wire(){
   // the gate bar lives inside the repainted grid now — rewire per repaint
   const gbi=document.getElementById("gbinput");if(gbi)gbi.onkeydown=e=>{if(e.key==="Enter")releaseFromBar();};
   const gbg=document.getElementById("gbgo");if(gbg)gbg.onclick=releaseFromBar;
+  const gbc=document.getElementById("gbconfirm");if(gbc)gbc.onclick=()=>designHoldAct(true);
+  const gbr=document.getElementById("gbreopen");if(gbr)gbr.onclick=()=>designHoldAct(false);
   document.querySelectorAll(".gauge[data-seat]").forEach(g=>{g.onclick=()=>refreshSeat(g.getAttribute("data-seat"));});
   document.querySelectorAll(".chip[data-fill]").forEach(c=>{c.onclick=()=>{const b=document.getElementById("chatbox");if(b){b.value=c.getAttribute("data-fill");b.focus();}};});
   document.querySelectorAll(".keysbtn[data-keys]").forEach(b=>{b.onclick=()=>{

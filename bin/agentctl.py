@@ -1495,9 +1495,16 @@ def main():
         if len(args) > 1 and args[1] == "clear":
             if os.path.exists(pv_path): os.remove(pv_path)
             print("PREVIEW: cleared"); return
-        if len(args) < 2:
+        if len(args) < 2 or args[1] in ("--help", "-h", "help"):
+            # CE-162: a help-seeking `preview --help` used to REGISTER the flag
+            # as a URL — a junk card on the operator's Preview surface, and the
+            # studio auto-deploy keys off the NEWEST registration, so junk can
+            # hijack the Design Slot. Help is help; it registers nothing.
             die("usage: preview <url> [--route /r] [--label \"...\"] [--from <seat>]  |  preview clear")
         url = args[1]; route = "/"; label = ""; frm = "orchestrator"; i = 2
+        if not (url.startswith("http://") or url.startswith("https://")):
+            die("preview: <url> must start with http:// or https:// (got %r) — a non-URL here would "
+                "become a broken card on the operator's Preview surface" % url)
         while i < len(args):
             if args[i] == "--route" and i + 1 < len(args): route = args[i+1]; i += 2; continue
             if args[i] == "--label" and i + 1 < len(args): label = args[i+1]; i += 2; continue
@@ -1667,6 +1674,28 @@ def main():
             badge = seat_identity()
             if badge:
                 actor = badge
+        # CE-160 (Phase C live loop, 2026-08-20): a seat emits AS ITSELF, full
+        # stop. The orchestrator emitted START_DESIGN actor=designer — actor
+        # forgery — and it was RECORDED; 45 seconds later it had to walk its
+        # own fake back with an ABANDON. Conscience is not physics. Identity
+        # enforcement existed only for operator-privileged claims; this is the
+        # general rule. The operator's badge-free terminal and the GUI server
+        # keep today's latitude ('' badge), and 'operator' as a badge means the
+        # human's own surfaces — both unchanged.
+        # actor=="operator" claims are NOT handled here: the dedicated guards
+        # (gate_release, NMGATE_OVERRIDE, JOIN_OVERRIDE, refuse_stripped_badge)
+        # own those, with sharper wording and their own logged reasons — "the
+        # operator acts from THEIR surfaces" is the right guidance there, and
+        # "deliver them the brief" would be nonsense (the operator has no
+        # runner). This rule is the SEAT-to-SEAT forgery the live loop proved.
+        _badge = seat_identity() or stripped_seat_badge()
+        if _badge and _badge != "operator" and actor not in ("?", _badge, "operator"):
+            append("[%s] REJECTED event=%s actor=%s reason=actor_forgery seat=%s" % (now(), name, actor, _badge))
+            die("REJECTED: this command runs inside the %s seat, and a seat emits AS ITSELF. "
+                "If the %s should make this move, deliver them the brief and let their own "
+                "runner emit it — a transition emitted on another seat's behalf is state-faking "
+                "(the state machine records who MOVED, not who WISHED). Nothing was emitted."
+                % (_badge, actor))
         ho = load_handoffs().get(name)
         transition = ho["transition"] if ho else name
         signal = ho["signal"] if ho else ""

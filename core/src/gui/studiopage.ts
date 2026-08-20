@@ -17,7 +17,20 @@ export function studioPage(frame: "mobile" | "desktop"): string {
 <style>
 html,body{height:100%;margin:0;background:#0b0e14;color:#f1f3f6;font:15px -apple-system,system-ui,sans-serif}
 #stage{position:fixed;inset:0;display:none}
+#stage.on{display:block}
 #stage iframe{width:100%;height:100%;border:0;display:block;background:#0b0e14}
+/* CE-163 (Phase C live loop, Adam's find): the MOBILE frame asked for a
+   375x812 WINDOW — but studio auto-deploy fires from a timer, no user
+   activation, and a plain-Chrome cockpit ignores popup size features without
+   a gesture: the "mobile" view opened as a full-size tab and rendered
+   desktop-wide. The window was never the right place for this law. The CLAMP
+   lives in the content now: the mobile stage renders the design in a fixed
+   375px viewport, centered on the carbon, phone-framed — whatever the window
+   does. The desktop frame stays fluid. */
+body[data-frame="mobile"] #stage{align-items:center;justify-content:center}
+body[data-frame="mobile"] #stage.on{display:flex}
+body[data-frame="mobile"] #stage iframe{width:375px;height:min(812px,calc(100vh - 48px));flex:none;
+  border:1px solid #323a4b;border-radius:0;box-shadow:0 18px 60px rgba(0,0,0,.55)}
 #wait{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;text-align:center}
 .box{max-width:420px;padding:0 24px}
 .bolt{width:44px;height:44px;fill:#e2a33c;animation:pulse 1.6s infinite}
@@ -25,7 +38,7 @@ html,body{height:100%;margin:0;background:#0b0e14;color:#f1f3f6;font:15px -apple
 h1{font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:#e2a33c;margin:16px 0 8px;font-weight:600}
 p{color:#8b94a5;line-height:1.6;font-size:13px;margin:0}
 .frame{color:#6b7488;font-size:11px;letter-spacing:.14em;text-transform:uppercase;margin-top:18px}
-</style></head><body>
+</style></head><body data-frame="${frame}">
 <div id="stage"><iframe id="pv"></iframe></div>
 <div id="wait"><div class="box">
 <svg class="bolt" viewBox="0 0 24 24"><path d="M13.2 2 4.8 13.4h5L8.6 22l10.6-13.2h-6.2L13.2 2z"/></svg>
@@ -37,7 +50,7 @@ const TOKEN=new URLSearchParams(location.search).get("token");
 const PROJECT=new URLSearchParams(location.search).get("project")||"";
 const tq="token="+TOKEN+(PROJECT?"&project="+encodeURIComponent(PROJECT):"");
 let SRC="";
-function show(live){document.getElementById("stage").style.display=live?"block":"none";document.getElementById("wait").style.display=live?"none":"flex";}
+function show(live){document.getElementById("stage").classList.toggle("on",!!live);document.getElementById("wait").style.display=live?"none":"flex";}
 async function poll(){
   let s=null;
   try{s=await fetch("/api/studio/state?"+tq).then(r=>r.json());}catch(e){}

@@ -137,7 +137,11 @@ test("foldHumanLines: CR completes a line; Esc/Ctrl+C clear; backspace pops; CSI
   s = foldHumanLines(s.buf, Buffer.from("o\r"));
   assert.deepEqual(s.lines, ["merge go"], "the typed line completes on Enter");
   assert.equal(s.buf, "");
-  assert.deepEqual(foldHumanLines("half a draft", Buffer.from("\x1b")).buf, "", "Esc cancels the draft");
+  // CE-164: a chunk-final lone ESC is CARRIED (it may be half a split arrow or
+  // paste marker), so the clear lands when the escape resolves — the OUTCOME
+  // is unchanged: the draft is gone by the time any line completes.
+  const esc1 = foldHumanLines("half a draft", Buffer.from("\x1b"));
+  assert.deepEqual(foldHumanLines(esc1.buf, Buffer.from("\r")).lines, [""], "Esc cancels the draft by line-completion");
   assert.deepEqual(foldHumanLines("halt", Buffer.from("\x03")).buf, "", "Ctrl+C clears");
   assert.equal(foldHumanLines("mergee", Buffer.from("\x7f go\r")).lines[0], "merge go", "backspace pops before the fold");
   assert.equal(foldHumanLines("", Buffer.from("\x1b[A\x1b[Bmerge go\r")).lines[0], "merge go", "arrow keys are stripped, never typed");
@@ -181,4 +185,44 @@ test("a recorded REJECT is not a light — and joinVerdicts is task-scoped in co
   assert.equal(v.tester, "reject");
   assert.equal(v.reviewer, "approve");
   assert.deepEqual(joinVerdicts(rig, "feat/other"), {}, "another task's verdicts never bleed in");
+});
+
+// ── CE-164: a PASTED phrase must survive its own paste markers ──────────────
+//
+// Phase C's release moment, live: Adam pasted "merge go" into the orchestrator
+// pane — the habit the pane-phrase honor was BUILT for — and the fold erased
+// it. xterm wraps pastes in ESC[200~ … ESC[201~; the old strip turned every
+// CSI into a bare ESC, and ESC clears the draft — the paste TERMINATOR wiped
+// the phrase before Enter completed the line. Reproduced, then cured: markers
+// are transparent, split markers carry across calls, arrows/Esc still clear.
+
+function foldAll(chunks: string[]): string[] {
+  let buf = "";
+  const all: string[] = [];
+  for (const c of chunks) {
+    const r = foldHumanLines(buf, Buffer.from(c, "latin1"));
+    buf = r.buf;
+    all.push(...r.lines);
+  }
+  return all;
+}
+
+test("CE-164: a bracketed PASTE of the phrase folds to the phrase, not to nothing", () => {
+  assert.deepEqual(foldAll(["\x1b[200~merge go\x1b[201~", "\r"]), ["merge go"]);
+});
+
+test("CE-164: a paste whose markers SPLIT across input posts still folds true", () => {
+  assert.deepEqual(foldAll(["\x1b[200~mer", "ge go\x1b[2", "01~", "\r"]), ["merge go"]);
+});
+
+test("CE-164: arrows and Escape still clear the draft — they are not typing", () => {
+  assert.deepEqual(foldAll(["junk\x1b[Amerge go\r"]), ["merge go"]);
+  assert.deepEqual(foldAll(["oops\x1bmerge go\r"]), ["merge go"]);
+});
+
+test("CE-164: a trailing bare ESC is carried, never counted as a cleared draft", () => {
+  // chunk 1 ends in a lone ESC (a split arrow key); the draft typed so far
+  // must survive until the escape completes in chunk 2
+  assert.deepEqual(foldAll(["merge go\x1b", "[A\r"]), [""]);
+  assert.deepEqual(foldAll(["merge g\x1b", "\x1b[200~o\x1b[201~", "\r"]), ["o"]);
 });

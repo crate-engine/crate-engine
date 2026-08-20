@@ -10,6 +10,9 @@ export declare function mirrorNote(projectRoot: string, role: string, sender: st
  * repeat "merge go" instead of queueing a duplicate [MERGE] order. */
 export declare function gateAlreadyReleased(projectRoot: string, task: string): boolean;
 export interface GateCard {
+    /** "merge" (default, awaiting "merge go") or "design" (CE-161: the
+     * design-lock hold — the operator confirms or reopens the design). */
+    kind?: "merge" | "design";
     task: string;
     branch: string;
     deploysTo: string;

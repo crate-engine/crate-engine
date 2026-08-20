@@ -182,6 +182,26 @@ export function pendingGates(projectRoot) {
         catch { /* */ }
         cards.push({ task: "(single loop)", branch, deploysTo: dep, ...lights("(single loop)"), released: gateAlreadyReleased(projectRoot, "(single loop)") });
     }
+    // CE-161 (Phase C live loop, 2026-08-20): the design-lock hold is now a CARD
+    // the ENGINE raises the moment the state lands — not a report the agent must
+    // remember to send. The live loop parked at design_locked with chat empty
+    // and gates empty; the operator experienced a stalled loop as a finished
+    // one. The agent's narrative report remains the courtesy; this is the
+    // guarantee. The branch comes from the DESIGN_LOCKED event itself.
+    const designTasks = Object.entries(tasks).filter(([, st]) => st === "design_locked").map(([t]) => t);
+    if (designTasks.length === 0 && scalar === "design_locked")
+        designTasks.push("(single loop)");
+    for (const t of designTasks) {
+        let branch = t === "(single loop)" ? "" : t;
+        try {
+            const log = readFileSync(join(projectRoot, ".agents", "state", "events.log"), "utf8");
+            const m = [...log.matchAll(/DESIGN_LOCKED[^\n]*?branch=(\S+)/g)].pop();
+            if (m)
+                branch = m[1];
+        }
+        catch { /* the card still stands without a branch name */ }
+        cards.push({ kind: "design", task: t, branch: branch || "design", deploysTo: dep, reviewOk: false, qaOk: false, released: false });
+    }
     return cards;
 }
 /** Pack 4 (cockpit truth): the pane-phrase fold. The operator's habit is
@@ -193,7 +213,34 @@ export function pendingGates(projectRoot) {
  * buffer is capped — the phrase is short, and this is a phrase watcher,
  * never a keylogger. */
 export function foldHumanLines(buf, data) {
-    const text = data.toString("latin1").replace(/\x1b\[[0-9;?]*[A-Za-z~]/g, "\x1b");
+    // CE-164 (Phase C's vanished release): a PASTED "merge go" was ERASED by its
+    // own bracketed-paste terminator. xterm wraps pastes in ESC[200~ … ESC[201~;
+    // the old strip turned every CSI into a bare ESC, and ESC means "clear the
+    // draft" — so the terminator wiped the just-pasted phrase before Enter could
+    // complete the line. The human's words were eaten by the machinery built to
+    // honor them. Bracketed-paste markers are TRANSPARENT now (the content
+    // between them IS the typing), and a chunk ending mid-escape is carried to
+    // the next call instead of being half-matched (a split marker failed the
+    // same way). Arrows and Escape still clear the draft — they are not typing.
+    //
+    // The draft may carry a pending partial escape at its end from the previous
+    // call — recover it first (the draft itself never contains raw ESC: only
+    // printable chars are ever appended below).
+    let pend = "";
+    const ei = buf.indexOf("\x1b");
+    if (ei >= 0) {
+        pend = buf.slice(ei);
+        buf = buf.slice(0, ei);
+    }
+    let text = pend + data.toString("latin1");
+    // hold back a trailing INCOMPLETE escape (bare ESC, or CSI without its final)
+    let carry = "";
+    const tail = /\x1b(\[[\x30-\x3f]*[\x20-\x2f]*)?$/.exec(text);
+    if (tail) {
+        carry = tail[0];
+        text = text.slice(0, text.length - carry.length);
+    }
+    text = text.replace(/\x1b\[20[01]~/g, "").replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, "\x1b");
     const lines = [];
     for (let i = 0; i < text.length; i++) {
         const c = text.charCodeAt(i);
@@ -208,6 +255,7 @@ export function foldHumanLines(buf, data) {
         else if (c >= 0x20)
             buf = (buf + text[i]).slice(-64);
     }
+    buf = buf + carry;
     return { buf, lines };
 }
 /** Honor a pane-typed release: a completed line that IS the exact phrase,
