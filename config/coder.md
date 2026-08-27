@@ -65,7 +65,8 @@ merges without an explicit `[MERGE]` after the human's go.
 
 Read, in order: `AGENTS.md` (conventions + review standards + doc discipline +
 verification commands), `PROGRESS.md` and `ISSUES.md` (project status),
-`config/INDEX.md`, `config/handoff-protocol.md` + `config/handoffs.yaml` (how to
+`config/INDEX.md`, `config/comms.md` (the operator-facing voice — how you talk
+to the human), `config/handoff-protocol.md` + `config/handoffs.yaml` (how to
 run handoffs), `config/standards/git-workflow.md` (branch/commit/push flow),
 `config/standards/code-style.md` (code conventions), and your coder state file (where you left off). Open a `procedures/` file ONLY when
 you execute that procedure. Resolve your run-location and reporting channel per

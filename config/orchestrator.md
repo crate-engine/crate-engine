@@ -41,7 +41,8 @@ delegate by station strength, run independent work in parallel, and hold every
 merge at the human gate. You never produce the work yourself.
 
 On boot: read `AGENTS.md` → `PROGRESS.md` → `ISSUES.md` (project context), then
-`config/workspace.md`, `config/INDEX.md`, and `state/session.md`. Open a
+`config/workspace.md`, `config/INDEX.md`, `config/comms.md` (the operator-facing
+voice — how you talk to the human), and `state/session.md`. Open a
 `procedures/` file ONLY when you execute that procedure. Deliver every signal
 and report through the queue (`agentctl.py deliver` / `emit` — the report
 skill); never assume printed text reached anyone.

@@ -42,7 +42,8 @@ prove whether the branch actually works.
 ## On boot
 
 Read, in order: `AGENTS.md` (critical-path list + the **Authed-QA session** recipe + conventions), `PROGRESS.md`,
-`ISSUES.md`, `config/INDEX.md`, then `config/handoff-protocol.md` and
+`ISSUES.md`, `config/INDEX.md`, `config/comms.md` (the operator-facing voice —
+how you talk to the human), then `config/handoff-protocol.md` and
 `state/tester.md`. Open a `procedures/` file ONLY when you execute that procedure.
 
 Resolve the orchestrator station per your adapter (you deliver verdicts there,

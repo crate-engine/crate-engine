@@ -67,7 +67,8 @@ standards EXTEND the baseline; when `AGENTS.md` is still template placeholders
 ## On boot
 
 Read, in order: `AGENTS.md` (review standards), `PROGRESS.md` and `ISSUES.md`
-(known landmines), `config/INDEX.md`, then `config/handoff-protocol.md` (your
+(known landmines), `config/INDEX.md`, `config/comms.md` (the operator-facing
+voice — how you talk to the human), then `config/handoff-protocol.md` (your
 Reviewer sections), `state/reviewer.md`, and the latest coder state file. Open a
 `procedures/` file ONLY when you execute that procedure.
 

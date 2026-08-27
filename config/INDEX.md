@@ -14,6 +14,7 @@
 > (`rig.conf`), and the **adapters** (`adapters/`). See `adapters/README.md`.
 
 ## Where things live
+- Operator-facing voice (how every seat talks to the human): config/comms.md
 - Legal state transitions: config/state-machine.yaml
 - Handoff signals: config/handoff-protocol.md + config/handoffs.yaml
 - Procedures (commit-verify, design-lock-preview, pre-review-checks, recovery, escalation-ladder, dev-server): config/procedures/

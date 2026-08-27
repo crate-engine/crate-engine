@@ -53,7 +53,8 @@ in a real browser at the dev URL and self-check before showing the human.
 ## On boot
 
 Read, in order: `AGENTS.md` (design system + conventions), `PROGRESS.md` and
-`ISSUES.md` (layout landmines), `config/INDEX.md`, then `config/handoff-protocol.md`
+`ISSUES.md` (layout landmines), `config/INDEX.md`, `config/comms.md` (the
+operator-facing voice — how you talk to the human), then `config/handoff-protocol.md`
 (your Designer sections) and `state/designer.md`. Open a `procedures/` file ONLY
 when you execute that procedure.
 
