@@ -70,14 +70,12 @@ header{padding:12px 22px;border-bottom:1px solid var(--line);display:flex;align-
 .working .rmeta{color:var(--faint);letter-spacing:0}
 .mark{font:400 13px/1 var(--disp);letter-spacing:.1em;text-transform:uppercase;display:inline-flex;align-items:center}
 .bolt{height:.72em;width:auto;fill:var(--amber);margin:0 .14em;transform:translateY(.02em)}
-.proj{font:500 11px/1 var(--mono);letter-spacing:.12em;color:var(--dim);text-transform:uppercase}
 /* PHASE-B #2: the loop-narration chip — round N + whose move it is, straight
    from events.log. THE "it feels slow" fix: minutes-long agent turns must
    read as a loop in motion, not a frozen page. */
 /* PHASE-B #5 (Adam): the top nav is CLEAN TEXT — no boxes anywhere in the
    masthead (nav items, hamburger, badges, toggle). Panel-openers carry an
    amber spin-down chevron that flips while their panel is open. */
-.ver{font:500 10px/1 var(--mono);letter-spacing:.16em;color:var(--faint);text-transform:uppercase}
 .ver b{color:var(--amber);font-weight:600}
 .hbadge{font:500 9.5px/1 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--ok)}
 .navbtn{position:relative;background:transparent;border:0;color:var(--dim);padding:6px 0;font:600 10px/1 var(--body);letter-spacing:.12em;text-transform:uppercase;cursor:pointer}
@@ -140,8 +138,11 @@ header{padding:12px 22px;border-bottom:1px solid var(--line);display:flex;align-
 .railbtn{background:transparent;border:0;color:var(--dim);width:30px;height:28px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto}
 .railbtn:hover{color:var(--fg)}
 .railbtn svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round}
-.rail{position:fixed;top:0;left:0;bottom:0;width:270px;background:var(--panel);border-right:1px solid var(--line2);z-index:60;transform:translateX(-100%);transition:transform .18s ease;display:flex;flex-direction:column;box-shadow:0 0 40px rgba(0,0,0,.5)}
+.rail{position:fixed;top:0;left:0;bottom:0;width:var(--railw,340px);background:var(--panel);border-right:1px solid var(--line2);z-index:60;transform:translateX(-100%);transition:transform .18s ease;display:flex;flex-direction:column;box-shadow:0 0 40px rgba(0,0,0,.5)}
 .rail.open{transform:translateX(0)}
+.rail.dragging{transition:none;user-select:none}
+.railgrip{position:absolute;top:0;right:-3px;bottom:0;width:7px;cursor:col-resize;z-index:61}
+.railgrip:hover,.rail.dragging .railgrip{background:linear-gradient(to right,transparent 2px,var(--amber) 2px,var(--amber) 4px,transparent 4px)}
 .railback{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:55;display:none}
 .railback.open{display:block}
 .railhd{padding:16px 18px 12px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between}
@@ -1760,6 +1761,19 @@ async function addWorkspace(){
   if(r.error){await uiNotice(r.error);return;}
   WORKSPACES=r.workspaces||[];renderRail();
 }
+// Drawer width (Adam, 2026-09-13: "a little wider, and sizable like the other
+// windows"): 340px default, dragged by its right edge, remembered per browser.
+(function(){
+  const MIN=240,MAX=640;
+  let w=340;try{const v=parseInt(localStorage.getItem("crate.railw")||"",10);if(v>=MIN&&v<=MAX)w=v;}catch(e){}
+  document.documentElement.style.setProperty("--railw",w+"px");
+  const grip=document.getElementById("railgrip"),rail=document.getElementById("rail");
+  if(!grip||!rail)return;
+  let drag=null;
+  grip.addEventListener("mousedown",e=>{drag={x:e.clientX,w};rail.classList.add("dragging");e.preventDefault();});
+  document.addEventListener("mousemove",e=>{if(!drag)return;w=Math.max(MIN,Math.min(MAX,drag.w+(e.clientX-drag.x)));document.documentElement.style.setProperty("--railw",w+"px");});
+  document.addEventListener("mouseup",()=>{if(!drag)return;drag=null;rail.classList.remove("dragging");try{localStorage.setItem("crate.railw",String(w));}catch(e){}});
+})();
 document.getElementById("railbtn").onclick=openRail;
 document.getElementById("railclose").onclick=closeRail;
 document.getElementById("railback").onclick=closeRail;
@@ -2004,10 +2018,18 @@ window.addEventListener("keydown",e=>{if(e.key==="Escape")closeRail();});
 // Servers KEEP their in-page buttons everywhere: their state (pending dot,
 // server chip) lives in the page, and native menus can't carry it.
 window.crateOpenPanel=name=>{
-  const b=document.getElementById({team:"teambtn",context:"ctxbtn",health:"healthbtn"}[name]||"");
+  // Chrome reorg (Adam, 2026-09-13): the Servers panel joins the menu bar
+  // (View › Servers, ⌘5) and the Workspaces drawer gets a menu home too
+  // (View › Workspaces). One home per control: the shell retires the
+  // in-page Servers button along with the three static ones.
+  if(name==="workspaces"){const r=document.getElementById("rail");if(r&&r.classList.contains("open"))closeRail();else openRail();return;}
+  const b=document.getElementById({team:"teambtn",context:"ctxbtn",health:"healthbtn",servers:"svbtn"}[name]||"");
   if(b&&b.onclick){anchorPanels();b.onclick();}
 };
-if(window.crateShell){["teambtn","ctxbtn","healthbtn"].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.add("hidden");});}
+// File-menu doors (Adam, 2026-09-13): New Rig… / Open Rig… / Clone… / Add a
+// Server… land on the New Rig card with that door pre-opened (?card=1&door=…).
+window.crateOpenDoor=door=>{location.href="/team?token="+TOKEN+"&card=1&door="+encodeURIComponent(door||"new");};
+if(window.crateShell){["teambtn","ctxbtn","healthbtn","svbtn"].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.add("hidden");});}
 // PHASE-B #5: the nav chevrons spin while their panel is open — observed off
 // the overlay's class so every open/close path (click, outside, actions) syncs.
 [["pvbtn","pvoverlay"],["teambtn","teamoverlay"],["svbtn","svoverlay"],["ctxbtn","ctxoverlay"],["healthbtn","healthoverlay"]].forEach(p=>{
@@ -2043,6 +2065,14 @@ if(CARD){
     +'<div class="trust">Attaching writes ONE wiring folder — <b>.agents/</b> (engine symlinks, state, a managed gitignore block so none of it is ever committed). Your code is untouched.</div>'
     +'</div>';
   document.body.appendChild(cw);
+  // ?door=new|browse|clone|server — the File menu's deep links (the machine
+  // chips render after a fetch, so the server door is polled briefly)
+  (function(){
+    const door=new URLSearchParams(location.search).get("door");
+    const id={new:"acnew",browse:"acbrowse",clone:"acclone",server:"acaddsrv"}[door||""];
+    if(!id)return;
+    let tries=0;const t=setInterval(()=>{const b=document.getElementById(id);if(b&&b.onclick){clearInterval(t);b.onclick();}else if(++tries>30)clearInterval(t);},100);
+  })();
   const dm=document.getElementById("acdismiss");
   if(dm)dm.onclick=()=>{location.href="/team?token="+TOKEN;};
   const acerr=()=>document.getElementById("acerr");
@@ -2271,7 +2301,7 @@ export function teamPage(view, opts = {}) {
 <body>
 <div class="deadbar" id="deadbar">engine offline — the app server is not responding. Reopen with <code>crate open</code>.</div>
 <div class="railback" id="railback"></div>
-<aside class="rail" id="rail">
+<aside class="rail" id="rail"><div class="railgrip" id="railgrip" title="Drag to resize"></div>
   <div class="railhd"><h3>Workspaces</h3><button class="rx" id="railclose" title="Close">×</button></div>
   <div class="wslist" id="wslist"></div>
   <div class="railft"><button class="wsadd" id="wsadd">+ Add a workspace</button></div>
@@ -2280,8 +2310,6 @@ export function teamPage(view, opts = {}) {
   <div style="display:flex;align-items:center;gap:14px">
     <button class="railbtn" id="railbtn" title="Workspaces"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
     <span class="mark">CRATE<svg class="bolt" viewBox="0 0 24 24" aria-hidden="true"><path d="M13.2 2 4.8 13.4h5L8.6 22l10.6-13.2h-6.2L13.2 2z"/></svg>ENGINE</span>
-    <span class="ver">CE-<b>2.2</b></span>
-    <span class="proj" id="projlabel">${escHtml(view.project)}</span>
     <span class="upchip" id="upchip" hidden></span>
     <span class="downchip" id="downchip" hidden></span>
   </div>

@@ -89,6 +89,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     webView.navigationDelegate = self // the Retry link routes back into the launch flow
     webView.uiDelegate = self // window.open → real satellite windows
     window.contentView = webView
+    // The window title follows the page's title ("Crate Engine — <rig> team"):
+    // the header's project label retired 2026-09-13 (the name lives in the
+    // Workspaces drawer + here), so the title is where the eye finds it.
+    webView.addObserver(self, forKeyPath: "title", options: [.new], context: nil)
     window.makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
 
@@ -150,6 +154,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         }
       }
     }
+  }
+
+  override func observeValue(
+    forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?
+  ) {
+    if keyPath == "title", let t = webView.title, !t.isEmpty { window.title = t }
   }
 
   /// Backlog 11: the cockpit is "connected" when the MAIN webview finishes
@@ -376,6 +386,8 @@ final class PanelActions: NSObject, NSMenuItemValidation {
   @objc func openTeam(_ sender: Any?) { open("team") }
   @objc func openContext(_ sender: Any?) { open("context") }
   @objc func openHealth(_ sender: Any?) { open("health") }
+  @objc func openServers(_ sender: Any?) { open("servers") } // the header's Servers button moved here (2026-09-13)
+  @objc func openWorkspaces(_ sender: Any?) { open("workspaces") } // toggles the drawer
   /// Backlog 10: the Design Studio — one item opens BOTH frames (Adam's
   /// call: the pair is the default; closing either one is free). cmd-4 also
   /// RAISES frames that already exist (QA find: a frame buried behind the
@@ -450,7 +462,8 @@ final class FleetActions: NSObject, NSMenuDelegate {
       if state == "connected" || host["local"] as? Bool == true {
         // CE-136: an empty host must never dead-end — its row is the door to
         // the card (＋ new rig), loading the host's cockpit with &card=1.
-        if let cockpit = host["cockpitUrl"] as? String {
+        // This Mac's "new rig" lives in File › New Rig… now — one home per control.
+        if host["local"] as? Bool != true, let cockpit = host["cockpitUrl"] as? String {
           let add = NSMenuItem(title: "   ＋ new rig on \(name)…", action: #selector(switchTo(_:)), keyEquivalent: "")
           add.target = self
           add.representedObject = cockpit + "&card=1"
@@ -477,6 +490,9 @@ final class FleetActions: NSObject, NSMenuDelegate {
       }
       menu.addItem(NSMenuItem.separator())
     }
+    let add = NSMenuItem(title: "Add a Server…", action: #selector(AppActions.addServer(_:)), keyEquivalent: "")
+    add.target = AppActions.shared
+    menu.addItem(add)
   }
 
   @objc func switchTo(_ sender: NSMenuItem) {
@@ -533,12 +549,64 @@ final class FleetActions: NSObject, NSMenuDelegate {
   }
 }
 
+/// App-level actions (chrome reorg, Adam 2026-09-13): About shows the LIVE
+/// engine version (asked of the local hub at click time — the shell is a
+/// frame, the engine is what gets released), and the File menu's doors land
+/// on the New Rig card with the right door pre-opened.
+final class AppActions: NSObject {
+  static let shared = AppActions()
+  private func hub() -> (base: String, token: String)? {
+    guard let d = NSApp.delegate as? AppDelegate, let hub = d.hubURL,
+      let comps = URLComponents(url: hub, resolvingAgainstBaseURL: false),
+      let token = comps.queryItems?.first(where: { $0.name == "token" })?.value
+    else { return nil }
+    return ("http://127.0.0.1:\(comps.port ?? 0)", token)
+  }
+  @objc func about(_ sender: Any?) {
+    var engine = "engine not reachable — is the local engine up?"
+    if let h = hub(), let url = URL(string: "\(h.base)/api/version?token=\(h.token)") {
+      var out: [String: Any]?
+      let sem = DispatchSemaphore(value: 0)
+      URLSession.shared.dataTask(with: URLRequest(url: url, timeoutInterval: 1.5)) { data, _, _ in
+        if let d = data { out = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] }
+        sem.signal()
+      }.resume()
+      _ = sem.wait(timeout: .now() + 1.5)
+      if let v = out {
+        let loaded = v["loadedSha"] as? String ?? "?"
+        let disk = v["version"] as? String ?? loaded
+        engine = "Engine \(loaded)" + (disk != loaded ? "  (update \(disk) on disk — relaunch to load it)" : "")
+      }
+    }
+    let shell = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    NSApp.orderFrontStandardAboutPanel(options: [
+      .applicationName: "Crate Engine",
+      .applicationVersion: engine,
+      .version: "app shell \(shell)",
+      .credits: NSAttributedString(string: "crate-engine.ai\nThe app is a native frame around the engine's cockpit; the engine version above is what updates."),
+    ])
+  }
+  private func openDoor(_ door: String) {
+    guard let d = NSApp.delegate as? AppDelegate, let hub = d.hubURL,
+      let url = URL(string: hub.absoluteString + "&card=1&door=\(door)")
+    else { return }
+    d.webView.load(URLRequest(url: url))
+  }
+  @objc func newRig(_ sender: Any?) { openDoor("new") }
+  @objc func openRig(_ sender: Any?) { openDoor("browse") }
+  @objc func cloneRig(_ sender: Any?) { openDoor("clone") }
+  @objc func addServer(_ sender: Any?) { openDoor("server") }
+  @objc func website(_ sender: Any?) { NSWorkspace.shared.open(URL(string: "https://crate-engine.ai")!) }
+}
+
 // Minimal real menus — copy/paste and Cmd-Q must work inside the cockpit
 // (and inside TUI panes). Without an Edit menu, WKWebView eats shortcuts.
 let mainMenu = NSMenu()
 let appItem = NSMenuItem(); mainMenu.addItem(appItem)
 let appMenu = NSMenu()
-appMenu.addItem(withTitle: "About Crate Engine", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+let aboutItem = NSMenuItem(title: "About Crate Engine", action: #selector(AppActions.about(_:)), keyEquivalent: "")
+aboutItem.target = AppActions.shared // live engine version, not the plist's
+appMenu.addItem(aboutItem)
 appMenu.addItem(NSMenuItem.separator())
 // Adam's ask (2026-08-18): the updater lives where Preferences would —
 // one click, whole fleet (⌘U kept from the retired Update menu).
@@ -549,6 +617,24 @@ appMenu.addItem(NSMenuItem.separator())
 appMenu.addItem(withTitle: "Hide Crate Engine", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
 appMenu.addItem(withTitle: "Quit Crate Engine", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
 appItem.submenu = appMenu
+// File (chrome reorg, Adam 2026-09-13): the doors a person reaches for first,
+// where every Mac app keeps them. Each lands on the New Rig card with that
+// door open — "+ new rig on this Mac" left the Servers menu for here.
+let fileItem = NSMenuItem(); mainMenu.addItem(fileItem)
+let fileMenu = NSMenu(title: "File")
+for (title, sel, key) in [
+  ("New Rig…", #selector(AppActions.newRig(_:)), "n"),
+  ("Open Rig…", #selector(AppActions.openRig(_:)), "o"),
+  ("Clone from GitHub…", #selector(AppActions.cloneRig(_:)), ""),
+  ("Add a Server…", #selector(AppActions.addServer(_:)), ""),
+] {
+  let it = NSMenuItem(title: title, action: sel, keyEquivalent: key)
+  it.target = AppActions.shared
+  fileMenu.addItem(it)
+}
+fileMenu.addItem(NSMenuItem.separator())
+fileMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+fileItem.submenu = fileMenu
 let editItem = NSMenuItem(); mainMenu.addItem(editItem)
 let editMenu = NSMenu(title: "Edit")
 editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
@@ -563,6 +649,12 @@ editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)
 editItem.submenu = editMenu
 let viewItem = NSMenuItem(); mainMenu.addItem(viewItem)
 let viewMenu = NSMenu(title: "View")
+// View = what is shown: the Workspaces drawer, the four panels, the studio.
+let wsMenuItem = NSMenuItem(title: "Workspaces", action: #selector(PanelActions.openWorkspaces(_:)), keyEquivalent: "s")
+wsMenuItem.keyEquivalentModifierMask = [.command, .control] // ⌃⌘S — the Mac's "Show Sidebar" chord
+wsMenuItem.target = PanelActions.shared
+viewMenu.addItem(wsMenuItem)
+viewMenu.addItem(NSMenuItem.separator())
 let teamMenuItem = NSMenuItem(title: "Team", action: #selector(PanelActions.openTeam(_:)), keyEquivalent: "1")
 teamMenuItem.target = PanelActions.shared
 viewMenu.addItem(teamMenuItem)
@@ -572,18 +664,37 @@ viewMenu.addItem(contextMenuItem)
 let healthMenuItem = NSMenuItem(title: "Health", action: #selector(PanelActions.openHealth(_:)), keyEquivalent: "3")
 healthMenuItem.target = PanelActions.shared
 viewMenu.addItem(healthMenuItem)
+let serversMenuItem = NSMenuItem(title: "Servers", action: #selector(PanelActions.openServers(_:)), keyEquivalent: "5")
+serversMenuItem.target = PanelActions.shared
+viewMenu.addItem(serversMenuItem)
 viewMenu.addItem(NSMenuItem.separator())
 let studioMenuItem = NSMenuItem(title: "Design Studio", action: #selector(PanelActions.openStudio(_:)), keyEquivalent: "4")
 studioMenuItem.target = PanelActions.shared
 viewMenu.addItem(studioMenuItem)
 viewItem.submenu = viewMenu
 let fleetItem = NSMenuItem(); mainMenu.addItem(fleetItem)
-let fleetMenu = NSMenu(title: "Fleet")
+let fleetMenu = NSMenu(title: "Servers") // was "Fleet" (Adam, 2026-09-13): say what it lists
 fleetMenu.delegate = FleetActions.shared // rows rebuilt from /api/fleet each open
 fleetMenu.autoenablesItems = false
 fleetItem.submenu = fleetMenu
 // (The top-level Update menu RETIRED 2026-08-18 — the fleet-wide updater
 // lives in the app menu now; the Health panel keeps its per-engine button.)
+// Window + Help — the standard pair every Mac app carries.
+let windowItem = NSMenuItem(); mainMenu.addItem(windowItem)
+let windowMenu = NSMenu(title: "Window")
+windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+windowMenu.addItem(NSMenuItem.separator())
+windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
+windowItem.submenu = windowMenu
+app.windowsMenu = windowMenu
+let helpItem = NSMenuItem(); mainMenu.addItem(helpItem)
+let helpMenu = NSMenu(title: "Help")
+let siteItem = NSMenuItem(title: "Crate Engine Website", action: #selector(AppActions.website(_:)), keyEquivalent: "")
+siteItem.target = AppActions.shared
+helpMenu.addItem(siteItem)
+helpItem.submenu = helpMenu
+app.helpMenu = helpMenu
 app.mainMenu = mainMenu
 
 let delegate = AppDelegate()

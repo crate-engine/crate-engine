@@ -32,15 +32,21 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BUILD/CrateEngine" "$APP/Contents/MacOS/CrateEngine"
 cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+# Version stamps (About panel, 2026-09-13): the SHORT version is the engine
+# sha this shell was built beside; CFBundleVersion is the build moment. The
+# About panel shows the LIVE engine version from the hub — these are the
+# shell's own provenance, not the number that updates.
+ENGINE_SHA="$(git -C "$(cd "$(dirname "$0")/../.." && pwd)" rev-parse --short HEAD 2>/dev/null || echo dev)"
+BUILD_STAMP="$(date +%Y%m%d.%H%M)"
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleName</key><string>Crate Engine</string>
   <key>CFBundleDisplayName</key><string>Crate Engine</string>
   <key>CFBundleIdentifier</key><string>ai.crate-engine.shell</string>
-  <key>CFBundleVersion</key><string>1.0</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>${BUILD_STAMP}</string>
+  <key>CFBundleShortVersionString</key><string>${ENGINE_SHA}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>CrateEngine</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>

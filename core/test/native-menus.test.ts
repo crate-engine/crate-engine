@@ -23,13 +23,17 @@ test("the page exposes the panel bridge, and the shell retires exactly the three
   for (const id of ["teambtn", "ctxbtn", "healthbtn"]) {
     assert.ok(fn.includes(id), `the bridge routes ${id}`);
   }
-  assert.ok(html.includes('if(window.crateShell){["teambtn","ctxbtn","healthbtn"]'), "ONLY the three static buttons retire in the shell");
-  assert.ok(!/crateShell.*svbtn/.test(html) && !/crateShell.*pvbtn/.test(html), "Preview/Servers keep their in-page buttons — stateful chrome stays in the page");
+  // Chrome reorg (Adam, 2026-09-13): Servers joined the menu bar (View › Servers), so
+  // its in-page button retires with the three static ones; Preview stays in-page.
+  assert.ok(html.includes('if(window.crateShell){["teambtn","ctxbtn","healthbtn","svbtn"]'), "the four menu-homed buttons retire in the shell");
+  assert.ok(!/crateShell.*pvbtn/.test(html), "Preview keeps its in-page button — stateful chrome stays in the page");
+  assert.ok(fn.includes('servers:"svbtn"') && fn.includes('name==="workspaces"'), "the bridge routes Servers and the Workspaces drawer");
 });
 
-test("the shell's View menu: three items, cmd-1/2/3, validated against cockpitReady", () => {
+test("the shell's View menu: Workspaces + the four panels, cmd-1/2/3/5, validated against cockpitReady", () => {
   assert.ok(shell.includes('NSMenu(title: "View")'), "a real View menu exists");
-  for (const [name, key] of [["Team", "1"], ["Context", "2"], ["Health", "3"]] as const) {
+  assert.ok(shell.includes('NSMenuItem(title: "Workspaces",') && shell.includes("[.command, .control]"), "Workspaces rides ⌃⌘S, the Mac's show-sidebar chord");
+  for (const [name, key] of [["Team", "1"], ["Context", "2"], ["Health", "3"], ["Servers", "5"]] as const) {
     assert.ok(shell.includes(`NSMenuItem(title: "${name}",`), `${name} is a menu item`);
     assert.ok(shell.includes(`keyEquivalent: "${key}"`), `${name} rides cmd-${key}`);
   }

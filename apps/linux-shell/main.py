@@ -326,6 +326,16 @@ class Shell:
         item(app_menu, "Quit", Gdk.KEY_q, Gdk.ModifierType.CONTROL_MASK, lambda *_: Gtk.main_quit())
         bar.append(app_root)
 
+        # File (chrome reorg, Adam 2026-09-13): the doors a person reaches for
+        # first — each lands on the New Rig card with that door pre-opened.
+        file_root = Gtk.MenuItem(label="File")
+        file_menu = Gtk.Menu()
+        file_root.set_submenu(file_menu)
+        for label, key, door in (("New Rig…", Gdk.KEY_n, "new"), ("Open Rig…", Gdk.KEY_o, "browse"),
+                                 ("Clone from GitHub…", None, "clone"), ("Add a Server…", None, "server")):
+            item(file_menu, label, key, Gdk.ModifierType.CONTROL_MASK, lambda _w, d=door: self.open_door(d))
+        bar.append(file_root)
+
         edit_root = Gtk.MenuItem(label="Edit")
         edit_menu = Gtk.Menu()
         edit_root.set_submenu(edit_menu)
@@ -343,7 +353,9 @@ class Shell:
         view_root = Gtk.MenuItem(label="View")
         view_menu = Gtk.Menu()
         view_root.set_submenu(view_menu)
-        for label, key, panel in (("Team", Gdk.KEY_1, "team"), ("Context", Gdk.KEY_2, "context"), ("Health", Gdk.KEY_3, "health")):
+        # View = what is shown: the Workspaces drawer, the four panels, the studio.
+        for label, key, panel in (("Workspaces", Gdk.KEY_w, "workspaces"), ("Team", Gdk.KEY_1, "team"), ("Context", Gdk.KEY_2, "context"),
+                                  ("Health", Gdk.KEY_3, "health"), ("Servers", Gdk.KEY_5, "servers")):
             it = item(view_menu, label, key, Gdk.ModifierType.CONTROL_MASK,
                       lambda _w, p=panel: self.run_js(f"window.crateOpenPanel && window.crateOpenPanel('{p}')"))
             it.set_sensitive(False)
@@ -358,7 +370,7 @@ class Shell:
         # Rows rebuilt from the hub's /api/fleet on every open (the "show"
         # signal); click swaps the webview to that workspace's cockpit. The
         # fetch caps at 1.2s — an asleep host must never hang the menu.
-        fleet_root = Gtk.MenuItem(label="Fleet")
+        fleet_root = Gtk.MenuItem(label="Servers")  # was "Fleet" (Adam, 2026-09-13): say what it lists
         fleet_menu = Gtk.Menu()
         fleet_root.set_submenu(fleet_menu)
         fleet_menu.connect("show", self.on_fleet_open)
@@ -404,7 +416,8 @@ class Shell:
             if host.get("state") == "connected" or host.get("local"):
                 # CE-136: an empty host must never dead-end — the ＋ new rig
                 # row is the door to the card (&card=1 on the host's cockpit).
-                if host.get("cockpitUrl"):
+                # This machine's "new rig" lives in File › New Rig… now — one home per control.
+                if host.get("cockpitUrl") and not host.get("local"):
                     row(f"   ＋ new rig on {host.get('host', '?')}…",
                         lambda u: self.web.load_uri(u), host["cockpitUrl"] + "&card=1")
                 for w in host.get("workspaces", []):
@@ -415,7 +428,13 @@ class Shell:
                 note = host.get("note") or host.get("state", "unknown")
                 row(f"   {note} — Connect", self._fleet_connect, host.get("host"))
             menu.append(Gtk.SeparatorMenuItem())
+        row("Add a Server…", lambda _a: self.open_door("server"))
         menu.show_all()
+
+    def open_door(self, door):
+        """The File menu's doors: the local hub's New Rig card, that door open."""
+        if self.hub_url:
+            self.web.load_uri(self.hub_url + "&card=1&door=" + door)
 
     def _fleet_connect(self, host):
         api = self._hub_api("/api/fleet/connect")

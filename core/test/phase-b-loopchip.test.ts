@@ -44,7 +44,7 @@ test("cockpit masthead is stripped: no loop chip, no lens toggle — the live su
   assert.ok(!html.includes('id="loopchip"'), "loop chip element removed");
   assert.ok(!html.includes("renderLoopChip"), "chip renderer removed");
   assert.ok(!html.includes('id="bn"') && !html.includes(">Narrated<"), "lens toggle removed");
-  assert.ok(html.includes('id="projlabel"'), "live project label stays");
+  assert.ok(!html.includes('id="projlabel"'), "the header's project label retired 2026-09-13 (the name lives in Workspaces + the window title)");
   assert.ok(html.includes('id="downchip"'), "dead-seat distress chip stays (safety)");
   assert.ok(html.includes('id="gatebar"'), "gate bar stays (the operator's release surface)");
 });
