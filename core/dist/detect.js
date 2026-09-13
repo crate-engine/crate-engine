@@ -6,7 +6,7 @@
 // PATH, plus the same auth markers doctor and up() gate on (marker law:
 // pi = provider KEY in ~/.pi/agent/auth.json; claude = oauthAccount AND
 // hasCompletedOnboarding in ~/.claude.json — run #3/#5 findings).
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SEATS } from "./manifest.js";
@@ -210,30 +210,19 @@ export function agentProblem(agent, home, models = [], opts = {}) {
     if (marker)
         return marker;
     if (opts.deep && agent === "agy") {
-        // The POSITIVE proof the onboarding marker cannot give. `agy models` needs a
-        // live credential and returns the model list the picker wants anyway, so it
-        // pays twice. Failure is treated as not-ready ON PURPOSE: the safe direction
-        // for a wrong answer here is a false NOT-ready (the operator re-checks) —
-        // never a false READY, which is what wedged a live seat in CE-138. Deep runs
-        // only at the moments of truth (doctor row, boot refusal), not on dashboard
-        // polls, so the network cost is bounded.
         try {
             const out = execFileSync(whichBin("agy", opts), ["models"], {
                 encoding: "utf8",
                 timeout: deepTimeout,
                 stdio: ["ignore", "pipe", "pipe"],
             });
-            if (/\S/.test(out.replace(/Fetching available models\.\.\.?/g, "")))
+            if (DEEP_RULES.agy.ready(out))
                 return undefined;
         }
         catch {
             /* fall through to the honest problem */
         }
-        return {
-            agent: "agy",
-            fix: "Antigravity CLI's saved sign-in isn't usable right now (its keyring credential is missing, expired, or unreadable from this account) — " +
-                "run `agy` once in a terminal, complete the Google sign-in, approve the keyring prompt, then try again",
-        };
+        return DEEP_RULES.agy.problem;
     }
     if (opts.deep && (agent === "claude" || agent === "claude-code")) {
         try {
@@ -242,19 +231,72 @@ export function agentProblem(agent, home, models = [], opts = {}) {
                 timeout: Math.min(15000, deepTimeout),
                 stdio: ["ignore", "pipe", "pipe"],
             });
-            if (JSON.parse(out).loggedIn === true)
+            if (DEEP_RULES.claude.ready(out))
                 return undefined;
         }
         catch {
             /* fall through to the honest problem */
         }
-        return {
+        return DEEP_RULES.claude.problem;
+    }
+    return undefined;
+}
+/** The deep probes' verdict rules — ONE truth shared by the sync door
+ * (agentProblem: the doctor row, the boot refusal) and the async door below
+ * (the staffing catalog + the boot warm-up). The comments that used to sit on
+ * the sync branches (the ~/.claude.json-vs-keychain drift, `agy models` as a
+ * network call) still apply to both. */
+const DEEP_RULES = {
+    agy: {
+        bin: "agy",
+        args: ["models"],
+        ready: (out) => /\S/.test(out.replace(/Fetching available models\.\.\.?/g, "")),
+        problem: {
+            agent: "agy",
+            fix: "Antigravity CLI's saved sign-in isn't usable right now (its keyring credential is missing, expired, or unreadable from this account) — " +
+                "run `agy` once in a terminal, complete the Google sign-in, approve the keyring prompt, then try again",
+        },
+    },
+    claude: {
+        bin: "claude",
+        args: ["auth", "status"],
+        ready: (out) => {
+            try {
+                return JSON.parse(out).loggedIn === true;
+            }
+            catch {
+                return false;
+            }
+        },
+        problem: {
             agent: "claude",
             fix: "Claude Code's saved sign-in isn't usable right now (its token/keychain is out of sync — common after claude updates itself) — " +
                 "run `claude` once in a terminal on this account, approve any keychain prompt / re-login, then try again",
-        };
-    }
-    return undefined;
+        },
+    },
+};
+/** agentProblem's async twin (re-install run 2026-09-13, Adam: "I clicked and
+ * nothing happened, I kept clicking"). The staffing catalog ran the deep probes
+ * with execFileSync ON THE REQUEST PATH of a single-threaded server: `agy
+ * models` is a ~3s network call, so the first picker open froze the whole
+ * engine — every route, the SSE streams, the operator's keystrokes — for the
+ * length of the probe, with no feedback in the UI. The shallow checks stay
+ * synchronous (file reads); only the subprocess waits are async. Same rules,
+ * same words, same ceilings. */
+export function agentProblemAsync(agent, home, models = [], opts = {}) {
+    const shallow = agentProblem(agent, home, models, { ...(opts.path !== undefined ? { path: opts.path } : {}) });
+    if (shallow)
+        return Promise.resolve(shallow);
+    const rule = agent === "agy" ? DEEP_RULES.agy : agent === "claude" || agent === "claude-code" ? DEEP_RULES.claude : undefined;
+    if (!rule)
+        return Promise.resolve(undefined);
+    const bin = whichBin(rule.bin, opts);
+    if (!bin)
+        return Promise.resolve(rule.problem);
+    const deepTimeout = opts.deepTimeoutMs ?? 30000;
+    return new Promise((resolve) => {
+        execFile(bin, [...rule.args], { encoding: "utf8", timeout: rule.bin === "claude" ? Math.min(15000, deepTimeout) : deepTimeout }, (err, out) => resolve(!err && rule.ready(String(out)) ? undefined : rule.problem));
+    });
 }
 // ── staffed-agent detection (the health screen's soft pre-gate) ──────────────
 const TITLES = {

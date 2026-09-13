@@ -38,6 +38,18 @@ export declare function agentProblem(agent: string, home: string, models?: strin
     deep?: boolean;
     deepTimeoutMs?: number;
 }): AgentProblem | undefined;
+/** agentProblem's async twin (re-install run 2026-09-13, Adam: "I clicked and
+ * nothing happened, I kept clicking"). The staffing catalog ran the deep probes
+ * with execFileSync ON THE REQUEST PATH of a single-threaded server: `agy
+ * models` is a ~3s network call, so the first picker open froze the whole
+ * engine — every route, the SSE streams, the operator's keystrokes — for the
+ * length of the probe, with no feedback in the UI. The shallow checks stay
+ * synchronous (file reads); only the subprocess waits are async. Same rules,
+ * same words, same ceilings. */
+export declare function agentProblemAsync(agent: string, home: string, models?: string[], opts?: {
+    path?: string;
+    deepTimeoutMs?: number;
+}): Promise<AgentProblem | undefined>;
 export interface AgentStatus {
     agent: string;
     /** Human label for the harness. */

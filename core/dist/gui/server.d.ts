@@ -34,6 +34,10 @@ export declare function diskEngineSha(home: string): string;
  * a restart costs seconds; a silent stale server broke the update promise
  * (live-found 2026-08-12). */
 export declare function serverIsStale(loadedSha: string | undefined, diskSha: string): boolean;
+export declare function engineVersionFast(home: string): {
+    version: string;
+    updateAvailable: boolean;
+};
 export declare function engineVersion(home: string): {
     version: string;
     updateAvailable: boolean;
@@ -44,6 +48,13 @@ export declare function engineVersion(home: string): {
  * five booted:false seats, while a plain `crate gui` (no flag) never
  * auto-boots anything. Exported pure so the iff is unit-provable. */
 export declare function restartArgv(state: Pick<GuiState, "cliPath" | "project">, urlFile: string): string[];
+/** Boot-time warm-up: pay the deep probes ONCE, in the background, right
+ * after listen — so the operator's first picker click finds the verdicts
+ * already on file and opens instantly. Fire-and-forget; a failure here is a
+ * NOT-ready verdict the picker shows honestly, never a boot error. */
+export declare function warmDeepVerdicts(home: string, pathOpt: {
+    path?: string;
+}): Promise<void>;
 export interface GuiServer {
     server: Server;
     port: number;

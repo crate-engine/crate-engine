@@ -219,6 +219,10 @@ grid-template-rows:var(--r1,1fr) 1px var(--r2,1fr)}
 .blendtag{font:600 8.5px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ok);border:1px solid var(--ok);padding:3px 6px;white-space:nowrap}
 /* dead-runner distress: the masthead must never hide a partially-down team */
 .downchip{font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--bad);white-space:nowrap}
+.upchip{font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ok);white-space:nowrap}
+.uidlg .pkwait{padding:16px 20px;color:var(--faint);font-size:12.5px}
+@keyframes nudge{0%{transform:translateX(0)}30%{transform:translateX(-5px)}60%{transform:translateX(5px)}100%{transform:translateX(0)}}
+.uidlg .box.nudge{animation:nudge .22s}
 /* the merge-gate bar: the OPERATOR'S release surface, alive in EVERY layout.
    FLAWS 2026-08-12: the all-blended cockpit has no chat box (the orchestrator
    tile IS a terminal), so "merge go" had nowhere to land — the one law only
@@ -603,10 +607,32 @@ function anchorPanels(){
 window.addEventListener("resize",anchorPanels);
 document.addEventListener("click",e=>{if(e.target.closest&&e.target.closest(".navbtn"))anchorPanels();});
 // ── restaff a seat on the fly: the pane's agent name opens the picker ──
+// Re-install run 2026-09-13 (Adam: "I clicked and nothing happened, I kept
+// clicking, then it finally worked"): the picker used to open only AFTER the
+// catalog fetch — up to several seconds on the first open while the engine
+// ran its sign-in probes — with no feedback, and every extra click queued
+// ANOTHER dialog behind the same wait. That stack is how the 2026-09-11 run
+// staffed the orchestrator twice. Now: the dialog opens on the click, shows
+// "Reading your agents…", fills when the catalog lands; a second click while
+// one is open nudges the open one instead of stacking.
+let RESTAFF_OPEN=null;
 async function restaffDialog(seat){
+  if(RESTAFF_OPEN&&RESTAFF_OPEN.isConnected){const b=RESTAFF_OPEN.querySelector(".box");if(b){b.classList.remove("nudge");void b.offsetWidth;b.classList.add("nudge");}return;}
+  const sv=SEATSVIEW.find(x=>x.seat===seat);
+  const fresh=sv?seatUnstaffed(sv):false;
+  const d=uiDialog('<h3>'+(fresh?'Staff ':'Restaff ')+esc(seat)+'</h3>'
+    +'<div class="m" style="font-size:11.5px;color:var(--faint)">'+(fresh
+      ?'Applies to THIS project. Picking an agent boots this seat immediately — no separate start step. "verified" = battle-tested for this seat.'
+      :'Applies to THIS project. A running seat relaunches with the new agent and a fresh session; an open wheel on it closes. "verified" = battle-tested for this seat.')+'</div>'
+    +'<div class="pklist"><div class="pkwait">Reading your agents\u2026</div></div><div class="btns"><button id="rsc">Cancel</button></div>');
+  RESTAFF_OPEN=d;
+  const done=()=>{d.remove();if(RESTAFF_OPEN===d)RESTAFF_OPEN=null;};
+  d.querySelector("#rsc").onclick=done;
+  d.addEventListener("click",e=>{if(e.target===d)done();});
   let cat=null;
   try{cat=await fetch(api("/api/staffing"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());}catch(e){}
-  if(!cat||!cat.models){await uiNotice("Could not load the staffing catalog.");return;}
+  if(!d.isConnected)return; // cancelled while the catalog loaded — nothing to fill
+  if(!cat||!cat.models){done();await uiNotice("Could not load the staffing catalog.");return;}
   const ready=cat.models.filter(m=>m.ready);
   // CE-158 (Adam, fresh-account re-run 2026-08-20): "each model should only
   // show the NAME — no other explanations. It does not feel premium." The
@@ -636,16 +662,7 @@ async function restaffDialog(seat){
   const bench=(cat.agents||[]).filter(a=>!a.ready).map(a=>
     '<div class="pkrow" style="cursor:default;opacity:.45"><span style="flex:1;color:var(--faint)">'+esc(a.label)+'</span></div>'
   ).join('');
-  const sv=SEATSVIEW.find(x=>x.seat===seat);
-  const fresh=sv?seatUnstaffed(sv):false;
-  const d=uiDialog('<h3>'+(fresh?'Staff ':'Restaff ')+esc(seat)+'</h3>'
-    +'<div class="m" style="font-size:11.5px;color:var(--faint)">'+(fresh
-      ?'Applies to THIS project. Picking an agent boots this seat immediately — no separate start step. "verified" = battle-tested for this seat.'
-      :'Applies to THIS project. A running seat relaunches with the new agent and a fresh session; an open wheel on it closes. "verified" = battle-tested for this seat.')+'</div>'
-    +'<div class="pklist">'+rows+bench+'</div><div class="btns"><button id="rsc">Cancel</button></div>');
-  const done=()=>d.remove();
-  d.querySelector("#rsc").onclick=done;
-  d.addEventListener("click",e=>{if(e.target===d)done();});
+  d.querySelector(".pklist").innerHTML=rows+bench;
   // CE-137 (battle test 2026-08-18): bind ONLY the ready rows. The bench
   // rows share .pkrow but carry no data-i — the old selector bound them
   // too, and +null===0 silently staffed ready[0] (Fable) when Adam clicked
@@ -1327,7 +1344,7 @@ document.addEventListener("mouseup",()=>{if(SELDRAG){SELDRAG=false;const any=Obj
 // focus, selection) STAY for one release as dormant safety nets — their
 // tests outlive them as "the cure holds" pins. Stage 2 (event-primary push,
 // poll demoted to a slow floor) comes separately.
-let RKEYS={};
+let RKEYS={},UPCHIP_DONE_AT=0;
 function rkDirty(region,key){if(RKEYS[region]===key)return false;RKEYS[region]=key;return true;}
 // The tile's dirty key: everything renderTile actually paints — and NOTHING
 // volatile it doesn't. Excluded on purpose: events[].raw (never rendered),
@@ -1406,9 +1423,25 @@ async function refresh(){
     // the cockpit showed no distress): booted team with dead seats = red chip.
     const dc=document.getElementById("downchip");
     if(dc&&ps&&ps.seats){
-      const dead=ps.booted?ps.seats.filter(x=>!x.alive):[];
+      // Re-install run 2026-09-13 (Adam: "1/5 seats staffed… in RED, feels like
+      // something is going wrong"): an UNSTAFFED seat is not a dead one. The old
+      // filter counted every not-alive seat the moment the first seat booted,
+      // so staffing seat #1 lit "⚠ 4/5 seats DOWN" in red. Dead = STARTED and
+      // no longer alive. Progress lives on the green upchip below.
+      const dead=ps.booted?ps.seats.filter(x=>!x.alive&&x.startedAt):[];
       const dtxt=dead.length?"⚠ "+dead.length+"/"+ps.seats.length+" seats DOWN ("+dead.map(x=>x.seat).join(", ")+") — Team menu → Boot/Resume":"";
       if(rkDirty("downchip",dtxt)){dc.hidden=dead.length===0;if(dead.length)dc.textContent=dtxt;}
+    }
+    // the GREEN chip: staffing is progress, and it reads like progress
+    const uc=document.getElementById("upchip");
+    if(uc&&ps&&ps.seats){
+      const n=ps.seats.length||5;
+      const staffed=(SEATSVIEW||[]).filter(x=>!seatUnstaffed(x)).length;
+      const live=ps.seats.filter(x=>x.alive).length;
+      let utxt="";
+      if(staffed>0&&staffed<n){utxt="\u2713 "+staffed+"/"+n+" seats staffed \u2014 "+(n-staffed)+" to go";UPCHIP_DONE_AT=0;}
+      else if(staffed>=n&&live>=n){if(!UPCHIP_DONE_AT)UPCHIP_DONE_AT=Date.now();if(Date.now()-UPCHIP_DONE_AT<12000)utxt="\u2713 all "+n+" seats live";}
+      if(rkDirty("upchip",utxt)){uc.hidden=!utxt;if(utxt)uc.textContent=utxt;}
     }
     if(rkDirty("pvtab",String(PREVIEWS.length>0)))syncPreviewTab();
     if(document.getElementById("pvoverlay").classList.contains("open")&&rkDirty("pvpanel",JSON.stringify(PREVIEWS)))renderPreview();
@@ -2261,6 +2294,7 @@ export function teamPage(view: TeamView, opts: { attachCard?: { machine: string;
     <span class="mark">CRATE<svg class="bolt" viewBox="0 0 24 24" aria-hidden="true"><path d="M13.2 2 4.8 13.4h5L8.6 22l10.6-13.2h-6.2L13.2 2z"/></svg>ENGINE</span>
     <span class="ver">CE-<b>2.2</b></span>
     <span class="proj" id="projlabel">${escHtml(view.project)}</span>
+    <span class="upchip" id="upchip" hidden></span>
     <span class="downchip" id="downchip" hidden></span>
   </div>
   <div style="display:flex;align-items:center;gap:12px">

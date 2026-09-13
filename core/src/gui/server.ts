@@ -2,14 +2,14 @@
 // Node HTTP on 127.0.0.1, random high port, per-launch token on EVERY request
 // (403 otherwise). The API layer is a PASS-THROUGH: every endpoint calls the
 // same core functions the CLI calls (the thin law) — no business logic here.
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { connect as netConnect } from "node:net";
 import { stringify } from "yaml";
 import { executeAttach, listDirs, makeDir, planAttach, resolveTarget, type AttachPlan } from "../attach.js";
-import { agentLabel, DEEP_PROBED, agentProblem, agentStatus, binaryFor, whichBin } from "../detect.js";
+import { agentLabel, DEEP_PROBED, agentProblem, agentProblemAsync, agentStatus, binaryFor, whichBin } from "../detect.js";
 import { heavyDeps, installHeavyDeps, runDoctor } from "../doctor.js";
 import { isBlended } from "../blend.js";
 import { autoReviveEnabled, makeAutoReviver, type Liveness, type ReviveNote } from "../health.js";
@@ -212,6 +212,39 @@ export function serverIsStale(loadedSha: string | undefined, diskSha: string): b
   return loadedSha !== diskSha;
 }
 
+/** The Health panel's version line, WITHOUT the event-loop stall: the sha is
+ * a 5ms `git rev-parse`; the "update available?" answer comes from a cache
+ * refreshed in the BACKGROUND (`git fetch` is a network round trip that took
+ * ~0.4s of execFileSync on every Health open — one more source of the
+ * "typing lags at times" Adam felt on the re-install run). First answer
+ * after boot says "up to date" while the check runs; the next open is exact.
+ * engineVersion() below stays the CLI's synchronous form. */
+const updateCheck = { at: 0, behind: false, flying: false };
+export function engineVersionFast(home: string): { version: string; updateAvailable: boolean } {
+  const { engineDir } = tierPaths(home);
+  const root = existsSync(join(engineDir, ".git")) ? engineDir : undefined;
+  let version = "unknown";
+  try {
+    version = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: root ?? join(import.meta.dirname, "..", "..", ".."),
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    /* unknown */
+  }
+  if (root && !updateCheck.flying && Date.now() - updateCheck.at > 10 * 60_000) {
+    updateCheck.flying = true;
+    execFile("git", ["fetch", "--quiet", "origin"], { cwd: root, timeout: 4000 }, () => {
+      execFile("git", ["rev-list", "--count", "HEAD..@{u}"], { cwd: root, encoding: "utf8" }, (e, out) => {
+        updateCheck.behind = !e && String(out).trim() !== "0";
+        updateCheck.at = Date.now();
+        updateCheck.flying = false;
+      });
+    });
+  }
+  return { version, updateAvailable: updateCheck.behind };
+}
+
 export function engineVersion(home: string): { version: string; updateAvailable: boolean } {
   const { engineDir } = tierPaths(home);
   const root = existsSync(join(engineDir, ".git")) ? engineDir : undefined;
@@ -265,11 +298,14 @@ export function restartArgv(state: Pick<GuiState, "cliPath" | "project">, urlFil
 // that staffs it asking the question. The cache is per agent: the catalog holds
 // several rows per agent (claude has four) and must still pay one probe each.
 const deepVerdicts = new Map<string, { problem: ReturnType<typeof agentProblem>; at: number }>();
-function cachedDeepProblem(
+/** One probe per key at a time: five catalog rows for one agent, or a click
+ * storm on the picker, share ONE subprocess instead of spawning five. */
+const deepInFlight = new Map<string, Promise<ReturnType<typeof agentProblem>>>();
+async function cachedDeepProblem(
   agent: string,
   home: string,
   pathOpt: { path?: string },
-): ReturnType<typeof agentProblem> {
+): Promise<ReturnType<typeof agentProblem>> {
   if (!DEEP_PROBED.includes(agent)) return undefined;
   const now = Date.now();
   // Keyed on everything the ANSWER depends on, not just the agent: the verdict
@@ -281,17 +317,34 @@ function cachedDeepProblem(
   const key = `${agent}\u0000${home}\u0000${pathOpt.path ?? ""}`;
   const cached = deepVerdicts.get(key);
   if (cached && (cached.problem === undefined || now - cached.at <= 30_000)) return cached.problem;
-  // Tighter ceiling than the doctor's: this runs on a request path in a
-  // single-threaded server, and `agy models` is a network call.
-  const fresh = { problem: agentProblem(agent, home, [], { ...pathOpt, deep: true, deepTimeoutMs: 6000 }), at: now };
-  deepVerdicts.set(key, fresh);
-  return fresh.problem;
+  const flying = deepInFlight.get(key);
+  if (flying) return flying;
+  // Tighter ceiling than the doctor's: `agy models` is a network call. ASYNC
+  // (re-install run 2026-09-13): the sync form froze the whole engine for the
+  // probe's length on the FIRST picker open — see agentProblemAsync.
+  const p = agentProblemAsync(agent, home, [], { ...pathOpt, deepTimeoutMs: 6000 }).then((problem) => {
+    deepVerdicts.set(key, { problem, at: Date.now() });
+    deepInFlight.delete(key);
+    return problem;
+  });
+  deepInFlight.set(key, p);
+  return p;
+}
+
+/** Boot-time warm-up: pay the deep probes ONCE, in the background, right
+ * after listen — so the operator's first picker click finds the verdicts
+ * already on file and opens instantly. Fire-and-forget; a failure here is a
+ * NOT-ready verdict the picker shows honestly, never a boot error. */
+export function warmDeepVerdicts(home: string, pathOpt: { path?: string }): Promise<void> {
+  return Promise.all([...new Set(DEEP_PROBED)].map((a) => cachedDeepProblem(a, home, pathOpt).catch(() => undefined))).then(
+    () => undefined,
+  );
 }
 
 /** GET /api/staffing — seats with current resolution+provenance, + the catalog
  * with per-entry detection (ready = its agent is installed + signed in for that
  * entry's provider), + a per-agent summary for the page's honest note. */
-function staffingCatalog(state: GuiState, detectPath?: string, project?: string) {
+async function staffingCatalog(state: GuiState, detectPath?: string, project?: string) {
   // CE-150 (battle test 2026-08-18): the project arrives EXPLICITLY. This read
   // `state.project` — the ACTIVE workspace — while POST /api/staffing/seat right
   // beside it honoured `?project`, so the picker showed one rig's staffing and
@@ -327,10 +380,14 @@ function staffingCatalog(state: GuiState, detectPath?: string, project?: string)
     };
   });
   const pathOpt = detectPath !== undefined ? { path: detectPath } : {};
-  const curated = MODELS.map((m) => {
-    const problem = agentProblem(m.agent, state.home, [m.model], pathOpt) ?? cachedDeepProblem(m.agent, state.home, pathOpt);
-    return { ...m, ready: problem === undefined, ...(problem ? { fix: problem.fix } : {}) };
-  });
+  // Rows resolve in PARALLEL, and the in-flight dedupe means five rows of one
+  // agent share one probe. Shallow verdicts are still synchronous file reads.
+  const curated = await Promise.all(
+    MODELS.map(async (m) => {
+      const problem = agentProblem(m.agent, state.home, [m.model], pathOpt) ?? (await cachedDeepProblem(m.agent, state.home, pathOpt));
+      return { ...m, ready: problem === undefined, ...(problem ? { fix: problem.fix } : {}) };
+    }),
+  );
   // Pi model discovery (PDR pi-model-discovery, 2026-07-26): whatever Pi can
   // run TODAY (credentialed providers only) joins the catalog AFTER the
   // curated entries — never battle-tested, metered-honest, curated wins
@@ -1240,7 +1297,7 @@ export async function startGuiServer(
           // "what are you bound to, and does it have a live team?" BEFORE it
           // tears that team down. Without it the caller had to guess.
           return json(res, 200, {
-            ...engineVersion(state.home),
+            ...engineVersionFast(state.home),
             loadedSha: state.loadedSha ?? "unknown",
             pid: process.pid,
             project: state.project ?? null,
@@ -1308,7 +1365,7 @@ export async function startGuiServer(
           // (ff-only on the pristine clone + the overlay compatibility pass).
           return json(res, 200, updateEngine(state.home));
         case "GET /api/staffing":
-          return json(res, 200, staffingCatalog(state, opts.detectPath, url.searchParams.get("project") ?? state.project));
+          return json(res, 200, await staffingCatalog(state, opts.detectPath, url.searchParams.get("project") ?? state.project));
         case "POST /api/crew/terminal": {
           // bring-your-crew sign-in (W0, audit C2): the button ACTS — on macOS
           // it opens Terminal with the agent's sign-in command running; the
@@ -1760,6 +1817,9 @@ export async function startGuiServer(
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 0;
   hubPort = port;
+  // Re-install run 2026-09-13: pay the deep sign-in probes NOW, off the
+  // request path, so the operator's first picker click opens instantly.
+  void warmDeepVerdicts(home, opts.detectPath !== undefined ? { path: opts.detectPath } : {});
 
   // ── RESTART-RESUME (lifecycle PDR decision 5): the server comes back and
   // resumes EVERY workspace whose record says running — cmux's "app relaunch
