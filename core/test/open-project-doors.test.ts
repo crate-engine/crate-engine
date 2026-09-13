@@ -111,6 +111,9 @@ test("the page carries both dialogs, the door bridge, and the operator's words",
   assert.ok(html.includes('if(door==="open"){openProjectDialog(computer||"");return;}'), "File › Open Project is a dialog, no navigation");
   assert.ok(html.includes('location.href=j.url+"&card=1";'), "connecting from the card lands on that computer's card, never its last rig");
   for (const t of ["Which computer?", "Which project?", "Choose a folder…", "＋ Add a computer", "Crate adds one small folder for your team"]) assert.ok(html.includes(t), t);
+  // install #5 seam: the card leads with the list, and adding a computer from it lands on that list
+  assert.ok(html.includes('id="acopen"') && html.includes('document.getElementById("acopen").onclick=()=>openProjectDialog("local");'), "the card's first door is the project list");
+  assert.ok(html.includes("function addServer(){addComputerDialog(host=>openProjectDialog(host));}"), "add-a-computer from the card lands on that computer's list, never its card");
   for (const t of ["Which repo?", "Where does the code live?", "Add a server", "pick a repo on"]) assert.ok(!html.includes(t), `gone: ${t}`);
 });
 

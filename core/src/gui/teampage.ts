@@ -2206,7 +2206,8 @@ if(CARD){
     +'<div class="aprog" id="acmprog"><span class="wd"></span><span id="acmnote"></span></div></div>'
     +'<div class="abeat"><div class="albl">Which project? <span style="letter-spacing:.04em;text-transform:none;color:var(--faint)">— on '+esc(CARD.machine)+'</span></div>'
     +'<div class="doorrow">'
-    +'<button class="door" id="acbrowse"><b>Choose a folder…</b><span>a project already on '+esc(CARD.machine)+'</span></button>'
+    +'<button class="door" id="acopen"><b>Open a project…</b><span>pick from the projects found on '+esc(CARD.machine)+'</span></button>'
+    +'<button class="door" id="acbrowse"><b>Choose a folder…</b><span>somewhere else on '+esc(CARD.machine)+'</span></button>'
     +'<button class="door" id="acnew"><b>New project</b><span>a fresh folder, git init, starter docs</span></button>'
     +'<button class="door" id="acclone"><b>Clone from GitHub</b><span>git clone, then the team joins it</span></button>'
     +'</div><div class="acbody" id="acbody"></div><div class="aerr" id="acerr"></div></div>'
@@ -2344,6 +2345,10 @@ if(CARD){
     document.getElementById("acback").onclick=()=>{body.innerHTML="";};
     document.getElementById("acmk").onclick=()=>{const n=document.getElementById("acname").value.trim();if(n)acAttach(dest.replace(/\\/+$/,"")+"/"+n,true,{gh:true});};
   };
+  // Install #5 (Adam, 2026-09-13): the card's own list door — the same Open
+  // Project dialog, scoped to the computer this card belongs to, so nobody
+  // has to walk the fenced picker to reach a project that is already found.
+  document.getElementById("acopen").onclick=()=>openProjectDialog("local");
   document.getElementById("acclone").onclick=()=>{
     const body=document.getElementById("acbody");acClear();
     body.innerHTML='<label>Repo URL</label><input type="text" id="acurl" placeholder="https://github.com/you/repo" autocomplete="off">'
@@ -2403,7 +2408,10 @@ if(CARD){
   // "+ Add a computer": probe FIRST; an engine already there connects with no
   // dialog; no engine → the ONE plain consent dialog (Adam: automation yes,
   // silent no) — then install → boot → connected, one honest line throughout.
-  function addServer(){addComputerDialog(null);} // PDR open-project-doors: one dialog, shared with File › Add a Computer…
+  // Install #5 seam (Adam fell through it): adding a computer from the card
+  // used to jump to THAT computer's card and its fenced picker. Now it lands
+  // on the Open Project list for that computer — the door the person wanted.
+  function addServer(){addComputerDialog(host=>openProjectDialog(host));}
   loadRemotes();
 })();
 }
