@@ -301,8 +301,8 @@ test("fresh account (S1): the cockpit opens with the ONE irreducible card — ne
     const t = await r.text();
     assert.match(t, /const CARD=\{"machine":/); // card mode ON — carries whose disk the picker browses
     assert.match(t, /What are we building\?/);
-    assert.match(t, /Where does the code live\?/);
-    assert.match(t, /Add a server/);
+    assert.match(t, /Which computer\?/); // PDR open-project-doors: the operator's words
+    assert.match(t, /Add a computer/);
     assert.match(t, /\.agents\//); // the one-sentence trust disclosure
   } finally {
     g3.server.close();

@@ -222,6 +222,19 @@ grid-template-rows:var(--r1,1fr) 1px var(--r2,1fr)}
 .downchip{font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--bad);white-space:nowrap}
 .upchip{font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ok);white-space:nowrap}
 .uidlg .pkwait{padding:16px 20px;color:var(--faint);font-size:12.5px}
+.uidlg .oprow{display:flex;gap:8px;margin-top:10px}
+.uidlg .opsel,.uidlg .opq{background:var(--bg);color:var(--fg);border:1px solid var(--line2);padding:8px 10px;font:400 13px var(--body);border-radius:0}
+.uidlg .opsel{flex:0 0 auto;max-width:46%}
+.uidlg .opq{flex:1 1 auto;min-width:0}
+.uidlg .oppath{font:400 10.5px/1.4 var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.uidlg .optag{font:600 9px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:3px 6px;border:1px solid var(--line2);color:var(--faint);white-space:nowrap}
+.uidlg .optag.ready{color:var(--ok);border-color:var(--ok)}
+.uidlg .optag.heal{color:var(--amber);border-color:var(--amber)}
+.uidlg .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.uidlg .chip.host{border-radius:0;padding:6px 10px;font:500 12px var(--body);background:var(--panel2);border:1px solid var(--line2);color:var(--fg);cursor:pointer}
+.uidlg .chip.host .rdot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--dim);margin-right:6px;vertical-align:middle}
+.uidlg .chip.host.up .rdot{background:var(--ok)}
+.uidlg .chip.host.known{border-color:var(--amber)}
 @keyframes nudge{0%{transform:translateX(0)}30%{transform:translateX(-5px)}60%{transform:translateX(5px)}100%{transform:translateX(0)}}
 .uidlg .box.nudge{animation:nudge .22s}
 /* the merge-gate bar: the OPERATOR'S release surface, alive in EVERY layout.
@@ -1940,10 +1953,10 @@ async function renderTeamMenu(){
     :'<button id="tboot">Boot / Resume team</button><button id="tabandon">Abandon loop</button>')+'</div>';
   // S3: the wizard pages are dead — staffing lives on each pane's corner,
   // and the CARD is the one attach surface (summoned center-cockpit).
-  h+='<div class="cactions"><button id="tattach">New / attach a rig</button></div>';
+  h+='<div class="cactions"><button id="tattach">Open a project…</button></div>';
   h+='<div class="cpolicy">Boot / Resume runs the whole-team preflight (tools → wiring → crew sign-ins → boot), then spawns one supervised runner per seat. Resume is automatic — runners re-orient from state files. Relaunch restarts exactly one seat. Staffing lives on each pane\\'s top-right corner.</div>';
   panel.innerHTML=h;
-  const att=document.getElementById("tattach");if(att)att.onclick=()=>{location.href="/team?token="+TOKEN+"&card=1";};
+  const att=document.getElementById("tattach");if(att)att.onclick=()=>window.crateOpenDoor("open");
   const bootB=document.getElementById("tboot");if(bootB)bootB.onclick=bootWithPreflight;
   const stopB=document.getElementById("tstop");if(stopB)stopB.onclick=async()=>{if(!(await uiConfirm("Stop the whole team? Runners exit; the loop resumes from state files on the next boot.","Stop team",true)))return;await fetch(api("/api/team/stop"),{method:"POST",headers:{"X-Crate-Token":TOKEN}});renderTeamMenu();refresh();};
   panel.querySelectorAll("[data-relaunch]").forEach(b=>{b.onclick=async()=>{const seat=b.getAttribute("data-relaunch");b.textContent="…";await fetch(api("/api/team/relaunch"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat})});renderTeamMenu();refresh();};});
@@ -2027,6 +2040,125 @@ window.addEventListener("keydown",e=>{if(e.key==="Escape")closeRail();});
 // shell those three navbtns retire — one home per control. Preview and
 // Servers KEEP their in-page buttons everywhere: their state (pending dot,
 // server chip) lives in the page, and native menus can't carry it.
+// ── Open Project (PDR open-project-doors, 2026-09-13): which computer, then a
+// LIST of that computer's projects — recents first, found automatically —
+// instead of walking a folder tree. Picking a computer never moves the window;
+// only Open does. Words are the operator's: project · computer · team. ──
+async function openProjectDialog(pre){
+  const d=uiDialog('<h3>Open Project</h3>'
+    +'<div class="m" style="font-size:11.5px;color:var(--faint)">Which computer, then which project. Crate finds your projects for you — pick one, or choose a folder.</div>'
+    +'<div class="oprow"><select id="opc" class="opsel"></select><input type="text" id="opq" class="opq" placeholder="Search…" autocomplete="off"></div>'
+    +'<div class="pklist" id="oplist"><div class="pkwait">Finding your projects…</div></div>'
+    +'<div class="btns"><button id="opfolder">Choose a folder…</button><button id="opcancel">Cancel</button></div>');
+  const done=()=>d.remove();
+  d.querySelector("#opcancel").onclick=done;
+  d.addEventListener("click",e=>{if(e.target===d)done();});
+  const sel=d.querySelector("#opc"),q=d.querySelector("#opq"),list=d.querySelector("#oplist");
+  let computers=[],projects=[];
+  async function loadComputers(){
+    let r=null;try{r=await fetch(api("/api/remotes"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());}catch(e){}
+    computers=[{name:"local",label:(r&&r.machine)||"This computer"}].concat(((r&&r.remotes)||[]).map(x=>({name:x.host,label:x.host})));
+    sel.innerHTML=computers.map(c=>'<option value="'+esc(c.name)+'">'+esc(c.label)+'</option>').join("")+'<option value="__add">＋ Add a computer…</option>';
+  }
+  const TAG={ready:"team ready",heal:"older setup — will refresh",new:"new to Crate"};
+  function render(){
+    const needle=q.value.trim().toLowerCase();
+    const rows=projects.filter(p=>!needle||p.name.toLowerCase().includes(needle)||p.path.toLowerCase().includes(needle));
+    list.innerHTML=rows.length?rows.map(p=>'<button class="pkrow" data-p="'+esc(p.path)+'"><span style="flex:1;min-width:0;text-align:left"><b>'+esc(p.name)+'</b><div class="oppath">'+esc(p.path)+'</div></span><span class="optag '+esc(p.state)+'">'+(TAG[p.state]||p.state)+'</span></button>').join("")
+      :'<div class="pkwait">'+(projects.length?"Nothing matches.":"No projects found here yet — Choose a folder… below, or start one with File › New Project.")+'</div>';
+    list.querySelectorAll(".pkrow[data-p]").forEach(b=>b.onclick=()=>openPath(b.getAttribute("data-p")));
+  }
+  async function loadProjects(){
+    list.innerHTML='<div class="pkwait">Finding your projects on '+esc(sel.options[sel.selectedIndex]?sel.options[sel.selectedIndex].text:"")+'…</div>';
+    let r=null;try{r=await fetch(api("/api/projects?computer="+encodeURIComponent(sel.value)),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());}catch(e){}
+    if(!d.isConnected)return;
+    if(!r||r.error){projects=[];list.innerHTML='<div class="pkwait" style="color:var(--bad)">'+esc((r&&r.error)||"engine unreachable")+'</div>';return;}
+    projects=r.projects||[];render();
+  }
+  async function openPath(path){
+    const c=sel.value,p=projects.find(x=>x.path===path);
+    if(p&&p.state==="new"){
+      const ok=await uiConfirm("Crate will add one small folder for your team (.agents) inside "+p.name+". Your code is untouched.","Open");
+      if(!ok)return;
+    }
+    list.innerHTML='<div class="pkwait">Opening '+esc(path.split("/").pop())+'…</div>';
+    let r=null;try{r=await fetch(api("/api/projects/open"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({computer:c,path})}).then(r=>r.json());}catch(e){}
+    if(!r||r.error){await uiNotice((r&&r.error)||"engine unreachable");render();return;}
+    location.href=r.url||("/team?token="+TOKEN+"&project="+encodeURIComponent(r.project)+(r.welcome?"&welcome=1":""));
+  }
+  sel.onchange=()=>{
+    if(sel.value==="__add"){const prev=computers[0]?computers[0].name:"local";sel.value=prev;
+      addComputerDialog(async host=>{await loadComputers();sel.value=host;loadProjects();});return;}
+    loadProjects();
+  };
+  q.oninput=render;
+  d.querySelector("#opfolder").onclick=async()=>{
+    if(sel.value==="local"){const p=await pickFolder("Choose a project folder");if(p){projects=projects.some(x=>x.path===p)?projects:projects.concat([{name:p.split("/").pop(),path:p,state:"new"}]);openPath(p);}return;}
+    // another computer: its own New Project card can browse there
+    let f=null;try{f=await fetch(api("/api/fleet"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());}catch(e){}
+    const h=f&&(f.hosts||[]).find(x=>x.host===sel.value);
+    if(h&&h.cockpitUrl)location.href=h.cockpitUrl+"&card=1&door=browse";else await uiNotice(sel.value+" is not connected right now.");
+  };
+  await loadComputers();
+  if(pre&&computers.some(c=>c.name===pre))sel.value=pre;
+  loadProjects();
+}
+// ── Add a Computer: plain words, the operator's own ssh config as chips (one
+// per machine, probed live), one honest progress line, and NO window jump —
+// the caller decides what happens next. ──
+function addComputerDialog(onDone){
+  const d=uiDialog('<h3>Add a computer</h3>'
+    +'<div class="m" style="font-size:12.5px">Which computer? Type its name the way you would type it after <b>ssh</b> — the short name from your SSH config, or user@address. Crate connects with the keys you already use, sets itself up there if needed, and remembers it.</div>'
+    +'<div class="chips" id="achips"><span class="pkwait" style="padding:0">Looking at your SSH config…</span></div>'
+    +'<div style="margin-top:10px"><input type="text" id="acsrv" placeholder="superman  ·  or  user@address" style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--line2);padding:9px 11px;font:400 13px var(--mono)"></div>'
+    +'<div class="m" id="acsrverr" style="color:var(--bad);font-size:11.5px;margin-top:6px"></div>'
+    +'<div class="m" id="acsrvnote" style="color:var(--faint);font-size:11.5px;margin-top:6px"></div>'
+    +'<div class="btns"><button id="acsrvc">Cancel</button><button class="pri" id="acsrvgo">Connect</button></div>');
+  const done=()=>d.remove();
+  d.querySelector("#acsrvc").onclick=done;
+  d.addEventListener("click",e=>{if(e.target===d)done();});
+  const field=d.querySelector("#acsrv"),err=d.querySelector("#acsrverr"),note=d.querySelector("#acsrvnote"),btn=d.querySelector("#acsrvgo");
+  field.focus();
+  (async()=>{
+    let r=null;try{r=await fetch(api("/api/ssh-hosts"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());}catch(e){}
+    const box=d.querySelector("#achips");if(!box||!d.isConnected)return;
+    const hosts=(r&&r.hosts)||[];
+    box.innerHTML=hosts.length?hosts.map(h=>'<button class="chip host'+(h.reachable?" up":"")+(h.remembered?" known":"")+'" data-h="'+esc(h.name)+'" title="'+esc(h.aliases.join(", "))+(h.reachable?" — reachable now":" — not answering right now")+'"><span class="rdot"></span>'+esc(h.name)+'</button>').join("")
+      :'<span class="pkwait" style="padding:0">No computers in your SSH config yet — type one below.</span>';
+    box.querySelectorAll("[data-h]").forEach(b=>b.onclick=()=>{field.value=b.getAttribute("data-h");go();});
+  })();
+  const setBusy=(on,text)=>{btn.disabled=on;btn.textContent=on?"Working…":"Connect";note.textContent=text||"";};
+  async function follow(host){
+    for(;;){
+      let j=null;try{j=await fetch(api("/api/remotes/status?host="+encodeURIComponent(host)),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());}catch(e){}
+      if(!d.isConnected)return;
+      if(!j||j.error){setBusy(false);err.textContent="lost the connection job — try again";return;}
+      if(j.phase==="connected"){done();if(onDone)onDone(host);else location.href=j.url+"&card=1";return;}
+      if(j.phase==="failed"){setBusy(false);err.textContent=j.note||"could not connect";return;}
+      setBusy(true,j.note||"connecting…");
+      await new Promise(r=>setTimeout(r,1500));
+    }
+  }
+  const go=async()=>{
+    const host=field.value.trim();if(!host)return;
+    err.textContent="";setBusy(true,"reaching "+host+"…");
+    const p=await fetch(api("/api/remotes/probe"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({host})}).then(r=>r.json()).catch(()=>null);
+    if(!p||p.error){setBusy(false);err.textContent=(p&&p.error)||"engine unreachable";return;}
+    if(!p.reachable){setBusy(false);err.textContent=p.note||"Could not reach "+host+" over ssh. Is it on, and can you ssh to it from a terminal?";return;}
+    let kind="connect";
+    if(!p.engine){
+      setBusy(false);
+      const ok=await uiConfirm("Crate is not set up on "+host+" yet. Set it up now? This runs the standard installer over your own ssh connection — everything lands in the .crate folder in your home directory there, nothing system-wide.","Set up "+host);
+      if(!ok)return;kind="install";
+    }
+    setBusy(true,(kind==="install"?"setting up ":"connecting to ")+host+"…");
+    const r=await fetch(api("/api/remotes/"+kind),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({host})}).then(r=>r.json()).catch(()=>null);
+    if(!r||r.error){setBusy(false);err.textContent=(r&&r.error)||"engine unreachable";return;}
+    follow(host);
+  };
+  btn.onclick=go;
+  field.onkeydown=e=>{if(e.key==="Enter")go();};
+}
 window.crateOpenPanel=name=>{
   // Chrome reorg (Adam, 2026-09-13): the Servers panel joins the menu bar
   // (View › Servers, ⌘5) and the Workspaces drawer gets a menu home too
@@ -2038,7 +2170,12 @@ window.crateOpenPanel=name=>{
 };
 // File-menu doors (Adam, 2026-09-13): New Rig… / Open Rig… / Clone… / Add a
 // Server… land on the New Rig card with that door pre-opened (?card=1&door=…).
-window.crateOpenDoor=door=>{location.href="/team?token="+TOKEN+"&card=1&door="+encodeURIComponent(door||"new");};
+window.crateOpenDoor=(door,computer)=>{
+  if(door==="open"){openProjectDialog(computer||"");return;}
+  if(door==="computer"){addComputerDialog(null);return;}
+  location.href="/team?token="+TOKEN+"&card=1&door="+encodeURIComponent(door||"new");
+};
+(function(){const qs=new URLSearchParams(location.search);if(qs.get("door")==="open")setTimeout(()=>openProjectDialog(qs.get("computer")||""),350);})();
 if(window.crateShell){["teambtn","ctxbtn","healthbtn","svbtn"].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.add("hidden");});}
 // PHASE-B #5: the nav chevrons spin while their panel is open — observed off
 // the overlay's class so every open/close path (click, outside, actions) syncs.
@@ -2063,17 +2200,17 @@ if(CARD){
   const cw=document.createElement("div");cw.className="cardwrap";cw.id="cardwrap";
   cw.innerHTML='<div class="acard">'
     +(CARD.dismissable?'<button class="acquiet" id="acdismiss" style="float:right;margin:-4px -8px 0 0" title="Back to your rig">×</button>':'')
-    +'<p class="aeyebrow">New rig</p><h2 class="ahead">What are we building?</h2>'
-    +'<div class="abeat"><div class="albl">Where does the code live?</div>'
+    +'<p class="aeyebrow">New project</p><h2 class="ahead">What are we building?</h2>'
+    +'<div class="abeat"><div class="albl">Which computer?</div>'
     +'<div class="mchips" id="acmachines"></div>'
     +'<div class="aprog" id="acmprog"><span class="wd"></span><span id="acmnote"></span></div></div>'
-    +'<div class="abeat"><div class="albl">Which repo? <span style="letter-spacing:.04em;text-transform:none;color:var(--faint)">— on '+esc(CARD.machine)+'</span></div>'
+    +'<div class="abeat"><div class="albl">Which project? <span style="letter-spacing:.04em;text-transform:none;color:var(--faint)">— on '+esc(CARD.machine)+'</span></div>'
     +'<div class="doorrow">'
-    +'<button class="door" id="acbrowse"><b>Browse…</b><span>pick a repo on '+esc(CARD.machine)+'</span></button>'
+    +'<button class="door" id="acbrowse"><b>Choose a folder…</b><span>a project already on '+esc(CARD.machine)+'</span></button>'
     +'<button class="door" id="acnew"><b>New project</b><span>a fresh folder, git init, starter docs</span></button>'
     +'<button class="door" id="acclone"><b>Clone from GitHub</b><span>git clone, then the team joins it</span></button>'
     +'</div><div class="acbody" id="acbody"></div><div class="aerr" id="acerr"></div></div>'
-    +'<div class="trust">Attaching writes ONE wiring folder — <b>.agents/</b> (engine symlinks, state, a managed gitignore block so none of it is ever committed). Your code is untouched.</div>'
+    +'<div class="trust">Crate adds one small folder for your team — <b>.agents/</b> (its wiring and notes, kept out of git). Your code is untouched.</div>'
     +'</div>';
   document.body.appendChild(cw);
   // ?door=new|browse|clone|server — the File menu's deep links (the machine
@@ -2227,13 +2364,13 @@ if(CARD){
       acAttach(r.target,false);
     };
   };
-  // ── machine chips: this machine + remembered servers + "+ Add a server" ──
+  // ── machine chips: this machine + remembered servers + "+ Add a computer" ──
   let REMOTES=[];
   function paintChips(){
     const m=document.getElementById("acmachines");
     m.innerHTML='<button class="mchip active">\\u2302 '+esc(CARD.machine)+'</button>'
       +REMOTES.map(r=>'<button class="mchip" data-h="'+esc(r.host)+'">\\u26a1 '+esc(r.host)+'<span class="mx" data-x="'+esc(r.host)+'" title="Forget this server">\\u00d7</span></button>').join("")
-      +'<button class="mchip add" id="acaddsrv">\\uff0b Add a server</button>';
+      +'<button class="mchip add" id="acaddsrv">＋ Add a computer</button>';
     m.querySelectorAll("[data-h]").forEach(b=>b.onclick=e=>{if(e.target.closest("[data-x]"))return;connectRemote(b.getAttribute("data-h"),"connect");});
     m.querySelectorAll("[data-x]").forEach(x=>x.onclick=async e=>{e.stopPropagation();
       await fetch(api("/api/remotes/remove"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({host:x.getAttribute("data-x")})});loadRemotes();});
@@ -2254,7 +2391,7 @@ if(CARD){
       let j=null;
       try{j=await fetch(api("/api/remotes/status?host="+encodeURIComponent(host)),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());}catch(e){}
       if(!j||j.error){mprog(false);acFail("lost the connect job — retry");return;}
-      if(j.phase==="connected"){mprog(true,"connected — opening "+host+"\\u2026");location.href=j.url;return;}
+      if(j.phase==="connected"){mprog(true,"connected — opening "+host+"…");location.href=j.url+"&card=1";return;}
       if(j.phase==="failed"){mprog(false);acFail(j.note);
         if(j.log&&j.log.length){const a=document.createElement("a");a.href="#";a.textContent="Show the log";a.style.color="var(--amber)";a.style.marginLeft="8px";
           a.onclick=e=>{e.preventDefault();uiNotice(j.log.join("\\n"));};acerr().appendChild(a);}
@@ -2263,35 +2400,10 @@ if(CARD){
     };
     setTimeout(tick,800);
   }
-  // "+ Add a server": probe FIRST; an engine already there connects with no
+  // "+ Add a computer": probe FIRST; an engine already there connects with no
   // dialog; no engine → the ONE plain consent dialog (Adam: automation yes,
   // silent no) — then install → boot → connected, one honest line throughout.
-  function addServer(){
-    const d=uiDialog('<h3>Add a server</h3>'
-      +'<div class="m" style="font-size:12.5px">Point me at an ssh destination you can already reach with keys — an alias from ~/.ssh/config, or user@host. The engine runs where the repo lives; I\\'ll check what\\'s there first.</div>'
-      +'<div style="margin-top:10px"><input type="text" id="acsrv" placeholder="my-server" style="width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--line2);padding:9px 11px;font:400 13px var(--mono)"></div>'
-      +'<div class="m" id="acsrverr" style="color:var(--bad);font-size:11.5px;margin-top:6px"></div>'
-      +'<div class="btns"><button id="acsrvc">Cancel</button><button class="pri" id="acsrvgo">Check the server</button></div>');
-    const done=()=>d.remove();
-    d.querySelector("#acsrvc").onclick=done;
-    d.addEventListener("click",e=>{if(e.target===d)done();});
-    d.querySelector("#acsrv").focus();
-    const go=async()=>{
-      const host=d.querySelector("#acsrv").value.trim();if(!host)return;
-      const btn=d.querySelector("#acsrvgo");btn.disabled=true;btn.textContent="Checking\\u2026";
-      const p=await fetch(api("/api/remotes/probe"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({host})}).then(r=>r.json()).catch(()=>null);
-      btn.disabled=false;btn.textContent="Check the server";
-      if(!p||p.error){d.querySelector("#acsrverr").textContent=(p&&p.error)||"engine unreachable";return;}
-      if(!p.reachable){d.querySelector("#acsrverr").textContent=p.note||"ssh could not reach that host";return;}
-      done();
-      if(p.engine){connectRemote(host,"connect");return;}
-      if(await uiConfirm("No engine on "+host+" yet.\\n\\nInstall Crate Engine there? This runs the standard installer over your own ssh connection: everything lands in ~/.crate on "+host+" (its own folder — no sudo, nothing system-wide) plus the crate command in ~/.local/bin.","Install engine")){
-        connectRemote(host,"install");
-      }
-    };
-    d.querySelector("#acsrvgo").onclick=go;
-    d.querySelector("#acsrv").onkeydown=e=>{if(e.key==="Enter")go();};
-  }
+  function addServer(){addComputerDialog(null);} // PDR open-project-doors: one dialog, shared with File › Add a Computer…
   loadRemotes();
 })();
 }

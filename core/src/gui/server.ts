@@ -10,6 +10,7 @@ import { connect as netConnect } from "node:net";
 import { stringify } from "yaml";
 import { executeAttach, listDirs, makeDir, planAttach, resolveTarget, type AttachPlan } from "../attach.js";
 import { agentLabel, DEEP_PROBED, agentProblem, agentProblemAsync, agentStatus, binaryFor, whichBin } from "../detect.js";
+import { discoverProjects, foldSshHosts, parseSshHosts, projectState } from "../discover.js";
 import { heavyDeps, installHeavyDeps, runDoctor } from "../doctor.js";
 import { isBlended } from "../blend.js";
 import { autoReviveEnabled, makeAutoReviver, type Liveness, type ReviveNote } from "../health.js";
@@ -331,6 +332,22 @@ async function cachedDeepProblem(
   return p;
 }
 
+/** GET /api/ssh-hosts' reach probe: `ssh -o BatchMode=yes <name> true`, 3s
+ * ceiling, cached a minute per name, ASYNC (never on the event loop — the
+ * CE-173 lesson). */
+const sshReach = new Map<string, { at: number; ok: boolean }>();
+function sshReachable(host: string): Promise<boolean> {
+  const c = sshReach.get(host);
+  if (c && Date.now() - c.at < 60_000) return Promise.resolve(c.ok);
+  return new Promise((resolve) => {
+    execFile("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=3", host, "true"], { timeout: 6_000 }, (err) => {
+      const ok = !err;
+      sshReach.set(host, { at: Date.now(), ok });
+      resolve(ok);
+    });
+  });
+}
+
 /** Boot-time warm-up: pay the deep probes ONCE, in the background, right
  * after listen — so the operator's first picker click finds the verdicts
  * already on file and opens instantly. Fire-and-forget; a failure here is a
@@ -540,6 +557,8 @@ export async function startGuiServer(
     home?: string;
     project?: string;
     detectPath?: string;
+    /** Tests: replace the live ssh reachability probe behind GET /api/ssh-hosts. */
+    sshProbe?: (host: string) => Promise<boolean>;
     cliPath?: string;
     /** Test seam: replaces the real runner spawner (a boot in a hermetic
      * test must never spawn `node <test-file> runner …`). */
@@ -882,6 +901,21 @@ export async function startGuiServer(
           if (!p) return json(res, 400, { error: "path required" });
           if (!existsSync(join(p, ".agents", "rig.conf")))
             return json(res, 400, { error: `not a crate rig (no .agents/rig.conf): ${p}` });
+          // PDR open-project-doors: a rig wired to an OLDER engine (dangling links —
+          // the docket case) must not be registered broken; heal it first, the
+          // way Open Project does.
+          // Best-effort, never a blocker: no engine on disk (a scratch home) or a
+          // refusal (v1 real dirs) still registers — the seats say the rest.
+          {
+            const engineDir = tierPaths(state.home).engineDir;
+            if (existsSync(join(engineDir, "templates")) && projectState(p, engineDir) === "heal") {
+              try {
+                executeAttach(planAttach(resolveTarget(p, { home: state.home }), engineDir), { gitInit: false, githubRepo: false });
+              } catch {
+                /* registered as-is; attach's own plain-words refusal shows when the operator opens it */
+              }
+            }
+          }
           return json(res, 200, { workspaces: registerWorkspace(state.home, p) });
         }
         case "POST /api/workspaces/remove": {
@@ -1546,6 +1580,109 @@ export async function startGuiServer(
           const { removeRemote } = await import("./remotes.js");
           const body = await readBody(req);
           return json(res, 200, { remotes: removeRemote(state.home, String(body.host ?? "")) });
+        }
+        // ── Open Project doors (PDR open-project-doors, 2026-09-13) ──────────
+        case "GET /api/ssh-hosts": {
+          // "Which computer?" as chips: the Host names in the operator's own ssh
+          // config, one per machine (aliases folded), each probed for reach.
+          let text = "";
+          try {
+            text = readFileSync(join(state.home, ".ssh", "config"), "utf8");
+          } catch {
+            /* no config = no chips, the field still works */
+          }
+          const { listRemotes } = await import("./remotes.js");
+          const remembered = new Set(listRemotes(state.home).map((r) => r.host));
+          const probe = opts.sshProbe ?? sshReachable;
+          const computers = foldSshHosts(parseSshHosts(text));
+          const hosts = await Promise.all(
+            computers.map(async (c) => ({
+              name: c.name,
+              aliases: c.aliases,
+              ...(c.hostName !== undefined ? { hostName: c.hostName } : {}),
+              remembered: c.aliases.some((a) => remembered.has(a)),
+              reachable: await probe(c.name),
+            })),
+          );
+          return json(res, 200, { hosts });
+        }
+        case "GET /api/projects": {
+          // The list a person picks from — on THIS machine, or on a remembered
+          // computer through the hub's own link (the same route runs there).
+          const computer = url.searchParams.get("computer") ?? "";
+          if (computer === "" || computer === "local") {
+            const { listWorkspaces } = await import("./workspaces.js");
+            const { hostname, platform } = await import("node:os");
+            const roots = [join(state.home, "Projects"), ...(await pickerRoots(state))];
+            const recents = listWorkspaces(state.home).map((w) => ({
+              path: w.path,
+              ...(typeof (w as { focusedAt?: number }).focusedAt === "number" ? { focusedAt: (w as { focusedAt?: number }).focusedAt } : {}),
+            }));
+            return json(res, 200, {
+              computer: platform() === "darwin" ? "This Mac" : hostname(),
+              projects: discoverProjects({ roots, recents, engineDir: tierPaths(state.home).engineDir }),
+            });
+          }
+          const { ensureLink, defaultFleetExec } = await import("./fleet.js");
+          const link = await ensureLink(computer).catch(() => undefined);
+          if (!link || link.state !== "connected" || !link.app) {
+            return json(res, 502, { error: `${computer} is not connected right now — Add a computer… reconnects it` });
+          }
+          const remote = (await defaultFleetExec()
+            .fetchJson(`http://127.0.0.1:${link.app.port}/api/projects?token=${link.app.token}`, 6_000)
+            .catch(() => null)) as { projects?: unknown[] } | null;
+          if (!remote) return json(res, 502, { error: `${computer} stopped answering — try again` });
+          return json(res, 200, { computer, projects: remote.projects ?? [] });
+        }
+        case "POST /api/projects/open": {
+          // Open = attach (heals older wiring, adds .agents to a new repo, no-op
+          // on a ready one) + register + focus. Remote: the same, run THERE
+          // through the hub's link; the answer is the door to load.
+          const body = await readBody(req);
+          const computer = String(body.computer ?? "");
+          const path = String(body.path ?? "").trim();
+          if (!path) return json(res, 400, { error: "path required" });
+          if (computer === "" || computer === "local") {
+            const engineDir = tierPaths(state.home).engineDir;
+            const wasNew = projectState(path, engineDir) === "new";
+            const target = resolveTarget(path, { home: state.home });
+            const plan = planAttach(target, engineDir);
+            executeAttach(plan, { gitInit: false, githubRepo: false });
+            const { healDevUrl } = await import("../attach.js");
+            await healDevUrl(plan.projectRoot);
+            // project-global: opening a project makes it the view default — the same write /api/attach/execute makes
+            state.project = plan.projectRoot;
+            ensureMirror(plan.projectRoot);
+            const ws = await import("./workspaces.js");
+            ws.registerWorkspace(state.home, plan.projectRoot);
+            ws.setWorkspaceFocused(state.home, plan.projectRoot);
+            return json(res, 200, { project: plan.projectRoot, welcome: wasNew });
+          }
+          const { ensureLink, defaultFleetExec } = await import("./fleet.js");
+          const link = await ensureLink(computer).catch(() => undefined);
+          if (!link || link.state !== "connected" || !link.app) {
+            return json(res, 502, { error: `${computer} is not connected right now — Add a computer… reconnects it` });
+          }
+          const base = `http://127.0.0.1:${link.app.port}`;
+          const tok = link.app.token;
+          type OpenAnswer = { project?: string; welcome?: boolean; error?: string };
+          let r: OpenAnswer | null = null;
+          try {
+            const resp = await fetch(`${base}/api/projects/open?token=${tok}`, {
+              method: "POST",
+              headers: { "X-Crate-Token": tok, "Content-Type": "application/json" },
+              body: JSON.stringify({ computer: "local", path }),
+              signal: AbortSignal.timeout(60_000),
+            });
+            r = (await resp.json()) as OpenAnswer;
+          } catch (e) {
+            return json(res, 502, { error: `${computer} did not finish opening it: ${e instanceof Error ? e.message : String(e)}` });
+          }
+          if (!r || r.error || !r.project) return json(res, 502, { error: r?.error ?? `${computer} gave no answer` });
+          return json(res, 200, {
+            project: r.project,
+            url: `${base}/team?token=${tok}&project=${encodeURIComponent(r.project)}${r.welcome ? "&welcome=1" : ""}`,
+          });
         }
         case "POST /api/attach/plan": {
           const body = await readBody(req);

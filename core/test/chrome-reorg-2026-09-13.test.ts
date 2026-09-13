@@ -31,16 +31,16 @@ test("the Workspaces drawer: 340px default, dragged by its edge, remembered", ()
 });
 
 test("the panel bridge routes Servers + Workspaces; the door bridge lands on the card with ?door=", () => {
-  assert.ok(html.includes("window.crateOpenDoor=door=>"), "the door bridge exists");
+  assert.ok(html.includes("window.crateOpenDoor=(door,computer)=>"), "the door bridge exists");
   assert.ok(html.includes('"&card=1&door="'), "…and it deep-links the card");
   assert.ok(html.includes('{new:"acnew",browse:"acbrowse",clone:"acclone",server:"acaddsrv"}'), "the card maps every door");
 });
 
 test("mac shell: File / View / Servers / Window / Help, About reads the live engine version, the title follows the page", () => {
   assert.ok(swift.includes('NSMenu(title: "File")'), "File menu");
-  for (const t of ["New Rig…", "Open Rig…", "Clone from GitHub…", "Add a Server…", "Close Window"]) assert.ok(swift.includes(`"${t}"`), t);
-  assert.ok(swift.includes('NSMenu(title: "Servers")') && !swift.includes('NSMenu(title: "Fleet")'), "Fleet is now Servers");
-  assert.ok(swift.includes('host["local"] as? Bool != true, let cockpit'), "this Mac's new-rig row left the Servers menu (File owns it)");
+  for (const t of ["New Project…", "Open Project…", "Clone from GitHub…", "Add a Computer…", "Close Window"]) assert.ok(swift.includes(`"${t}"`), t);
+  assert.ok(swift.includes('NSMenu(title: "Computers")') && !swift.includes('NSMenu(title: "Fleet")'), "Fleet is now Computers (the operator's word)");
+  assert.ok(swift.includes('host["local"] as? Bool != true, host["cockpitUrl"] != nil'), "this Mac's new-rig row left the Computers menu (File owns it)");
   assert.ok(swift.includes('NSMenu(title: "Window")') && swift.includes('NSMenu(title: "Help")'), "the standard pair");
   assert.ok(swift.includes("app.windowsMenu = windowMenu") && swift.includes("app.helpMenu = helpMenu"), "…registered with AppKit");
   assert.ok(swift.includes("#selector(AppActions.about(_:))") && swift.includes("/api/version?token="), "About asks the hub for the engine version");
@@ -56,9 +56,9 @@ test("build.sh stamps the shell's provenance (engine sha + build moment) instead
 
 test("linux shell mirrors it: File doors, View gains Workspaces + Servers, Fleet is Servers", () => {
   assert.ok(py.includes('Gtk.MenuItem(label="File")'), "File menu");
-  for (const t of ["New Rig…", "Open Rig…", "Clone from GitHub…", "Add a Server…"]) assert.ok(py.includes(`"${t}"`), t);
-  assert.ok(py.includes("def open_door(self, door)") && py.includes('"&card=1&door=" + door'), "doors deep-link the card");
-  assert.ok(py.includes('("Workspaces", Gdk.KEY_w, "workspaces")') && py.includes('("Servers", Gdk.KEY_5, "servers")'), "View items");
-  assert.ok(py.includes('Gtk.MenuItem(label="Servers")') && !py.includes('Gtk.MenuItem(label="Fleet")'), "Fleet is now Servers");
+  for (const t of ["New Project…", "Open Project…", "Clone from GitHub…", "Add a Computer…"]) assert.ok(py.includes(`"${t}"`), t);
+  assert.ok(py.includes('def open_door(self, door, computer="")') && py.includes('"&card=1&door=" + door'), "card doors deep-link the card; dialog doors open in place");
+  assert.ok(py.includes('("Workspaces", Gdk.KEY_w, "workspaces")') && py.includes('("Dev Servers", Gdk.KEY_5, "servers")'), "View items");
+  assert.ok(py.includes('Gtk.MenuItem(label="Computers")') && !py.includes('Gtk.MenuItem(label="Fleet")'), "Fleet is now Computers");
   assert.ok(py.includes('not host.get("local")'), "this machine's new-rig row left the Servers menu");
 });

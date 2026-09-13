@@ -33,7 +33,7 @@ test("the page exposes the panel bridge, and the shell retires exactly the three
 test("the shell's View menu: Workspaces + the four panels, cmd-1/2/3/5, validated against cockpitReady", () => {
   assert.ok(shell.includes('NSMenu(title: "View")'), "a real View menu exists");
   assert.ok(shell.includes('NSMenuItem(title: "Workspaces",') && shell.includes("[.command, .control]"), "Workspaces rides ⌃⌘S, the Mac's show-sidebar chord");
-  for (const [name, key] of [["Team", "1"], ["Context", "2"], ["Health", "3"], ["Servers", "5"]] as const) {
+  for (const [name, key] of [["Team", "1"], ["Context", "2"], ["Health", "3"], ["Dev Servers", "5"]] as const) {
     assert.ok(shell.includes(`NSMenuItem(title: "${name}",`), `${name} is a menu item`);
     assert.ok(shell.includes(`keyEquivalent: "${key}"`), `${name} rides cmd-${key}`);
   }

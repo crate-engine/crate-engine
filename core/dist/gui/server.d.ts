@@ -83,6 +83,8 @@ export declare function startGuiServer(opts?: {
     home?: string;
     project?: string;
     detectPath?: string;
+    /** Tests: replace the live ssh reachability probe behind GET /api/ssh-hosts. */
+    sshProbe?: (host: string) => Promise<boolean>;
     cliPath?: string;
     /** Test seam: replaces the real runner spawner (a boot in a hermetic
      * test must never spawn `node <test-file> runner …`). */

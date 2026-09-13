@@ -331,8 +331,8 @@ class Shell:
         file_root = Gtk.MenuItem(label="File")
         file_menu = Gtk.Menu()
         file_root.set_submenu(file_menu)
-        for label, key, door in (("New Rig…", Gdk.KEY_n, "new"), ("Open Rig…", Gdk.KEY_o, "browse"),
-                                 ("Clone from GitHub…", None, "clone"), ("Add a Server…", None, "server")):
+        for label, key, door in (("New Project…", Gdk.KEY_n, "new"), ("Open Project…", Gdk.KEY_o, "open"),
+                                 ("Clone from GitHub…", None, "clone"), ("Add a Computer…", None, "computer")):
             item(file_menu, label, key, Gdk.ModifierType.CONTROL_MASK, lambda _w, d=door: self.open_door(d))
         bar.append(file_root)
 
@@ -355,7 +355,7 @@ class Shell:
         view_root.set_submenu(view_menu)
         # View = what is shown: the Workspaces drawer, the four panels, the studio.
         for label, key, panel in (("Workspaces", Gdk.KEY_w, "workspaces"), ("Team", Gdk.KEY_1, "team"), ("Context", Gdk.KEY_2, "context"),
-                                  ("Health", Gdk.KEY_3, "health"), ("Servers", Gdk.KEY_5, "servers")):
+                                  ("Health", Gdk.KEY_3, "health"), ("Dev Servers", Gdk.KEY_5, "servers")):
             it = item(view_menu, label, key, Gdk.ModifierType.CONTROL_MASK,
                       lambda _w, p=panel: self.run_js(f"window.crateOpenPanel && window.crateOpenPanel('{p}')"))
             it.set_sensitive(False)
@@ -370,7 +370,7 @@ class Shell:
         # Rows rebuilt from the hub's /api/fleet on every open (the "show"
         # signal); click swaps the webview to that workspace's cockpit. The
         # fetch caps at 1.2s — an asleep host must never hang the menu.
-        fleet_root = Gtk.MenuItem(label="Servers")  # was "Fleet" (Adam, 2026-09-13): say what it lists
+        fleet_root = Gtk.MenuItem(label="Computers")  # was "Fleet", then "Servers" (Adam, 2026-09-13): the operator's word
         fleet_menu = Gtk.Menu()
         fleet_root.set_submenu(fleet_menu)
         fleet_menu.connect("show", self.on_fleet_open)
@@ -416,10 +416,11 @@ class Shell:
             if host.get("state") == "connected" or host.get("local"):
                 # CE-136: an empty host must never dead-end — the ＋ new rig
                 # row is the door to the card (&card=1 on the host's cockpit).
-                # This machine's "new rig" lives in File › New Rig… now — one home per control.
+                # Another computer's row opens the Open Project dialog with it selected
+                # (PDR open-project-doors); this machine's doors live in File.
                 if host.get("cockpitUrl") and not host.get("local"):
-                    row(f"   ＋ new rig on {host.get('host', '?')}…",
-                        lambda u: self.web.load_uri(u), host["cockpitUrl"] + "&card=1")
+                    row(f"   Open a project on {host.get('host', '?')}…",
+                        lambda h: self.open_door("open", h), host.get("host"))
                 for w in host.get("workspaces", []):
                     live = w.get("liveSeats", 0)
                     state = f"{live} live" if live else ("resuming" if w.get("desired") == "running" else "parked")
@@ -428,11 +429,20 @@ class Shell:
                 note = host.get("note") or host.get("state", "unknown")
                 row(f"   {note} — Connect", self._fleet_connect, host.get("host"))
             menu.append(Gtk.SeparatorMenuItem())
-        row("Add a Server…", lambda _a: self.open_door("server"))
+        row("Add a Computer…", lambda _a: self.open_door("computer"))
         menu.show_all()
 
-    def open_door(self, door):
-        """The File menu's doors: the local hub's New Rig card, that door open."""
+    def open_door(self, door, computer=""):
+        """File-menu doors. Open/Add-a-computer are DIALOGS over the current
+        cockpit (no navigation) when the page is ready; New/Clone land on the
+        New Project card."""
+        if door in ("open", "computer"):
+            if self.cockpit_ready:
+                arg = f"'open','{computer}'" if door == "open" else "'computer'"
+                self.run_js(f"window.crateOpenDoor && window.crateOpenDoor({arg})")
+            elif self.hub_url:
+                self.web.load_uri(self.hub_url + f"&door={door}&computer={computer}")
+            return
         if self.hub_url:
             self.web.load_uri(self.hub_url + "&card=1&door=" + door)
 

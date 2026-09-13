@@ -462,11 +462,12 @@ final class FleetActions: NSObject, NSMenuDelegate {
       if state == "connected" || host["local"] as? Bool == true {
         // CE-136: an empty host must never dead-end — its row is the door to
         // the card (＋ new rig), loading the host's cockpit with &card=1.
-        // This Mac's "new rig" lives in File › New Rig… now — one home per control.
-        if host["local"] as? Bool != true, let cockpit = host["cockpitUrl"] as? String {
-          let add = NSMenuItem(title: "   ＋ new rig on \(name)…", action: #selector(switchTo(_:)), keyEquivalent: "")
-          add.target = self
-          add.representedObject = cockpit + "&card=1"
+        // This machine's doors live in File; another computer's row opens the
+        // Open Project dialog with that computer selected (PDR open-project-doors).
+        if host["local"] as? Bool != true, host["cockpitUrl"] != nil {
+          let add = NSMenuItem(title: "   Open a project on \(name)…", action: #selector(AppActions.openProjectOn(_:)), keyEquivalent: "")
+          add.target = AppActions.shared
+          add.representedObject = name
           menu.addItem(add)
         }
         for w in workspaces {
@@ -490,7 +491,7 @@ final class FleetActions: NSObject, NSMenuDelegate {
       }
       menu.addItem(NSMenuItem.separator())
     }
-    let add = NSMenuItem(title: "Add a Server…", action: #selector(AppActions.addServer(_:)), keyEquivalent: "")
+    let add = NSMenuItem(title: "Add a Computer…", action: #selector(AppActions.addServer(_:)), keyEquivalent: "")
     add.target = AppActions.shared
     menu.addItem(add)
   }
@@ -586,16 +587,24 @@ final class AppActions: NSObject {
       .credits: NSAttributedString(string: "crate-engine.ai\nThe app is a native frame around the engine's cockpit; the engine version above is what updates."),
     ])
   }
-  private func openDoor(_ door: String) {
-    guard let d = NSApp.delegate as? AppDelegate, let hub = d.hubURL,
-      let url = URL(string: hub.absoluteString + "&card=1&door=\(door)")
-    else { return }
-    d.webView.load(URLRequest(url: url))
+  /// New/Clone land on the New Project card; Open/Add-a-computer are DIALOGS
+  /// over whatever cockpit is showing (no navigation) — the page opens them
+  /// itself when it is ready, else the hub loads with the door in the URL.
+  private func openDoor(_ door: String, computer: String = "") {
+    guard let d = NSApp.delegate as? AppDelegate, let hub = d.hubURL else { return }
+    if (door == "open" || door == "computer") && d.cockpitReady {
+      let arg = door == "open" ? "'open','\(computer)'" : "'computer'"
+      d.webView.evaluateJavaScript("window.crateOpenDoor && window.crateOpenDoor(\(arg))", completionHandler: nil)
+      return
+    }
+    let tail = door == "open" || door == "computer" ? "&door=\(door)&computer=\(computer)" : "&card=1&door=\(door)"
+    if let url = URL(string: hub.absoluteString + tail) { d.webView.load(URLRequest(url: url)) }
   }
   @objc func newRig(_ sender: Any?) { openDoor("new") }
-  @objc func openRig(_ sender: Any?) { openDoor("browse") }
+  @objc func openRig(_ sender: Any?) { openDoor("open") }
   @objc func cloneRig(_ sender: Any?) { openDoor("clone") }
-  @objc func addServer(_ sender: Any?) { openDoor("server") }
+  @objc func addServer(_ sender: Any?) { openDoor("computer") }
+  @objc func openProjectOn(_ sender: NSMenuItem) { openDoor("open", computer: sender.representedObject as? String ?? "") }
   @objc func website(_ sender: Any?) { NSWorkspace.shared.open(URL(string: "https://crate-engine.ai")!) }
 }
 
@@ -623,10 +632,10 @@ appItem.submenu = appMenu
 let fileItem = NSMenuItem(); mainMenu.addItem(fileItem)
 let fileMenu = NSMenu(title: "File")
 for (title, sel, key) in [
-  ("New Rig…", #selector(AppActions.newRig(_:)), "n"),
-  ("Open Rig…", #selector(AppActions.openRig(_:)), "o"),
+  ("New Project…", #selector(AppActions.newRig(_:)), "n"),
+  ("Open Project…", #selector(AppActions.openRig(_:)), "o"),
   ("Clone from GitHub…", #selector(AppActions.cloneRig(_:)), ""),
-  ("Add a Server…", #selector(AppActions.addServer(_:)), ""),
+  ("Add a Computer…", #selector(AppActions.addServer(_:)), ""),
 ] {
   let it = NSMenuItem(title: title, action: sel, keyEquivalent: key)
   it.target = AppActions.shared
@@ -664,7 +673,7 @@ viewMenu.addItem(contextMenuItem)
 let healthMenuItem = NSMenuItem(title: "Health", action: #selector(PanelActions.openHealth(_:)), keyEquivalent: "3")
 healthMenuItem.target = PanelActions.shared
 viewMenu.addItem(healthMenuItem)
-let serversMenuItem = NSMenuItem(title: "Servers", action: #selector(PanelActions.openServers(_:)), keyEquivalent: "5")
+let serversMenuItem = NSMenuItem(title: "Dev Servers", action: #selector(PanelActions.openServers(_:)), keyEquivalent: "5")
 serversMenuItem.target = PanelActions.shared
 viewMenu.addItem(serversMenuItem)
 viewMenu.addItem(NSMenuItem.separator())
@@ -673,7 +682,7 @@ studioMenuItem.target = PanelActions.shared
 viewMenu.addItem(studioMenuItem)
 viewItem.submenu = viewMenu
 let fleetItem = NSMenuItem(); mainMenu.addItem(fleetItem)
-let fleetMenu = NSMenu(title: "Servers") // was "Fleet" (Adam, 2026-09-13): say what it lists
+let fleetMenu = NSMenu(title: "Computers") // was "Fleet", then "Servers" (Adam, 2026-09-13): the operator's word
 fleetMenu.delegate = FleetActions.shared // rows rebuilt from /api/fleet each open
 fleetMenu.autoenablesItems = false
 fleetItem.submenu = fleetMenu

@@ -65,12 +65,12 @@ test("CE-135: a CRASHED seat keeps its record — distress stays distinguishable
 test("CE-136: fleet rows carry the host's cockpit door, and both shells render '＋ new rig' onto it (&card=1)", () => {
   assert.match(src("core/src/gui/fleet.ts"), /cockpitUrl/, "the brain exposes the door");
   const swift = src("apps/mac-shell/main.swift");
-  assert.ok(swift.includes("new rig on"), "mac: the empty-host row is a door, not a label");
-  assert.ok(swift.includes('"&card=1"'), "mac: it lands on the summonable card");
+  assert.ok(swift.includes("Open a project on"), "mac: the remote-host row is a door, not a label (PDR open-project-doors wording)");
+  assert.ok(swift.includes("openProjectOn(_:)"), "mac: the host row opens the Open Project dialog on that host (PDR open-project-doors)");
   assert.ok(!swift.includes("no workspaces yet"), "mac: the dead placeholder is gone");
   const py = src("apps/linux-shell/main.py");
-  assert.ok(py.includes("new rig on"), "linux: same door");
-  assert.ok(py.includes('"&card=1"') || py.includes("'&card=1'") || py.includes('+ "&card=1"'), "linux: same card landing");
+  assert.ok(py.includes("Open a project on"), "linux: same door");
+  assert.ok(py.includes('self.open_door("open", h)'), "linux: the host row opens the Open Project dialog on that host");
 });
 
 // ── CE-137: a dead picker row must be DEAD ──────────────────────────────────
