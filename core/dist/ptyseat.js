@@ -114,7 +114,13 @@ export function buildInteractiveInvocation(agentArg, opts = {}) {
             return argv;
         }
         case "pi": {
+            // CE-166 (fresh-install run 2026-09-11): the pi door opened BARE — no seat,
+            // no binder — while every claude door carried its identity since flaw #9.
+            // The fifth "law fixed on one path, absent on the other". Pi's
+            // --append-system-prompt takes inline text (or a file), same as claude's.
             const argv = ["pi"];
+            if (opts.seat)
+                argv.push("--append-system-prompt", seatIdentityPrompt(opts.seat));
             if (model) {
                 argv.push("--provider", model.split("/")[0], "--model", model.split("/").slice(1).join("/"));
             }
@@ -128,8 +134,17 @@ export function buildInteractiveInvocation(agentArg, opts = {}) {
     }
 }
 /** The seat's session id as the TTY door should open it. Mirrors the
- * runner's semantics (pi pre-mints so both doors share one session). */
-export function ttySessionId(projectRoot, seat, agentArg) {
+ * runner's semantics (pi pre-mints so both doors share one session) — for
+ * the OPERATOR wheel. A BLENDED pi seat (opts.mint === false) never pre-mints:
+ * CE-168 (fresh-install run 2026-09-11) — pi resolves `--session-id` by exact
+ * match on disk and prints "Warning: No project session found … creating a
+ * new session with that id" on stderr when it is absent, so every first boot
+ * of a pi seat opened with the word "Warning" as its first line. A fresh
+ * blended seat now boots bare (pi mints, writes its header at once), the
+ * blend loop discovers the file (findBlendSessionCandidates) and PINS the id
+ * after the first verified delivery — exactly the dance claude's forking
+ * --resume already taught it. Resumes pass the pinned id, which exists. */
+export function ttySessionId(projectRoot, seat, agentArg, opts = {}) {
     const agent = normalizeAgent(agentArg);
     const f = sessionFile(projectRoot, seat);
     if (existsSync(f)) {
@@ -142,7 +157,7 @@ export function ttySessionId(projectRoot, seat, agentArg) {
             /* unreadable = fresh */
         }
     }
-    if (agent === "pi") {
+    if (agent === "pi" && opts.mint !== false) {
         const sid = randomUUID();
         writeFileSync(f, JSON.stringify({ agent, sessionId: sid }));
         return sid;
@@ -334,7 +349,7 @@ const paneFile = (projectRoot, seat) => join(turnsDir(projectRoot, seat), PANE_F
 export function readPaneHistory(projectRoot, seat, cap = REPLAY_CAP) {
     try {
         const b = readFileSync(paneFile(projectRoot, seat));
-        return b.length > cap ? b.subarray(b.length - cap) : b;
+        return scrubTerminalQueries(b.length > cap ? b.subarray(b.length - cap) : b);
     }
     catch {
         return Buffer.alloc(0);
@@ -348,15 +363,49 @@ export function dropPaneHistory(projectRoot, seat) {
         /* absent already */
     }
 }
-/** A visible seam between what a previous engine process showed and what this
- * one is showing. Silence here would leave the operator unable to tell restored
- * history from live output — and mistaking old output for current is exactly
- * the class of error the redelivery header exists to prevent. */
-export function paneResumeBanner(atIso) {
-    return Buffer.from(`\r\n\x1b[2m── session restored ${atIso} — history above is from before the engine restarted ──\x1b[0m\r\n`, "utf8");
+export function paneResumeBanner(atIso, kind = "engine-restart", reason) {
+    // CE-167 (fresh-install run 2026-09-11): the one wording said "the engine
+    // restarted" on EVERY resume — including a restaff, where only the seat was
+    // relaunched and the engine never blinked. The seam is right; the words
+    // must say which seam. The kind is decided by the registry (has THIS engine
+    // process already opened this seat?), never by the caller's opinion.
+    const text = kind === "relaunch"
+        ? `── seat relaunched ${atIso}${reason ? ` (${reason})` : ""} — history above is from the previous pane of this seat; the engine did not restart ──`
+        : `── session restored ${atIso} — history above is from before the engine restarted ──`;
+    return Buffer.from(`\r\n\x1b[2m${text}\x1b[0m\r\n`, "utf8");
+}
+/** CE-169 (fresh-install run 2026-09-11): terminal QUERIES must never be
+ * replayed. A TUI asks the terminal who it is (DA `ESC[c`), where the cursor
+ * is (DSR `ESC[6n`), what its colours are (OSC `10;?`), … and the terminal
+ * ANSWERS on stdin. Replaying those bytes into a fresh xterm (pane restore
+ * after a relaunch, or any cockpit reconnect) makes the terminal answer AGAIN
+ * — and that answer is typed into whatever agent now owns the pane. Seen
+ * live as `^[[?1;2c` on the first line of a restaffed pi. The machine makes
+ * the leak impossible: queries are stripped from every replayed byte stream,
+ * live output is untouched (the live agent is the one who asked). */
+const TERMINAL_QUERY_RE = new RegExp([
+    "\\x1b\\[(?:[?>=])?[0-9;]*[cn]", // DA1/DA2/DA3 + DSR/CPR
+    "\\x1b\\[\\?[0-9;]*\\$p", // DECRQM (mode reports, e.g. ?2026$p)
+    "\\x1b\\[>[0-9;]*q", // XTVERSION
+    "\\x1b\\[\\?u", // kitty keyboard-protocol query
+    "\\x1b\\[(?:1[1345689]|2[01])(?:;[0-9]*)*t", // XTWINOPS report requests (never 8;r;c resize)
+    "\\x1bZ", // DECID
+    "\\x1bP(?:\\+q|\\$q)[^\\x1b]*\\x1b\\\\", // XTGETTCAP / DECRQSS
+    "\\x1b\\][0-9]+(?:;[0-9]+)*;\\?(?:\\x07|\\x1b\\\\)", // OSC colour queries (10;? 11;? 4;n;? …)
+].join("|"), "g");
+export function scrubTerminalQueries(b) {
+    const s = b.toString("latin1"); // byte-preserving; the patterns are pure ASCII
+    if (!TERMINAL_QUERY_RE.test(s))
+        return b;
+    TERMINAL_QUERY_RE.lastIndex = 0;
+    return Buffer.from(s.replace(TERMINAL_QUERY_RE, ""), "latin1");
 }
 const registry = new Map();
 const keyOf = (projectRoot, seat) => `${projectRoot}|${seat}`;
+/** Every seat THIS engine process has ever opened — the CE-167 truth: a
+ * resume with history on a seat this process already opened is a RELAUNCH
+ * (restaff, crash recovery), never "the engine restarted". */
+const seenSeats = new Set();
 export function liveTty(projectRoot, seat) {
     const t = registry.get(keyOf(projectRoot, seat));
     return t && !t.exited ? t : undefined;
@@ -423,7 +472,8 @@ export async function startSeatTty(opts) {
                 const { preseedAgyProjectTrust } = await import("./sandbox.js");
                 preseedAgyProjectTrust(opts.home ?? homedir(), projectRoot);
             }
-            const sessionId = ttySessionId(projectRoot, seat, agent);
+            // CE-168: a blended seat never pre-mints (pi warns on an id it cannot find).
+            const sessionId = ttySessionId(projectRoot, seat, agent, { mint: !blended });
             const inner = buildInteractiveInvocation(agent, { sessionId, model: opts.model, walled, seat });
             argv = wall ? [...wall.argvPrefix, ...inner] : inner;
         }
@@ -491,7 +541,8 @@ export async function startSeatTty(opts) {
     if (blended && resumingSession) {
         const prior = readPaneHistory(projectRoot, seat);
         if (prior.length > 0) {
-            const banner = paneResumeBanner(localIsoOffset());
+            const kind = seenSeats.has(keyOf(projectRoot, seat)) ? "relaunch" : "engine-restart";
+            const banner = paneResumeBanner(localIsoOffset(), kind, kind === "relaunch" ? opts.resumeReason : undefined);
             // CE-126 (battle test 2026-08-17): park the restored history fully in
             // SCROLLBACK before any live output. An ink-style TUI boots by repainting
             // its frame with cursor-up + erase-line; cursor-up clamps at the viewport
@@ -634,7 +685,7 @@ export async function startSeatTty(opts) {
             subs.add(cb);
             return () => subs.delete(cb);
         },
-        replay: () => Buffer.concat(chunks),
+        replay: () => scrubTerminalQueries(Buffer.concat(chunks)), // CE-169: never re-ask the terminal
         outputBytesSince: (windowMs) => {
             const cut = Date.now() - windowMs;
             let sum = 0;
@@ -728,6 +779,7 @@ export async function startSeatTty(opts) {
         stamp(`operator attended — native ${agent} TUI open (the real ${agent}, inside the seat's wall); deliveries hold`);
     }
     registry.set(keyOf(projectRoot, seat), tty);
+    seenSeats.add(keyOf(projectRoot, seat));
     return { ok: true, tty, reattached: false };
 }
 /** Close a seat's TTY (the UI's give-back-the-keys). No-op when none. */

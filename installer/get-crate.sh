@@ -288,7 +288,16 @@ if [ "$NO_OPEN" = "1" ]; then
   say "(--no-open) start it yourself with:  crate open"
 elif [ "$NATIVE_APP" = "1" ] && [ "$OS" = "Darwin" ]; then
   say "(the ⚡ Crate Engine app opens — it's in your Dock from here on)"
-  open -a "Crate Engine" || exec "$BIN_DIR/crate" open
+  # By PATH, not by name (fresh-install run 2026-09-11): a bundle built seconds
+  # ago is not yet in LaunchServices' name index, so `open -a "Crate Engine"`
+  # failed silently and the `||` fell through to a Chrome app-mode window —
+  # the operator got a second Chrome icon where the ⚡ was promised. A path
+  # open registers the bundle on the spot. If even that fails, SAY so before
+  # falling back, so the fallback is never mistaken for the product.
+  if ! open "/Applications/Crate Engine.app"; then
+    say "${AMBER}the native app did not launch${RESET} — opening the cockpit in a browser window instead (try: open \"/Applications/Crate Engine.app\")"
+    exec "$BIN_DIR/crate" open
+  fi
 elif [ "$NATIVE_APP" = "1" ] && [ "$OS" = "Linux" ]; then
   say "(the ⚡ Crate Engine app opens — it's in your app launcher from here on)"
   { gtk-launch crate-engine >/dev/null 2>&1 || nohup python3 "$HOME/.local/lib/crate-shell/main.py" >/dev/null 2>&1 & } || exec "$BIN_DIR/crate" open

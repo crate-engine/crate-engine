@@ -55,6 +55,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
   /// /api/fleet and swaps this webview between engine cockpits. Set once
   /// the hub answers; nil = the Fleet menu says so instead of hanging.
   var hubURL: URL?
+  /// A Retry press abandons the CLI-supplied door and runs the full flow.
+  var retriedOnce = false
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     let frame = NSRect(x: 0, y: 0, width: 1440, height: 900)
@@ -95,6 +97,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
 
   /// The launch flow — first boot AND every Retry press run exactly this.
   func startLaunch() {
+    // `crate open` hands the door in directly (fresh-install run 2026-09-11:
+    // the CLI now launches THIS app instead of a Chrome app-mode window —
+    // `open <app> --args --url <door>`). The URL is the CLI's own tokened
+    // loopback door, already up; loading it skips a second launch flow.
+    // Retry (crate-retry://) re-enters below WITHOUT the argument, so a dead
+    // door recovers through the normal flow.
+    if let direct = directDoorURL(), !retriedOnce {
+      hubURL = direct
+      webView.load(URLRequest(url: direct))
+      return
+    }
     let remote = readRemoteHost()
     let where_ = remote.isEmpty ? "on this Mac" : "on \(remote)"
     webView.loadHTMLString(
@@ -154,6 +167,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
   ) {
     if navigationAction.request.url?.scheme == "crate-retry" {
       decisionHandler(.cancel)
+      retriedOnce = true
       startLaunch()
       return
     }
@@ -256,6 +270,15 @@ func readRemoteHost() -> String {
     }
   }
   return ""
+}
+
+/// `--url <door>` from the launching CLI (`open <app> --args --url …`); nil
+/// when the app was started from the Dock / Finder / Spotlight.
+func directDoorURL() -> URL? {
+  let args = CommandLine.arguments
+  guard let i = args.firstIndex(of: "--url"), i + 1 < args.count else { return nil }
+  guard let u = URL(string: args[i + 1]), let host = u.host, host == "127.0.0.1" || host == "localhost" else { return nil }
+  return u
 }
 
 func launchEngine(remote: String) -> LaunchResult {

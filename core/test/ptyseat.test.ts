@@ -9,6 +9,8 @@ import { test } from "node:test";
 import {
   buildInteractiveInvocation,
   claudeProjectDir,
+  scrubTerminalQueries,
+  seatIdentityPrompt,
   newestClaudeSession,
   repointSessionAfterTty,
   ttySessionId,
@@ -47,6 +49,35 @@ test("pi: provider/model split + shared --session-id", () => {
   assert.deepEqual(argv, ["pi", "--provider", "openai-codex", "--model", "gpt-5.5", "--session-id", "u-1"]);
 });
 
+test("CE-166: the pi door carries its SEAT identity, same line as claude (fresh-install run 2026-09-11)", () => {
+  const argv = buildInteractiveInvocation("pi", { seat: "orchestrator", model: "openai-codex/gpt-6-astra" });
+  const i = argv.indexOf("--append-system-prompt");
+  assert.ok(i > 0, "pi supports --append-system-prompt <text>; the seat rides it");
+  assert.equal(argv[i + 1], seatIdentityPrompt("orchestrator"));
+  assert.match(argv[i + 1]!, /NEVER produce the work yourself/, "the orchestrator law reaches a pi orchestrator too");
+});
+
+test("CE-166 drift guard: every interactive door whose CLI has a system-prompt flag carries the seat identity", () => {
+  // The fifth "law fixed on one path, absent on the other" (CE-141, 152/153,
+  // 156, 165, now 166). Read the switch, not a hand-kept list: any NEW case
+  // added to buildInteractiveInvocation must either carry the seat line or
+  // be named here WITH the reason its CLI cannot.
+  const src = readFileSync(new URL("../src/ptyseat.ts", import.meta.url), "utf8");
+  const body = src.slice(src.indexOf("export function buildInteractiveInvocation"), src.indexOf("/** The seat's session id"));
+  const cases = [...body.matchAll(/case "([a-z-]+)": \{/g)].map((m) => m[1]!);
+  assert.ok(cases.length >= 4, `the switch has doors: ${cases.join(",")}`);
+  const NO_SYSTEM_PROMPT_FLAG: Record<string, string> = {
+    codex: "codex has no system-prompt flag (identity rides the first delivery's orientation block)",
+    agy: "agy has no system-prompt flag (identity rides the first delivery's orientation block)",
+  };
+  for (const agent of cases) {
+    const argv = buildInteractiveInvocation(agent, { seat: "coder" });
+    const carries = argv.includes(seatIdentityPrompt("coder"));
+    if (agent in NO_SYSTEM_PROMPT_FLAG) assert.equal(carries, false, `${agent}: ${NO_SYSTEM_PROMPT_FLAG[agent]}`);
+    else assert.ok(carries, `${agent} door opened WITHOUT its seat identity — flaw #9 again`);
+  }
+});
+
 test("an unwired agent refuses the door in plain words", () => {
   assert.throws(() => buildInteractiveInvocation("aider", {}), /no interactive door/);
 });
@@ -63,6 +94,13 @@ test("ttySessionId reads the seat's session; pi pre-mints so both doors share", 
     const minted = ttySessionId(p, "tester", "pi");
     assert.ok(minted, "pi mints up front");
     assert.equal(JSON.parse(readFileSync(sessionFile(p, "tester"), "utf8")).sessionId, minted, "…and persists it for the runner");
+    // CE-168: the BLENDED door never pre-mints — pi would print "Warning: No
+    // project session found" on every first boot. Bare spawn, pi mints, the
+    // blend loop pins after the first verified delivery.
+    assert.equal(ttySessionId(p, "designer", "pi", { mint: false }), undefined, "blended fresh pi: no id, no warning");
+    assert.equal(existsSync(sessionFile(p, "designer")), false, "…and nothing written that would read as a resume");
+    writeFileSync(sessionFile(p, "designer"), JSON.stringify({ agent: "pi", sessionId: "pinned-1", blended: true }));
+    assert.equal(ttySessionId(p, "designer", "pi", { mint: false }), "pinned-1", "a pinned session resumes by its real id");
   } finally {
     rmSync(p, { recursive: true, force: true });
   }
@@ -245,6 +283,79 @@ test("the PTY door registers the pane's pid (pty.json) at spawn and clears it on
       });
     }
     assert.equal(existsSync(f), false, "a dead pane leaves no registry entry behind");
+  } finally {
+    rmSync(p, { recursive: true, force: true });
+  }
+});
+
+// ── CE-169: terminal queries never replay (the DA-answer-typed-into-pi leak) ──
+
+test("scrubTerminalQueries strips every report REQUEST and keeps ordinary output byte-for-byte", () => {
+  const keep =
+    "\x1b[31mred\x1b[0m \x1b[2 q \x1b[8;24;80t \x1b]0;title\x07 \x1b[?2004h \x1b[1;1H\x1b[2J plain ünïcode \x1b[?25l";
+  assert.equal(scrubTerminalQueries(Buffer.from(keep, "utf8")).toString("utf8"), keep, "no query → untouched");
+  const cases: Array<[string, string]> = [
+    ["\x1b[c", "DA1 — the live leak: xterm answers ESC[?1;2c"],
+    ["\x1b[0c", "DA1 with explicit 0"],
+    ["\x1b[>c", "DA2"],
+    ["\x1b[=c", "DA3"],
+    ["\x1b[6n", "DSR cursor position"],
+    ["\x1b[5n", "DSR status"],
+    ["\x1b[?6n", "DECXCPR"],
+    ["\x1b[?2026$p", "DECRQM synchronized-output query"],
+    ["\x1b[>q", "XTVERSION"],
+    ["\x1b[?u", "kitty keyboard query"],
+    ["\x1b[14t", "XTWINOPS pixel-size report"],
+    ["\x1b[18t", "XTWINOPS char-size report"],
+    ["\x1bZ", "DECID"],
+    ["\x1bP+q544e\x1b\\", "XTGETTCAP"],
+    ["\x1bP$qm\x1b\\", "DECRQSS"],
+    ["\x1b]10;?\x07", "OSC 10 foreground query (BEL)"],
+    ["\x1b]11;?\x1b\\", "OSC 11 background query (ST)"],
+    ["\x1b]4;5;?\x07", "OSC 4 palette query"],
+  ];
+  for (const [q, why] of cases) {
+    const got = scrubTerminalQueries(Buffer.from(`pre ${q}post`, "utf8")).toString("utf8");
+    assert.equal(got, "pre post", why);
+  }
+  // pi's real boot shape: text, then a DA query mid-stream, then more text.
+  const boot = Buffer.from("\x1b[?1049h pi v0.85.1\r\n\x1b[c\x1b[?25h> ", "utf8");
+  assert.equal(scrubTerminalQueries(boot).toString("utf8"), "\x1b[?1049h pi v0.85.1\r\n\x1b[?25h> ");
+});
+
+test("CE-167 live: the FIRST resume in this process says 'engine restarted'; a later one on the same seat says 'seat relaunched' + why", async () => {
+  const p = tmpProject();
+  try {
+    const { startSeatTty, evictSeatTty } = await import("../src/ptyseat.js");
+    const seat = "coder";
+    mkdirSync(turnsDir(p, seat), { recursive: true });
+    writeFileSync(sessionFile(p, seat), JSON.stringify({ agent: "pi", sessionId: "pinned-9", blended: true }));
+    writeFileSync(join(turnsDir(p, seat), "pane.raw"), "OLD OUTPUT\r\n");
+    const waitExit = (r: Awaited<ReturnType<typeof startSeatTty>>) =>
+      new Promise<void>((res) => {
+        if (!r.ok || r.tty.exited) return res();
+        r.tty.subscribe((ev) => {
+          if (ev.exit) res();
+        });
+      });
+    const a = await startSeatTty({ projectRoot: p, seat, agent: "pi", blended: true, argvOverride: ["sleep", "5"] });
+    assert.ok(a.ok && !a.reattached);
+    const first = a.ok ? a.tty.replay().toString("utf8") : "";
+    assert.match(first, /OLD OUTPUT/, "history restored");
+    assert.match(first, /before the engine restarted/, "no prior pane in this process → the engine-restart seam");
+    evictSeatTty(p, seat);
+    await waitExit(a);
+    const b = await startSeatTty({
+      projectRoot: p, seat, agent: "pi", blended: true, argvOverride: ["sleep", "5"],
+      resumeReason: "session not live at delivery time",
+    });
+    assert.ok(b.ok && !b.reattached);
+    const second = b.ok ? b.tty.replay().toString("utf8") : "";
+    assert.match(second, /seat relaunched .*\(session not live at delivery time\)/, "same process, same seat → a RELAUNCH, and the cause is printed");
+    assert.match(second, /the engine did not restart/, "the wording no longer lies about the engine");
+    assert.doesNotMatch(second.slice(second.indexOf("seat relaunched")), /before the engine restarted/, "the old wording is not re-stamped on the relaunch");
+    evictSeatTty(p, seat);
+    await waitExit(b);
   } finally {
     rmSync(p, { recursive: true, force: true });
   }

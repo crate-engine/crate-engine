@@ -254,6 +254,7 @@ export class BlendedSeat implements BlendedSeatHandle {
         model: this.o.model,
         home: this.o.home,
         blended: true,
+        resumeReason: reason, // CE-167: the banner names the cause of a relaunch
       });
       if (r.ok) {
         this.tty = r.tty;

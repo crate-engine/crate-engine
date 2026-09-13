@@ -6,14 +6,20 @@ export declare function findChromium(platform?: NodeJS.Platform, env?: NodeJS.Pr
  * Dock app), else an OS-opener fallback (`open`/`xdg-open`) — the caller
  * spawns it. Pure + platform-injectable so it is unit-testable.
  */
+/** The native Mac shell's install path (apps/mac-shell/build.sh writes it). */
+export declare const NATIVE_MAC_APP = "/Applications/Crate Engine.app";
+export type WindowMode = "native" | "app" | "browser";
 export declare function appWindowPlan(url: string, opts?: {
     platform?: NodeJS.Platform;
     home?: string;
     env?: NodeJS.ProcessEnv;
+    /** Tests: the native app's path when "installed", false when not. Default:
+     * the real /Applications check on darwin. */
+    nativeApp?: string | false;
 }): {
     bin: string;
     args: string[];
-    mode: "app" | "browser";
+    mode: WindowMode;
 };
 /** Open the GUI as an app-mode window (or a browser tab fallback). Detached. */
 export declare function openAppWindow(url: string, opts?: {
@@ -21,7 +27,7 @@ export declare function openAppWindow(url: string, opts?: {
     home?: string;
     env?: NodeJS.ProcessEnv;
 }): {
-    mode: "app" | "browser";
+    mode: WindowMode;
 };
 /** Can this host show a window at all? linux with no DISPLAY/WAYLAND_DISPLAY
  * (an ssh session, a server) cannot — `crate open` then becomes a headless

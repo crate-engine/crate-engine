@@ -45,11 +45,34 @@ export function findChromium(
  * Dock app), else an OS-opener fallback (`open`/`xdg-open`) — the caller
  * spawns it. Pure + platform-injectable so it is unit-testable.
  */
+/** The native Mac shell's install path (apps/mac-shell/build.sh writes it). */
+export const NATIVE_MAC_APP = "/Applications/Crate Engine.app";
+
+export type WindowMode = "native" | "app" | "browser";
+
 export function appWindowPlan(
   url: string,
-  opts: { platform?: NodeJS.Platform; home?: string; env?: NodeJS.ProcessEnv } = {},
-): { bin: string; args: string[]; mode: "app" | "browser" } {
+  opts: {
+    platform?: NodeJS.Platform;
+    home?: string;
+    env?: NodeJS.ProcessEnv;
+    /** Tests: the native app's path when "installed", false when not. Default:
+     * the real /Applications check on darwin. */
+    nativeApp?: string | false;
+  } = {},
+): { bin: string; args: string[]; mode: WindowMode } {
   const platform = opts.platform ?? process.platform;
+  // Fresh-install run 2026-09-11 (Adam: "I did not get the Crate App Icon in
+  // the Dock, it's a second Chrome icon"): the installer had built the real
+  // ⚡ app, then `crate open` opened a CHROME app-mode window beside it —
+  // two vehicles for one cockpit, and the Dock showed Chrome's. When the
+  // native shell is installed it IS the window: `open <app> --args --url`
+  // hands it the door directly (main.swift loads it, no second launch flow).
+  // Chrome app-mode stays the fallback for a Mac without the shell built.
+  const native = opts.nativeApp ?? (platform === "darwin" && existsSync(NATIVE_MAC_APP) ? NATIVE_MAC_APP : false);
+  if (platform === "darwin" && native) {
+    return { bin: "open", args: [native, "--args", "--url", url], mode: "native" };
+  }
   const chromium = findChromium(platform, opts.env ?? process.env);
   if (chromium) {
     const profile = join(opts.home ?? process.env.HOME ?? "", ".crate", "app-window");
@@ -70,7 +93,7 @@ export function appWindowPlan(
 export function openAppWindow(
   url: string,
   opts: { platform?: NodeJS.Platform; home?: string; env?: NodeJS.ProcessEnv } = {},
-): { mode: "app" | "browser" } {
+): { mode: WindowMode } {
   const plan = appWindowPlan(url, opts);
   const child = spawn(plan.bin, plan.args, { detached: true, stdio: "ignore" });
   child.unref(); // the window outlives `crate open`

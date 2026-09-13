@@ -41,8 +41,21 @@ export function findChromium(platform = process.platform, env = process.env) {
  * Dock app), else an OS-opener fallback (`open`/`xdg-open`) — the caller
  * spawns it. Pure + platform-injectable so it is unit-testable.
  */
+/** The native Mac shell's install path (apps/mac-shell/build.sh writes it). */
+export const NATIVE_MAC_APP = "/Applications/Crate Engine.app";
 export function appWindowPlan(url, opts = {}) {
     const platform = opts.platform ?? process.platform;
+    // Fresh-install run 2026-09-11 (Adam: "I did not get the Crate App Icon in
+    // the Dock, it's a second Chrome icon"): the installer had built the real
+    // ⚡ app, then `crate open` opened a CHROME app-mode window beside it —
+    // two vehicles for one cockpit, and the Dock showed Chrome's. When the
+    // native shell is installed it IS the window: `open <app> --args --url`
+    // hands it the door directly (main.swift loads it, no second launch flow).
+    // Chrome app-mode stays the fallback for a Mac without the shell built.
+    const native = opts.nativeApp ?? (platform === "darwin" && existsSync(NATIVE_MAC_APP) ? NATIVE_MAC_APP : false);
+    if (platform === "darwin" && native) {
+        return { bin: "open", args: [native, "--args", "--url", url], mode: "native" };
+    }
     const chromium = findChromium(platform, opts.env ?? process.env);
     if (chromium) {
         const profile = join(opts.home ?? process.env.HOME ?? "", ".crate", "app-window");

@@ -8,7 +8,7 @@ const URL = "http://127.0.0.1:5000/team?token=abc";
 test("mac + Chrome present → chromeless --app window with its own profile", () => {
   // We can't guarantee Chrome on CI; assert the SHAPE when findChromium hits.
   const chromium = findChromium("darwin");
-  const plan = appWindowPlan(URL, { platform: "darwin", home: "/Users/x" });
+  const plan = appWindowPlan(URL, { platform: "darwin", home: "/Users/x", nativeApp: false });
   if (chromium) {
     assert.equal(plan.mode, "app");
     assert.ok(plan.args.includes(`--app=${URL}`), "chromeless app-mode");
@@ -36,8 +36,20 @@ test("linux + a fake chromium on PATH → app-mode with that binary", () => {
   assert.equal(plan.mode, "browser");
 });
 
+test("mac + the native shell installed → the ⚡ app itself, handed the door (fresh-install run 2026-09-11)", () => {
+  // The installer had built Crate Engine.app, then `crate open` opened a
+  // CHROME app-mode window beside it — Adam saw a second Chrome icon where
+  // the ⚡ was promised. The native shell, when present, IS the window.
+  const app = "/Applications/Crate Engine.app";
+  const plan = appWindowPlan(URL, { platform: "darwin", home: "/Users/x", nativeApp: app });
+  assert.deepEqual(plan, { bin: "open", args: [app, "--args", "--url", URL], mode: "native" });
+  // Platform-gated: a linux host never routes through a Mac bundle path.
+  const linux = appWindowPlan(URL, { platform: "linux", home: "/home/x", env: { PATH: "" }, nativeApp: app });
+  assert.notEqual(linux.mode, "native");
+});
+
 test("mac fallback when no Chrome: open <url>", () => {
-  const plan = appWindowPlan(URL, { platform: "darwin", home: "/Users/x", env: { PATH: "" } });
+  const plan = appWindowPlan(URL, { platform: "darwin", home: "/Users/x", env: { PATH: "" }, nativeApp: false });
   // On a dev Mac WITH Chrome this is "app"; the assertion tolerates both but
   // pins the fallback bin when it degrades.
   if (plan.mode === "browser") assert.equal(plan.bin, "open");

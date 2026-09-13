@@ -14,8 +14,19 @@ export declare function buildInteractiveInvocation(agentArg: string, opts?: {
     seat?: string;
 }): string[];
 /** The seat's session id as the TTY door should open it. Mirrors the
- * runner's semantics (pi pre-mints so both doors share one session). */
-export declare function ttySessionId(projectRoot: string, seat: string, agentArg: string): string | undefined;
+ * runner's semantics (pi pre-mints so both doors share one session) — for
+ * the OPERATOR wheel. A BLENDED pi seat (opts.mint === false) never pre-mints:
+ * CE-168 (fresh-install run 2026-09-11) — pi resolves `--session-id` by exact
+ * match on disk and prints "Warning: No project session found … creating a
+ * new session with that id" on stderr when it is absent, so every first boot
+ * of a pi seat opened with the word "Warning" as its first line. A fresh
+ * blended seat now boots bare (pi mints, writes its header at once), the
+ * blend loop discovers the file (findBlendSessionCandidates) and PINS the id
+ * after the first verified delivery — exactly the dance claude's forking
+ * --resume already taught it. Resumes pass the pinned id, which exists. */
+export declare function ttySessionId(projectRoot: string, seat: string, agentArg: string, opts?: {
+    mint?: boolean;
+}): string | undefined;
 /** Does this seat have a session a spawn would RESUME (CE-014)?
  *
  * Mirrors ttySessionId's acceptance rule — the file exists and names a session
@@ -115,7 +126,9 @@ export declare function dropPaneHistory(projectRoot: string, seat: string): void
  * one is showing. Silence here would leave the operator unable to tell restored
  * history from live output — and mistaking old output for current is exactly
  * the class of error the redelivery header exists to prevent. */
-export declare function paneResumeBanner(atIso: string): Buffer;
+export type PaneResumeKind = "engine-restart" | "relaunch";
+export declare function paneResumeBanner(atIso: string, kind?: PaneResumeKind, reason?: string): Buffer;
+export declare function scrubTerminalQueries(b: Buffer): Buffer;
 export declare function liveTty(projectRoot: string, seat: string): TtySeat | undefined;
 /** Every live TTY of one project — the multiplexed stream's roster. */
 export declare function liveTtyList(projectRoot: string): TtySeat[];
@@ -146,6 +159,10 @@ export interface StartTtyOpts {
      * lifecycle/registry seams need a spawnable stub where no agent CLI exists,
      * the same reason runner.ts carries invocationOverride. */
     argvOverride?: string[];
+    /** CE-167: why this spawn happened (the blend supervisor's own reason
+     * string) — printed in the relaunch banner so the operator reads the cause,
+     * not a guess. Ignored on an engine-restart resume. */
+    resumeReason?: string;
 }
 /**
  * Open (or reattach) the seat's interactive door. Refuses `busy` while a

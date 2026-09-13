@@ -534,7 +534,8 @@ switch (command) {
         if (printOnly) {
           console.log(teamUrl);
         } else if (win) {
-          console.log(`Crate Engine is open — ${win.mode === "app" ? "the ⚡ app window" : "your browser"} is loading${project ? ` (${project})` : ""}.`);
+          const vehicle = win.mode === "native" ? "the ⚡ Crate Engine app" : win.mode === "app" ? "the ⚡ app window" : "your browser";
+          console.log(`Crate Engine is open — ${vehicle} is loading${project ? ` (${project})` : ""}.`);
           console.log(teamUrl);
         } else {
           console.log(headlessHandoff(teamUrl).join("\n"));

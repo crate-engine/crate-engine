@@ -68,6 +68,25 @@ The model pins **at launch** in v0.79.x: `--model "<provider>/<id>"`
 4. **State signal** — the shared `python3 .agents/bin/agentctl.py emit --actor <station> …`,
    run from the repo root.
 
+## Seat identity + approvals at the blended door (CE-166, 2026-09-11)
+
+- **Seat identity is injected at launch** — `--append-system-prompt "<seat identity>"`,
+  the same line the claude door carries (flaw #9's cure). Before CE-166 the pi door
+  opened BARE and the boot screen showed only the operator's personal
+  `~/.pi/agent/APPEND_SYSTEM.md` + the project `AGENTS.md`; a message typed straight
+  into the wheel reached a role-less pi. The cockpit composer's first delivery also
+  carries the visible re-orientation block, so both doors orient.
+- **Pi has NO approvals flag.** Unlike claude (`--permission-mode bypassPermissions`),
+  codex and agy (bypass inside the wall), pi's prompting posture inside the wall is
+  whatever the OPERATOR's own `~/.pi` config and extensions say (observed live:
+  `permission-gate.ts`, `protected-paths.ts`, `plan-mode` all loaded into a seat). A
+  seat that stalls on a permission prompt is the operator's pi setup, not the engine.
+  Reviewer seats can be made structurally read-only with `--tools read,bash`.
+- **No pre-minted session id at the blended door (CE-168).** pi resolves `--session-id`
+  by exact match on disk and prints `Warning: No project session found …` when the id is
+  new, so a blended seat boots bare, pi mints, and the blend loop pins the id after the
+  first verified delivery. The operator wheel and the headless runner still pre-mint.
+
 ## Onboarding a Pi seat (what the orchestrator relays into the seat)
 
 Launch is agent-level; the ROLE comes from the orchestrator's boot brief (same flow as

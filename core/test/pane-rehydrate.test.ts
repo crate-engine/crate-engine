@@ -81,6 +81,15 @@ test("paneResumeBanner names the seam so restored history cannot pass as live (C
   assert.match(b, /before the engine restarted/, "and why there is a gap");
 });
 
+test("paneResumeBanner: the RELAUNCH kind names the seat seam and the cause, never the engine (CE-167)", () => {
+  const b = paneResumeBanner("2026-09-11T18:34:54-05:00", "relaunch", "blended session boot").toString("utf8");
+  assert.match(b, /seat relaunched 2026-09-11T18:34:54-05:00 \(blended session boot\)/);
+  assert.match(b, /the engine did not restart/, "the fresh-install run read 'engine restarted' after a restaff and asked why");
+  assert.doesNotMatch(b, /before the engine restarted/);
+  const noReason = paneResumeBanner("2026-09-11T18:34:54-05:00", "relaunch").toString("utf8");
+  assert.match(noReason, /seat relaunched 2026-09-11T18:34:54-05:00 — history above/);
+});
+
 // ── the spawn behaviour, driven through the REAL startSeatTty ───────────────
 // argvOverride gives a spawnable stub (the ptyseat.test.ts pattern), so these
 // exercise the real hydrate/drop decision without needing an agent CLI.

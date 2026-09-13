@@ -52,4 +52,13 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 rm -rf "$BUILD"
+# Seal + register (fresh-install run 2026-09-11). The linker's ad-hoc
+# signature covers the bare binary only ("code has no resources but signature
+# indicates they must be present" from spctl); re-signing the BUNDLE ad-hoc
+# seals Info.plist + the icon with it. lsregister puts the bundle in
+# LaunchServices' index NOW, so the very next `open` finds it by path or name
+# instead of the installer's fallback window.
+codesign --force --sign - "$APP" 2>/dev/null || echo "note: ad-hoc codesign skipped (the app still launches — it was built by this machine)"
+LSREG="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+[ -x "$LSREG" ] && "$LSREG" -f "$APP" >/dev/null 2>&1 || true
 echo "done — Crate Engine.app installed (⚡ in the Dock; config: ~/.crate/app-shell.conf)"
