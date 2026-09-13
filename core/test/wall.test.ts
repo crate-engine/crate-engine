@@ -3,7 +3,8 @@
 // the walled-required refusal law (claude/codex NEVER run headless unwalled —
 // the P5-0a/P8 walling law carried onto the runner path).
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -159,5 +160,32 @@ test("normalizeAgent folds claude-code → claude so the refusal law fires", asy
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ── CE-175 (re-install run 2026-09-13): the designer's Playwright MCP "failed
+// to connect" because `npx` could not write ~/.npm inside the wall. Proven
+// LIVE in the seat's real seatbelt, not just in the rendered text — with the
+// negative control that shows the wall still holds elsewhere. ──
+test("CE-175 LIVE (macOS): inside the designer's real seatbelt, ~/.npm and claude's cache are writable — and the rest of HOME still is not", { skip: process.platform !== "darwin" || !existsSync("/usr/bin/sandbox-exec") }, () => {
+  const rig = makeRig();
+  try {
+    const wall = resolveHeadlessWall(rig.project, "designer", "claude", { platform: "darwin", home: rig.home })!;
+    assert.equal(wall.argvPrefix[0], "sandbox-exec");
+    const inWall = (script: string) =>
+      spawnSync(wall.argvPrefix[0]!, [...wall.argvPrefix.slice(1), "sh", "-c", script], {
+        cwd: rig.project, encoding: "utf8", timeout: 20000, env: { ...process.env, HOME: rig.home },
+      });
+    const ok = inWall('mkdir -p "$HOME/.npm/_npx/probe" "$HOME/.npm/_logs" "$HOME/Library/Caches/claude-cli-nodejs/probe" && echo DOOR_OK');
+    assert.match(ok.stdout + ok.stderr, /DOOR_OK/, `npx cache + claude cache must be writable in the wall: ${ok.stderr}`);
+    // Negative control on the PROFILE (a scratch HOME lives under the temp
+    // dir, which the wall allows on purpose, so a live write there proves
+    // nothing): the doors are named individually — HOME itself is never one.
+    const profile = readFileSync(wall.argvPrefix[wall.argvPrefix.indexOf("-f") + 1]!, "utf8");
+    assert.ok(profile.includes(`(subpath "${rig.home}/.npm")`), "the npx door is in the rendered wall");
+    assert.ok(profile.includes(`(subpath "${rig.home}/Library/Caches/claude-cli-nodejs")`), "claude's cache door too");
+    assert.ok(!profile.includes(`(subpath "${rig.home}")`), "HOME as a whole is NOT a door — the wall still cages the rest");
+  } finally {
+    rig.cleanup();
   }
 });

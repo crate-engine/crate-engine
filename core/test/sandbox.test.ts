@@ -245,10 +245,15 @@ test("renderWallPlan: platform dispatch — seatbelt on darwin, bwrap on linux, 
   }
 });
 
-test("stateDoorsFor: claude-code gets its state doors, pi rides the template", async () => {
+test("stateDoorsFor: every agent gets the npx cache door (CE-175); claude-code its state + CLI-cache doors; pi rides the template for the rest", async () => {
   const { stateDoorsFor } = await import("../src/sandbox.js");
-  assert.deepEqual(stateDoorsFor("claude-code"), ["~/.claude", "~/.claude.json", "~/.claude.json.backup"]);
-  assert.deepEqual(stateDoorsFor("pi"), []);
+  assert.deepEqual(stateDoorsFor("claude-code"), [
+    "~/.npm", "~/.claude", "~/.claude.json", "~/.claude.json.backup",
+    "~/Library/Caches/claude-cli-nodejs", "~/.cache/claude-cli-nodejs",
+  ]);
+  assert.deepEqual(stateDoorsFor("pi"), ["~/.npm"], "pi launches MCP servers through npx too (pi-mcp-adapter)");
+  assert.deepEqual(stateDoorsFor("codex"), ["~/.npm", "~/.codex"]);
+  assert.deepEqual(stateDoorsFor("agy"), ["~/.npm", "~/.gemini/antigravity-cli"]);
   // GOLDEN: the coder wall = npm door + claude state doors, after the wall
   const text = renderProfile(
     { seat: "coder", sandbox: "standard", doors: ["~/.npm", ...stateDoorsFor("claude-code")] },

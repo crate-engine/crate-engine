@@ -58,10 +58,25 @@ export function renderDoor(door, paths) {
  * state under `~/.claude` plus the root-level json (+ its backup).
  */
 export function stateDoorsFor(agent) {
-    if (agent === "claude-code")
-        return ["~/.claude", "~/.claude.json", "~/.claude.json.backup"];
+    // CE-175 (re-install run 2026-09-13, the designer's ack: "playwright MCP
+    // failed to connect this session"): every harness launches its MCP servers
+    // through `npx -y <pkg>` (claude's mcpServers, codex's config.toml, pi's
+    // mcp-adapter), and npx needs ~/.npm (its _npx install dir + _logs). Inside
+    // the wall that dir was read-only — reproduced in the seat's own seatbelt:
+    // `mkdir ~/.npm/_npx/x` → "Operation not permitted", `npx @playwright/mcp`
+    // → "Log files were not written … /Users/…/.npm/_logs" — so the server
+    // never started and the seat reported honestly. The npm cache is a cache:
+    // a door there widens nothing that matters. Universal, every agent.
+    const npx = ["~/.npm"];
+    if (agent === "claude-code") {
+        // + claude's own CLI cache (MCP logs, downloads): ~/Library/Caches on
+        // macOS, ~/.cache on Linux — both, the CE-134 lesson (a mac-only path made
+        // the Linux check unpassable forever). Missing dirs are materialized by
+        // the bwrap renderer and allowed-if-created by seatbelt.
+        return [...npx, "~/.claude", "~/.claude.json", "~/.claude.json.backup", "~/Library/Caches/claude-cli-nodejs", "~/.cache/claude-cli-nodejs"];
+    }
     if (agent === "codex")
-        return ["~/.codex"]; // auth.json, config.toml, sessions, history
+        return [...npx, "~/.codex"]; // auth.json, config.toml, sessions, history
     // agy (Antigravity CLI) — PROVEN 2026-08-18 on BOTH backends. Its credential
     // lives in the OS keyring and rides mach services / the session bus, so auth
     // works walled with no door at all; what FAILS is the conversation store:
@@ -77,8 +92,8 @@ export function stateDoorsFor(agent) {
     // the pattern that defeated claude's single-FILE door on Linux (CE-129) — a
     // rename cannot cross a single-file bind mount, but stays inside a dir bind.
     if (agent === "agy")
-        return ["~/.gemini/antigravity-cli"];
-    return []; // pi: the templates already carry {{HOME}}/.pi
+        return [...npx, "~/.gemini/antigravity-cli"];
+    return npx; // pi: the templates already carry {{HOME}}/.pi
 }
 /**
  * CE-129 (battle test 2026-08-17): pre-seed Claude Code's folder-trust for the

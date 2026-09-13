@@ -54,11 +54,12 @@ function mkHome(onboarded?: boolean): string {
 // halves were measured live before this door was written.
 
 test("agy gets a state door for its conversation store — without it, sessions vanish silently", () => {
-  assert.deepEqual(stateDoorsFor("agy"), ["~/.gemini/antigravity-cli"]);
+  // CE-175: every agent also carries the npx cache door; agy's own store rides beside it
+  assert.deepEqual(stateDoorsFor("agy"), ["~/.npm", "~/.gemini/antigravity-cli"]);
 });
 
 test("the agy door is DIRECTORY-granular — agy renames <file>.<uuid>.tmp into place (CE-129's lesson)", () => {
-  const door = stateDoorsFor("agy")[0]!;
+  const door = stateDoorsFor("agy").find((d) => d.includes("antigravity"))!;
   assert.ok(!/\.[a-z]+$/.test(door), `${door} looks file-granular; a rename cannot cross a single-file bind mount`);
 });
 

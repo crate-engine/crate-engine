@@ -103,7 +103,8 @@ export function resolveHeadlessWall(projectRoot, seatArg, agentArg, opts = {}) {
         return undefined;
     }
     const spec = specFromLoadout(loadout);
-    spec.doors = [...spec.doors, ...stateDoorsFor(WALL_REQUIRED[agent] ?? agent)];
+    // de-duplicated: a loadout that already names ~/.npm must not bind it twice
+    spec.doors = [...new Set([...spec.doors, ...stateDoorsFor(WALL_REQUIRED[agent] ?? agent)])];
     // CE-117 (Adam's ruling 2026-08-17): a project may WIDEN its own wall —
     // additive doors from <project>/.agents/doors.yaml, merged AFTER the
     // loadout's list (never replacing it), and always printed below: a silent
