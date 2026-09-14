@@ -62,6 +62,7 @@ export interface SeatView {
     blended?: boolean;
     /** blended only: the live session file grew in the last few seconds. */
     responding?: boolean;
+    recoveryRequired?: string;
     /** blended only: ISO of the session file's last growth (the idle chip). */
     lastOutputAt?: string;
     /** blended only: the live PTY's spawn epoch — the client reopens its

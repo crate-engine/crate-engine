@@ -1,3 +1,5 @@
+import { verdictArgs } from "./git-fixture.js";
+import { initProtocolGit } from "./git-fixture.js";
 // The state machine's loop shapes, pinned against the REAL shipped
 // config/state-machine.yaml (not a hand-simplified fixture — the run-#14
 // fixture law). Covers the two shapes added post-Phase-6: research (a spike
@@ -20,10 +22,12 @@ copyFileSync(join(ROOT, "config", "state-machine.yaml"), join(rig, ".agents", "c
 copyFileSync(join(ROOT, "config", "handoffs.yaml"), join(rig, ".agents", "config", "handoffs.yaml"));
 writeFileSync(join(rig, ".agents", "state", "events.log"), "");
 
+initProtocolGit(rig);
+
 function ctl(...args: string[]): { out: string; code: number } {
   try {
     return {
-      out: execFileSync("python3", [join(ROOT, "bin", "agentctl.py"), ...args], { cwd: rig, encoding: "utf8" }),
+      out: execFileSync("python3", [join(ROOT, "bin", "agentctl.py"), ...verdictArgs(rig, args)], { cwd: rig, encoding: "utf8" }),
       code: 0,
     };
   } catch (e) {

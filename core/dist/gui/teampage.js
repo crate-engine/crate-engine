@@ -1086,6 +1086,7 @@ function gaugeHtml(g,seat){
     +'<span class="gpct">'+pct+'%</span></span>';
 }
 function tileHead(s){
+  const recovery=s.recoveryRequired?'<span class="pausechip hot" title="'+esc(s.recoveryRequired)+'">work needs inspection</span>':'';
   if(seatUnstaffed(s)){
     // Cockpit-first S2 (PDR decisions 4/5/7): an empty seat INVITES — one
     // amber dot beside the role name, and the corner label (the SAME door as
@@ -1109,7 +1110,7 @@ function tileHead(s){
     // announcing it is noise — the absence of a wheel button says it all.
     // No status dot either (S2, Adam's minimalism law): the live TUI is the truth.
     return '<div class="thead"><span class="tname">'+esc(s.title)+'</span>'
-      +'<span class="thead-r">'+q+gaugeHtml(s.gauge,s.seat)+act+agent+'</span></div>';
+      +'<span class="thead-r">'+recovery+q+gaugeHtml(s.gauge,s.seat)+act+agent+'</span></div>';
   }
   const run=s.turns&&s.turns.find(t=>t.ok===null);
   const right=run?workingSpan(run)
@@ -1127,7 +1128,7 @@ function tileHead(s){
     +(keysOn?'Hand back the wheel — the engine resumes deliveries to this seat':'Take the wheel — open the real '+esc(s.agent)+' session in this pane; the team holds its deliveries while you drive')+'">'
     +(keysOn?'YOUR WHEEL · hand back':'TAKE THE WHEEL')+'</button>';
   return '<div class="thead"><span class="tname">'+esc(s.title)+'</span>'
-    +'<span class="thead-r">'+paused+gaugeHtml(s.gauge,s.seat)+right+keys+'</span></div>';
+    +'<span class="thead-r">'+recovery+paused+gaugeHtml(s.gauge,s.seat)+right+keys+'</span></div>';
 }
 function tickWorking(){
   if(document.body.classList.contains("dead"))return; // offline — no fake "working" ticks
@@ -1159,7 +1160,7 @@ function gatePanelHtml(){
   if(!GATES.length)return"";
   const g=GATES[0];
   return '<div class="gatepanel" data-task="'+esc(g.task)+'">'
-    +'<div class="gp-head">Ready to merge <b>'+esc(g.branch)+'</b> → '+esc(g.deploysTo)+'</div>'
+    +'<div class="gp-head">Ready to merge <b>'+esc(g.branch)+'</b> @ '+esc((g.sha||'unavailable').slice(0,12))+' → '+esc(g.deploysTo)+'</div>'
     +'<div class="gp-sub"><span class="gp-v '+(g.reviewOk?"":"no")+'">review '+(g.reviewOk?"✓":"·")+'</span>'
     +'<span class="gp-v '+(g.qaOk?"":"no")+'">QA '+(g.qaOk?"✓":"·")+'</span>'
     +'<span class="gp-deploy">deploys to production</span></div>'
@@ -1188,12 +1189,12 @@ function gateBarHtml(){
       +'<span class="gbwhat" id="gbwhat">design ready — <b>'+esc(g.branch)+'</b> · review it in the Studio, then</span>'
       +'<button id="gbconfirm">Confirm design</button><button id="gbreopen">Reopen…</button><span class="gberr" id="gberr"></span></div>';
   }
-  if(g.released||GATEREL[g.task]){
+  if(g.released||(g.sha&&g.round&&GATEREL[g.task]===g.sha+":"+g.round)){
     return '<div id="gatebar" class="released"><span class="gbdot"></span>'
       +'<span class="gbwhat" id="gbwhat">released — the coder is merging <b>'+esc(g.branch)+'</b>; DEPLOYED will confirm</span></div>';
   }
   return '<div id="gatebar"><span class="gbdot"></span>'
-    +'<span class="gbwhat" id="gbwhat">merge gate holding — <b>'+esc(g.branch)+'</b> → '+esc(g.deploysTo)
+    +'<span class="gbwhat" id="gbwhat">merge gate holding — <b>'+esc(g.branch)+'</b> @ '+esc((g.sha||'unavailable').slice(0,12))+' → '+esc(g.deploysTo)
     +' · review '+(g.reviewOk?"✓":"·")+' · QA '+(g.qaOk?"✓":"·")+'</span>'
     +'<input id="gbinput" placeholder=\\'type "merge go" to release\\' autocomplete="off" spellcheck="false"><button id="gbgo">Release</button><span class="gberr" id="gberr"></span></div>';
 }
@@ -1202,7 +1203,7 @@ function renderGateBar(){
   // renders the same truth from the record
   const gb=document.getElementById("gatebar");if(!gb||!GATES.length)return;
   const g=GATES[0];
-  if(g.released||GATEREL[g.task])gb.outerHTML=gateBarHtml();
+  if(g.released||(g.sha&&g.round&&GATEREL[g.task]===g.sha+":"+g.round))gb.outerHTML=gateBarHtml();
 }
 async function designHoldAct(confirm){
   const err=document.getElementById("gberr");if(err)err.textContent="";
@@ -1230,9 +1231,9 @@ async function releaseFromBar(){
   const inp=document.getElementById("gbinput");const err=document.getElementById("gberr");
   const phrase=(inp.value||"").trim();if(!phrase||!GATES.length)return;
   err.textContent="";
-  const task=GATES[0].task;
-  const r=await fetch(api("/api/gates/release"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({task,phrase})}).then(r=>r.json()).catch(()=>null);
-  if(r&&r.ok){inp.value="";GATEREL[task]=true;renderGateBar();}
+  const {task,sha,round}=GATES[0];
+  const r=await fetch(api("/api/gates/release"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({task,phrase,sha,round})}).then(r=>r.json()).catch(()=>null);
+  if(r&&r.ok){inp.value="";GATEREL[task]=sha+":"+round;renderGateBar();}
   else err.textContent=(r&&r.out)||"release failed — the server did not answer";
 }
 function renderTile(s,slot){
@@ -1362,7 +1363,7 @@ function tileKey(s,i){
     :JSON.stringify((s.turns||[]).map(t=>[t.digest,t.live,(t.events||[]).map(e=>[e.kind,e.narrated])]));
   const orch=s.seat==="orchestrator"?[CHAT,PENDING,GATES,GATEREL,SSELIVE]:0;
   return JSON.stringify([i,lens,SCALES[s.seat]||1,!!TTYS[s.seat],!!(TTYS[s.seat]&&TTYS[s.seat].waiting),
-    s.title,s.agent,s.model,s.status,s.lastActivity,s.unread,s.attended,s.blended,s.responding,s.ptyStartedAt,
+    s.title,s.agent,s.model,s.status,s.lastActivity,s.unread,s.attended,s.blended,s.responding,s.ptyStartedAt,s.recoveryRequired,
     s._alive,s._started,turnsMeta,feedSrc,orch]);
 }
 // Clean-tile surgical patches (the tickWorking pattern): value writes only,
@@ -1527,9 +1528,9 @@ async function sendChat(){
   PENDING.push(entry);
   const cl=document.getElementById("chatlog");if(cl){cl.innerHTML=SSELIVE?orchFeedHtml():chatLogHtml();cl.scrollTop=cl.scrollHeight;}
   // "merge go" typed in the chat IS the gate release (Adam: one input only)
-  if(text.toLowerCase()==="merge go"&&GATES.length){
-    const task=GATES[0].task;
-    const r=await fetch(api("/api/gates/release"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({task,phrase:"merge go"})}).then(r=>r.json()).catch(()=>null);
+  if(text.toLowerCase()==="merge go"&&GATES.length===1&&GATES[0].kind!=="design"){
+    const {task,sha,round}=GATES[0];
+    const r=await fetch(api("/api/gates/release"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({task,phrase:"merge go",sha,round})}).then(r=>r.json()).catch(()=>null);
     if(!r||!r.ok){gateErr(((r&&r.out)||"release failed").split("\\n")[0]);}
     // any server response means releaseGate wrote the durable echo before
     // acting — drop the optimistic copy and render the real one. No response

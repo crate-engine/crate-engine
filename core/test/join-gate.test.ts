@@ -1,3 +1,4 @@
+import { initProtocolGit, verdictArgs } from "./git-fixture.js";
 // THE JOIN IS PHYSICS (2026-07-24; FLAWS "the review/QA JOIN is manners, not
 // physics"): in a parallel review+QA loop the verifiers RECORD verdicts
 // (`emit verdict`) and agentctl refuses approved/changes_needed from anyone
@@ -25,6 +26,7 @@ function makeRig(name: string, conf = 'PROJECT="rig"\n'): string {
   copyFileSync(join(ROOT, "config", "state-machine.yaml"), join(rig, ".agents", "config", "state-machine.yaml"));
   copyFileSync(join(ROOT, "config", "handoffs.yaml"), join(rig, ".agents", "config", "handoffs.yaml"));
   writeFileSync(join(rig, ".agents", "state", "events.log"), "");
+  initProtocolGit(rig, ["feature/x", "feature/a", "feature/b"]);
   return rig;
 }
 
@@ -32,7 +34,7 @@ function ctl(rig: string, env: Record<string, string>, ...args: string[]): { ok:
   try {
     return {
       ok: true,
-      out: execFileSync("python3", [AGENTCTL, ...args], {
+      out: execFileSync("python3", [AGENTCTL, ...verdictArgs(rig, args)], {
         cwd: rig, encoding: "utf8", env: { ...process.env, ...env },
       }),
     };

@@ -176,7 +176,9 @@ wait for `[CHANGES_NEEDED]`; then fix, push, re-emit `code_ready` (which re-pins
   instruction. Wait for an explicit `[MERGE] <branch>`.
 - **On `[MERGE] <branch>`** (from the orchestrator, or the engine routing the
   operator's "merge go" — both exist only after the human's go): merge that
-  branch into main and push (per `git-workflow.md`); update your state file
+  exact full commit SHA named in the order into main and push (per
+  `git-workflow.md`). Stop if the branch no longer matches that SHA. Keep the
+  candidate branch until `deployed` is recorded; update your state file
   (status=merged); emit `deployed`. (The handoff layer REJECTS `deployed` unless
   state is `approved` AND the gate was released — the guardrail that nothing
   deploys without a review and the human's go.)

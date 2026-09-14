@@ -28,41 +28,39 @@ export function mirrorNote(projectRoot, role, sender, text) {
  * armed (approved) and an operator GATE_RELEASE arrived after the arming,
  * unconsumed by a later deployed/reopen. Used by releaseGate to ABSORB a
  * repeat "merge go" instead of queueing a duplicate [MERGE] order. */
+function eventFields(raw) {
+    if (!raw.trim() || raw.trimStart().startsWith("#"))
+        return { event: "", fields: {} };
+    const tokens = raw.split(" report=", 1)[0].trim().split(/\s+/);
+    const fields = {};
+    for (const token of tokens.slice(2)) {
+        const i = token.indexOf("=");
+        if (i > 0 && fields[token.slice(0, i)] === undefined)
+            fields[token.slice(0, i)] = token.slice(i + 1);
+    }
+    return { event: tokens[1] ?? "", fields };
+}
 export function gateAlreadyReleased(projectRoot, task) {
+    const pin = candidatePin(projectRoot, task);
     const log = join(projectRoot, ".agents", "state", "events.log");
-    if (!existsSync(log))
+    if (!pin.round || !existsSync(log))
         return false;
     const wanted = task && task !== "(single loop)" ? task : "";
-    let armed = false;
-    let released = false;
+    let armed = false, released = false;
     for (const raw of readFileSync(log, "utf8").split("\n")) {
-        if (!raw.trim() || raw.trimStart().startsWith("#"))
+        const { event, fields: row } = eventFields(raw);
+        const rowTask = row.task || row.branch;
+        if (wanted && rowTask && rowTask !== wanted)
             continue;
-        const toks = raw.split(/\s+/);
-        const evt = toks[1] ?? "";
-        let rowTask;
-        let actor = "";
-        for (const t of toks) {
-            if (t.startsWith("task="))
-                rowTask = t.slice(5);
-            else if (t.startsWith("branch=") && rowTask === undefined)
-                rowTask = t.slice(7);
-            else if (t.startsWith("actor="))
-                actor = t.slice(6);
+        const matches = row.sha === pin.sha && row.round === pin.round;
+        if (event === "APPROVED") {
+            armed = matches;
+            released = false;
         }
-        if (wanted && rowTask !== undefined && rowTask !== wanted)
-            continue;
-        if (evt === "GATE_RELEASE" && actor === "operator") {
-            if (armed)
-                released = true;
-        }
-        else if (evt === "APPROVED" || toks.includes("state=approved")) {
-            armed = true;
-            released = false; // a fresh approval needs a fresh release
-        }
-        else if (toks.includes("state=deployed") || toks.includes("state=implementing")) {
-            armed = false;
-            released = false; // merged or reopened
+        else if (event === "GATE_RELEASE" && row.actor === "operator" && matches)
+            released = armed;
+        else if (["START_IMPL", "CODE_READY", "CHANGES_NEEDED", "REOPEN", "DEPLOYED", "CLOSE", "ABANDON", "ROLLBACK"].includes(event)) {
+            armed = released = false;
         }
     }
     return armed && released;
@@ -123,39 +121,41 @@ function deployTarget(projectRoot, conf) {
  * that a partial-verification note read as green (W4 #3). Events, not prose. */
 export function joinVerdicts(projectRoot, task) {
     const log = join(projectRoot, ".agents", "state", "events.log");
+    const pin = candidatePin(projectRoot, task);
     const v = {};
-    if (!existsSync(log))
+    if (!pin.round || !existsSync(log))
         return v;
     const wanted = task && task !== "(single loop)" ? task : "";
     for (const raw of readFileSync(log, "utf8").split("\n")) {
-        if (!raw.trim() || raw.trimStart().startsWith("#"))
+        const { event, fields: row } = eventFields(raw);
+        const rowTask = row.task || row.branch;
+        if (wanted && rowTask !== wanted)
             continue;
-        const toks = raw.split(/\s+/);
-        const evt = toks[1] ?? "";
-        let rowTask;
-        let actor = "";
-        let result = "";
-        for (const t of toks) {
-            if (t.startsWith("task="))
-                rowTask = t.slice(5);
-            else if (t.startsWith("branch=") && rowTask === undefined)
-                rowTask = t.slice(7);
-            else if (t.startsWith("actor="))
-                actor = t.slice(6);
-            else if (t.startsWith("result="))
-                result = t.slice(7);
-        }
-        if (wanted && rowTask !== undefined && rowTask !== wanted)
-            continue;
-        if (evt === "CODE_READY") {
+        if (event === "CODE_READY") {
             delete v.reviewer;
             delete v.tester;
         }
-        else if (evt === "VERDICT" && (actor === "reviewer" || actor === "tester")) {
-            v[actor] = result;
-        }
+        else if (event === "VERDICT" && (row.actor === "reviewer" || row.actor === "tester")
+            && row.sha === pin.sha && row.round === pin.round)
+            v[row.actor] = row.result;
     }
     return v;
+}
+/** Read the same pin agentctl validates, never the root checkout's HEAD. */
+function candidatePin(projectRoot, task) {
+    const conf = parseRigConf(readFileSync(join(projectRoot, ".agents", "rig.conf"), "utf8"));
+    const concurrent = !["", "0", "false", "no", "off"].includes((conf.CONCURRENT_LOOPS ?? "").trim().toLowerCase());
+    const path = concurrent && task !== "(single loop)"
+        ? join(projectRoot, ".agents", "state", "pins", task.replace(/[^A-Za-z0-9._-]/g, "-"))
+        : join(projectRoot, ".agents", "state", "pin-code_ready");
+    try {
+        const values = Object.fromEntries(readFileSync(path, "utf8").trim().split(/\s+/)
+            .filter(t => t.includes("=")).map(t => { const i = t.indexOf("="); return [t.slice(0, i), t.slice(i + 1)]; }));
+        return { sha: values.sha, branch: values.branch, round: values.round };
+    }
+    catch {
+        return {};
+    }
 }
 /** Tasks currently at `approved` = pending merge gates awaiting "merge go".
  * Lights are PER TASK from the event record (joinVerdicts) — green iff that
@@ -171,16 +171,14 @@ export function pendingGates(projectRoot) {
     const cards = [];
     const approved = Object.entries(tasks).filter(([, s]) => s === "approved");
     if (approved.length > 0) {
-        for (const [task] of approved)
-            cards.push({ task, branch: task, deploysTo: dep, ...lights(task), released: gateAlreadyReleased(projectRoot, task) });
+        for (const [task] of approved) {
+            const pin = candidatePin(projectRoot, task);
+            cards.push({ task, branch: pin.branch ?? task, sha: pin.sha, round: pin.round, deploysTo: dep, ...lights(task), released: gateAlreadyReleased(projectRoot, task) });
+        }
     }
     else if (scalar === "approved") {
-        let branch = "HEAD";
-        try {
-            branch = execFileSync("git", ["branch", "--show-current"], { cwd: projectRoot, encoding: "utf8" }).trim() || "HEAD";
-        }
-        catch { /* */ }
-        cards.push({ task: "(single loop)", branch, deploysTo: dep, ...lights("(single loop)"), released: gateAlreadyReleased(projectRoot, "(single loop)") });
+        const pin = candidatePin(projectRoot, "(single loop)");
+        cards.push({ task: "(single loop)", branch: pin.branch ?? "candidate unavailable", sha: pin.sha, round: pin.round, deploysTo: dep, ...lights("(single loop)"), released: gateAlreadyReleased(projectRoot, "(single loop)") });
     }
     // CE-161 (Phase C live loop, 2026-08-20): the design-lock hold is now a CARD
     // the ENGINE raises the moment the state lands — not a report the agent must
@@ -267,15 +265,16 @@ export function foldHumanLines(buf, data) {
 export function honorPaneRelease(projectRoot, lines) {
     if (!lines.some((l) => l.trim().toLowerCase() === "merge go"))
         return {};
-    const gate = pendingGates(projectRoot)[0];
-    if (!gate)
-        return {};
-    const r = releaseGate(projectRoot, gate.task, "merge go");
+    const gates = pendingGates(projectRoot).filter(g => g.kind !== "design");
+    if (gates.length !== 1)
+        return {}; // an unqualified phrase cannot choose between tasks
+    const gate = gates[0];
+    const r = releaseGate(projectRoot, gate.task, "merge go", gate.sha, gate.round);
     return r.ok ? { released: gate.task } : {};
 }
 /** The operator releases a gate by typing the phrase. Validates here AND lets
  * agentctl enforce it (defense in depth); returns the emit's output. */
-export function releaseGate(projectRoot, task, phrase) {
+export function releaseGate(projectRoot, task, phrase, expectedSha, expectedRound) {
     if (phrase.trim().toLowerCase() !== "merge go") {
         return { ok: false, out: 'the release phrase must be exactly "merge go".' };
     }
@@ -284,14 +283,13 @@ export function releaseGate(projectRoot, task, phrase) {
     // thread's source of truth BEFORE anything else happens — a "merge go"
     // must never vanish, whatever the release path does next.
     mirrorNote(projectRoot, "orchestrator", "operator", phrase.trim());
-    // 2d dedupe (absorb, don't duplicate): a gate that is already released
-    // and unconsumed means a repeat "merge go" — emit nothing, mail nobody,
-    // acknowledge honestly. First release wins.
-    if (gateAlreadyReleased(projectRoot, task)) {
-        mirrorNote(projectRoot, "operator", "engine", `Already released — the coder is merging${branchNote}; DEPLOYED will confirm.`);
-        return { ok: true, out: "already released — repeat absorbed (no duplicate merge order)", absorbed: true };
+    const pin = candidatePin(projectRoot, task || "(single loop)");
+    if (!pin.sha || !pin.round || (expectedSha !== undefined && expectedSha !== pin.sha)
+        || (expectedRound !== undefined && expectedRound !== pin.round)) {
+        return { ok: false, out: "The candidate changed or is unavailable. Refresh the gate and review it again." };
     }
-    const args = [agentctl(projectRoot), "emit", "gate_release", "--actor", "operator", "phrase=merge go"];
+    // Let agentctl validate the candidate even on a repeated release.
+    const args = [agentctl(projectRoot), "emit", "gate_release", "--actor", "operator", "phrase=merge go", `sha=${expectedSha ?? pin.sha}`, `round=${expectedRound ?? pin.round}`];
     if (task && task !== "(single loop)")
         args.push(`branch=${task}`);
     try {
@@ -307,8 +305,9 @@ export function releaseGate(projectRoot, task, phrase) {
         // the loop.
         // 2d mechanical ack (zero model turns — the speed-law mail doctrine):
         // an irreversible action gets an instant, honest, ENGINE-voiced receipt.
-        mirrorNote(projectRoot, "operator", "engine", `Merge released — the coder is merging${branchNote}; DEPLOYED will confirm.`);
-        return { ok: true, out };
+        const absorbed = out.includes("repeat absorbed");
+        mirrorNote(projectRoot, "operator", "engine", `${absorbed ? "Already released" : "Merge released"} — the coder is merging${branchNote}; DEPLOYED will confirm.`);
+        return { ok: true, out, ...(absorbed ? { absorbed: true } : {}) };
     }
     catch (e) {
         const err = e;

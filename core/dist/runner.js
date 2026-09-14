@@ -1,12 +1,15 @@
+import { readWork, saveWork, holdWork, clearWork, finishRecordedMail, recoveryMessage } from "./work-recovery.js";
 // PHASE-8 T1 — the seat runner: the headless replacement for a pane.
 //
 // Lifecycle per turn (D1): read unread mail → compose → invoke the harness
 // one-shot → capture the raw stream to a turn log → on SUCCESS ack the mail
 // (move to cur/) + persist the session id; on failure/timeout the mail
-// STAYS in new/ (at-least-once, D11) and the failure is logged honestly.
+// STAYS in new/ behind an explicit recovery hold; uncertain side effects
+// are never automatically replayed.
 // One turn at a time per seat by construction. The runner never parses
 // meaning from the agent's work — the state machine (events.log) and state
 // files stay the coordination truth; the runner is transport + lifecycle.
+import { acquireConsumerLease, assertConsumerLease } from "./consumer-lease.js";
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -173,7 +176,17 @@ const ACK_MAX_CHARS = 400;
 export function ackPhrase(body) {
     if (body.length > ACK_MAX_CHARS)
         return undefined;
-    const m = /\b(standing by|no further action|ack(nowledged| processed)|loop closed|no new (testing|action)|already (idle|closed|approved|deployed)|still (idle|standing)|nothing (to do|further)|no action (needed|required))\b/i.exec(body);
+    // Exact legacy courtesy messages only. Any extra instruction is delivered.
+    const legacy = {
+        "standing by, no further action.": "standing by",
+        "ack processed; state refreshed, still idle/standing by.": "ack processed",
+        "loop closed. no further action taken.": "loop closed",
+        "ack — noted, standing by.": "standing by",
+    };
+    const known = legacy[body.trim().toLowerCase()];
+    if (known)
+        return known;
+    const m = /^\s*(standing by|no further action|ack(nowledged| processed)?|loop closed|no new (testing|action)|already (idle|closed|approved|deployed)|still (idle|standing)|nothing (to do|further)|no action (needed|required))[.!]?\s*$/i.exec(body);
     return m ? m[1] : undefined;
 }
 export function isAck(body) {
@@ -203,7 +216,30 @@ export function bootWall(projectRoot, seat, agent) {
 }
 /** Process ONE batch of unread mail as one turn. Idle no-op when the box is empty. */
 export async function runTurn(opts) {
+    const lease = opts.consumerLease ?? await acquireConsumerLease(opts.projectRoot, opts.seat);
+    assertConsumerLease(lease, opts.projectRoot, opts.seat);
+    try {
+        const result = await runOwnedTurn(opts);
+        if (result.recoveryRequired)
+            holdWork(opts.projectRoot, opts.seat, result.error);
+        return result;
+    }
+    finally {
+        if (!opts.consumerLease)
+            await lease.release();
+    }
+}
+async function runOwnedTurn(opts) {
     const { projectRoot, seat } = opts;
+    const previous = readWork(projectRoot, seat);
+    if (previous) {
+        if (previous.mode === "headless" && previous.phase === "completed") {
+            finishRecordedMail(projectRoot, seat, previous);
+            clearWork(projectRoot, seat);
+        }
+        else
+            return { ok: false, recoveryRequired: true, error: recoveryMessage(seat) };
+    }
     const agent = normalizeAgent(opts.agent); // one key for the wall AND the adapter dispatch
     const inboxRoot = join(projectRoot, ".agents", "state", "inbox");
     const mail = readNew(inboxRoot, seat);
@@ -258,9 +294,12 @@ export async function runTurn(opts) {
     // Native-seat-access: mark the turn live for its duration so the TTY door
     // refuses to open mid-turn (two doors, never two writers on one session).
     writeFileSync(activeTurnFile(projectRoot, seat), JSON.stringify({ pid: process.pid, startedAt: startedAt.toISOString() }));
+    const work = { version: 1, mode: "headless", phase: "prepared",
+        id: randomUUID(), messages: mail.map(m => m.name), at: startedAt.toISOString(), sessionId, logPath };
+    saveWork(projectRoot, seat, work);
     let result;
     try {
-        result = await execTurn(inv, projectRoot, logPath, agent, opts.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS, { ...seatEnv(projectRoot, seat), ...(walled ? { CRATE_WALLED: "1" } : {}) });
+        result = await execTurn(inv, projectRoot, logPath, agent, opts.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS, { ...seatEnv(projectRoot, seat), ...(walled ? { CRATE_WALLED: "1" } : {}) }, pid => saveWork(projectRoot, seat, { ...work, pid }));
     }
     finally {
         try {
@@ -278,13 +317,15 @@ export async function runTurn(opts) {
     appendFileSync(logPath, JSON.stringify(meta) + "\n");
     appendFileSync(join(turnsDir(projectRoot, seat), "turns.log"), `${meta.startedAt} | ${meta.ok ? "ok" : "FAILED"} | mail=${meta.mail} | ${meta.durationMs}ms | in=${meta.usage?.inputTokens ?? "?"} out=${meta.usage?.outputTokens ?? "?"}${waitMs !== undefined ? ` | wait=${waitMs}ms` : ""}${resumed ? "" : " | oriented"}${result.error ? ` | ${result.error}` : ""}\n`);
     if (result.ok) {
-        complete(inboxRoot, seat, mail); // ack ONLY after a finished turn (at-least-once)
         const sid = result.sessionId ?? sessionId;
         if (sid)
             writeFileSync(sessionFile(projectRoot, seat), JSON.stringify({ agent, sessionId: sid }));
+        saveWork(projectRoot, seat, { ...work, phase: "completed", sessionId: sid });
+        complete(inboxRoot, seat, mail);
+        clearWork(projectRoot, seat);
         return { ok: true, sessionId: sid, usage: result.usage, logPath };
     }
-    return { ok: false, usage: result.usage, logPath, error: result.error };
+    return { ok: false, recoveryRequired: true, usage: result.usage, logPath, error: `${result.error}; ${recoveryMessage(seat)}` };
 }
 /** P3-1 parity, headless (W4 finding #2, 2026-07-13): first-choice tools
  * (qa-sweep, agent-browser, axe-check, rg, …) resolve by NAME inside every
@@ -319,11 +360,25 @@ export function seatEnv(projectRoot, seat) {
         return { ...process.env, DISABLE_AUTOUPDATER: "1", CRATE_SEAT: seat };
     }
 }
-export function execTurn(inv, cwd, logPath, agent, timeoutMs, env) {
+export function execTurn(inv, cwd, logPath, agent, timeoutMs, env, onSpawn) {
     return new Promise((resolve) => {
         const child = spawn(inv.argv[0], inv.argv.slice(1), {
             cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true, // own pgid → group-kill on timeout
         });
+        if (child.pid) {
+            try {
+                onSpawn?.(child.pid);
+            }
+            catch (e) {
+                try {
+                    process.kill(-child.pid, "SIGKILL");
+                }
+                catch { /* already gone */ }
+                child.on("error", () => { });
+                child.once("close", () => resolve({ ok: false, error: `could not persist child identity: ${String(e)}` }));
+                return;
+            }
+        }
         let sessionId;
         let usage;
         let buf = "";
@@ -391,6 +446,17 @@ export function execTurn(inv, cwd, logPath, agent, timeoutMs, env) {
 }
 /** The seat's standing loop: watch → turn → ack/retry → watch. */
 export async function runnerLoop(opts) {
+    const lease = opts.consumerLease ?? await acquireConsumerLease(opts.projectRoot, opts.seat);
+    assertConsumerLease(lease, opts.projectRoot, opts.seat);
+    try {
+        await ownedRunnerLoop({ ...opts, consumerLease: lease });
+    }
+    finally {
+        if (!opts.consumerLease)
+            await lease.release();
+    }
+}
+async function ownedRunnerLoop(opts) {
     const pollMs = opts.pollMs ?? 1000;
     const maxRetries = opts.maxRetries ?? 3;
     const inboxRoot = join(opts.projectRoot, ".agents", "state", "inbox");
@@ -476,7 +542,16 @@ export async function runnerLoop(opts) {
                 }
                 return;
             }
+            const attempted = new Set(readNew(inboxRoot, opts.seat).map(m => m.name));
             const r = await (opts.runTurnImpl ?? runTurn)(opts);
+            if (r.recoveryRequired) {
+                holdWork(opts.projectRoot, opts.seat, r.error);
+                appendFileSync(join(turnsDir(opts.projectRoot, opts.seat), "turns.log"), `${localIsoOffset()} | RECOVERY REQUIRED | ${r.error}\n`);
+                // Preserve the live pane and ownership for inspection, without replay.
+                while (!opts.signal?.aborted && getPpid() === ppid0)
+                    await idleWait();
+                return;
+            }
             // D12 auto-refresh: a completed turn just wrote fresh state, so dropping
             // the session here is lossless. Only when opted-in AND over the ceiling.
             if (opts.contextAutoRefresh && r.ok && !r.idle && r.usage) {
@@ -493,7 +568,7 @@ export async function runnerLoop(opts) {
                 continue;
             }
             if (!r.ok) {
-                for (const m of readNew(inboxRoot, opts.seat)) {
+                for (const m of readNew(inboxRoot, opts.seat).filter(m => attempted.has(m.name))) {
                     const n = (failures.get(m.name) ?? 0) + 1;
                     failures.set(m.name, n);
                     if (n >= maxRetries) {

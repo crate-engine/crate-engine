@@ -25,7 +25,7 @@ export declare function auditLog(inboxRoot: string, seat: string): string;
 /**
  * Durably enqueue one message. Unique filename (time + in-process seq +
  * pid) makes concurrent senders collision-free by construction; the write
- * is to a temp name in the SAME directory then renamed in (atomic on
+ * is to the sibling tmp/ directory then renamed into new/ (atomic on
  * POSIX), so a reader never sees a half-written message.
  */
 export declare function enqueue(inboxRoot: string, seat: string, from: string, body: string): string;

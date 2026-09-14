@@ -1,12 +1,7 @@
-// THE FLYWHEEL COMMIT (2026-07-25; FLAWS "rig working docs can stay
-// UNCOMMITTED forever"): `emit close` mechanically commits the three working
-// docs' accruals — docs only (never a sweep), mainline-only (concurrent-loop
-// safety), identity fallback, index.lock retry, best-effort push, loud
-// warnings but never a wedge. Attach-mode also commits the scaffolds it
-// creates. Drives the REAL bin/agentctl.py + core attach.
+import { verdictArgs } from "./git-fixture.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,7 +18,7 @@ function git(rig: string, ...args: string[]): string {
 
 function ctl(rig: string, ...args: string[]): { ok: boolean; out: string } {
   try {
-    return { ok: true, out: execFileSync("python3", [AGENTCTL, ...args], { cwd: rig, encoding: "utf8" }) };
+    return { ok: true, out: execFileSync("python3", [AGENTCTL, ...verdictArgs(rig, args)], { cwd: rig, encoding: "utf8" }) };
   } catch (e) {
     const err = e as { stdout?: string; stderr?: string };
     return { ok: false, out: (err.stdout ?? "") + (err.stderr ?? "") };
@@ -78,21 +73,29 @@ function driveToDeployed(rig: string): void {
   assert.ok(d.ok, d.out);
 }
 
-test("close commits ONLY the three docs — a dirty source file is untouched (never a sweep)", () => {
+test("CLOSE preserves dirty docs, staged source, index bytes and local/origin history", () => {
   const rig = makeRig("scope");
+  const bare = join(scratch, "scope-origin.git");
+  execFileSync("git", ["init", "-q", "--bare", bare]);
+  git(rig, "remote", "add", "origin", bare);
+  git(rig, "push", "-qu", "origin", "main");
   driveToDeployed(rig);
-  writeFileSync(join(rig, "app.txt"), "hello CHANGED — must not ride the docs commit\n");
+  writeFileSync(join(rig, "app.txt"), "staged source must remain staged\n");
+  git(rig, "add", "app.txt", "PROGRESS.md");
+  const before = git(rig, "rev-parse", "HEAD");
+  const index = readFileSync(join(rig, ".git/index"));
+  const progress = readFileSync(join(rig, "PROGRESS.md"));
   const r = ctl(rig, "emit", "close", "--actor", "orchestrator");
   assert.ok(r.ok, r.out);
-  assert.match(r.out, /DOCS COMMITTED/);
-  const show = git(rig, "show", "--stat", "--name-only", "HEAD");
-  assert.match(show, /AGENTS\.md/);
-  assert.match(show, /PROGRESS\.md/);
-  assert.doesNotMatch(show, /app\.txt/, "the sweep is forbidden — docs only");
-  assert.match(git(rig, "status", "--porcelain"), /app\.txt/, "the source edit stays uncommitted");
+  assert.match(r.out, /DOCS PENDING/);
+  assert.equal(git(rig, "rev-parse", "HEAD"), before);
+  assert.equal(execFileSync("git", ["rev-parse", "main"], { cwd: bare, encoding: "utf8" }).trim(), before);
+  assert.deepEqual(readFileSync(join(rig, ".git/index")), index);
+  assert.deepEqual(readFileSync(join(rig, "PROGRESS.md")), progress);
+  assert.equal(ctl(rig, "state").out.trim(), "idle");
 });
 
-test("clean docs → close makes NO commit (no empty commits)", () => {
+test("clean docs: CLOSE makes no commit and reports no pending accrual", () => {
   const rig = makeRig("clean");
   git(rig, "add", "AGENTS.md", "PROGRESS.md", "ISSUES.md");
   git(rig, "commit", "-qm", "docs committed already");
@@ -100,53 +103,20 @@ test("clean docs → close makes NO commit (no empty commits)", () => {
   const before = git(rig, "rev-parse", "HEAD");
   const r = ctl(rig, "emit", "close", "--actor", "orchestrator");
   assert.ok(r.ok, r.out);
-  assert.doesNotMatch(r.out, /DOCS COMMITTED/);
+  assert.doesNotMatch(r.out, /DOCS PENDING|DOCS COMMITTED/);
   assert.equal(git(rig, "rev-parse", "HEAD"), before);
 });
 
-test("no git identity → the attach fallback identity commits anyway", () => {
-  const rig = makeRig("identity");
-  git(rig, "config", "--unset", "user.email");
-  git(rig, "config", "--unset", "user.name");
-  driveToDeployed(rig);
-  const r = ctl(rig, "emit", "close", "--actor", "orchestrator");
-  // (if the machine has a global identity this passes on the plain path; the
-  // fallback path is what makes it pass on a FRESH account — both are green)
-  assert.match(r.out, /DOCS COMMITTED/);
-});
-
-test("close on a NON-mainline branch: loud warning, NO commit (concurrent-loop safety)", () => {
-  const rig = makeRig("branch");
-  driveToDeployed(rig);
-  git(rig, "checkout", "-qb", "feature/other");
-  const r = ctl(rig, "emit", "close", "--actor", "orchestrator");
-  assert.ok(r.ok, "the close itself must never wedge");
-  assert.match(r.out, /DOCS: accrual NOT committed/);
-  assert.doesNotMatch(git(rig, "log", "--oneline", "-1"), /accrual/);
-});
-
-test("a held index.lock: close still lands, docs warning is loud, nothing is silently lost", () => {
+test("held index.lock does not block CLOSE or alter the lock", () => {
   const rig = makeRig("lock");
   driveToDeployed(rig);
-  writeFileSync(join(rig, ".git", "index.lock"), "held by a racing process");
+  writeFileSync(join(rig, ".git/index.lock"), "another process owns this");
+  const before = git(rig, "rev-parse", "HEAD");
   const r = ctl(rig, "emit", "close", "--actor", "orchestrator");
-  assert.ok(r.ok, "a doc-commit failure must never block the close");
-  assert.match(r.out, /DOCS: WARNING — could not commit/);
-  rmSync(join(rig, ".git", "index.lock"));
-  assert.match(git(rig, "status", "--porcelain"), /AGENTS\.md/, "docs stay dirty for the next close/hand-commit");
-});
-
-test("with an origin, the docs commit is PUSHED (the mirror never goes stale)", () => {
-  const rig = makeRig("push");
-  const bare = join(scratch, "push-origin.git");
-  execFileSync("git", ["init", "-q", "--bare", bare]);
-  git(rig, "remote", "add", "origin", bare);
-  git(rig, "push", "-qu", "origin", "main");
-  driveToDeployed(rig);
-  const r = ctl(rig, "emit", "close", "--actor", "orchestrator");
-  assert.match(r.out, /DOCS COMMITTED: .*pushed/);
-  const originTip = execFileSync("git", ["rev-parse", "main"], { cwd: bare, encoding: "utf8" }).trim();
-  assert.equal(originTip, git(rig, "rev-parse", "HEAD"));
+  assert.ok(r.ok, r.out);
+  assert.equal(git(rig, "rev-parse", "HEAD"), before);
+  assert.equal(readFileSync(join(rig, ".git/index.lock"), "utf8"), "another process owns this");
+  rmSync(join(rig, ".git/index.lock"));
 });
 
 test("attach-mode commits the doc scaffolds it CREATES (the promise the code now keeps)", () => {

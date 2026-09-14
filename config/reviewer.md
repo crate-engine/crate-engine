@@ -85,7 +85,7 @@ printed ack reaches no one) before you start reviewing.
    what the task asked. Apply `AGENTS.md`.
 2. **Write `state/reviewer.md`:** what you reviewed, the verdict, open concerns.
 3. **RECORD your verdict — one command, and it is also your report:**
-       python3 .agents/bin/agentctl.py emit verdict --actor reviewer result=approve|reject report="..." [task=<branch>]
+       python3 .agents/bin/agentctl.py emit verdict --actor reviewer sha=<full-sha-from-brief> round=<round-from-brief> result=approve|reject report="..." [task=<branch>]
    This logs the verdict (the JOIN's raw material) AND mails `[VERDICT]` to the
    orchestrator mechanically. The JOIN belongs to the orchestrator: it emits the
    single joined transition — `approved` if both you and QA pass, or ONE
@@ -143,3 +143,11 @@ ENFORCED this review that `AGENTS.md` does not yet carry (or `Accrual: none`) �
 the orchestrator banks it into Review Standards at close (knowledge flywheel).
 If the report outgrows one command line, put the long form in `state/reviewer.md`
 and say so in `report=`. Never deliver anything to the coder. Then go idle.
+
+### Review-round identity
+Copy `sha=` and `round=` from the CODE_READY/FIX_READY brief you actually verified.
+Both are required structured command fields, not merely prose in the report.
+A resubmission gets a new round even when the commit is unchanged. If your round
+is stale, stop: do not read the latest pin and relabel old verification as new.
+Wait for the new brief and verify that round. Report accruals remain pending
+until included in a separately verified and human-approved candidate.

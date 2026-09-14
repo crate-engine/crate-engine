@@ -1,11 +1,6 @@
 import { type BlendCli, type StaleTracker } from "./blend.js";
 import { type Seat } from "./manifest.js";
 import { type StartTtyOpts, type StartTtyResult } from "./ptyseat.js";
-/** A session file that grew within this window = the agent is mid-response.
- * The jsonl grows continuously while the model works and goes quiet at rest
- * (live-probed on claude 2.1.227; a knob, not a law — pin against S2's first
- * flagged-seat run). */
-export declare const RESPONDING_WINDOW_MS = 3000;
 /** What teamproc (and the cockpit behind it) needs from a blended seat —
  * deliberately narrow so tests drive TeamProcess with a stub. */
 export interface BlendedSeatHandle {
@@ -13,8 +8,7 @@ export interface BlendedSeatHandle {
     /** The standing delivery loop is up (the pane itself may be between
      * respawns — the next delivery revives it; the SEAT is still alive). */
     alive(): boolean;
-    /** The live session file grew within the responding window — the agent is
-     * mid-response; a refresh now would tear a turn in half. */
+    /** Provider evidence says unfinished or unknown; automatic reset must wait. */
     responding(): boolean;
     stop(): void;
 }
@@ -67,6 +61,7 @@ export declare class BlendedSeat implements BlendedSeatHandle {
     stop(): void;
     private stamp;
     private run;
+    private runOwned;
     /** The ONE respawn seam (boot aside): serves crash recovery, the fresh-
      * per-task reset, and the D12 refresh path (which drops sessionFile before
      * relaunching). Fresh-vs-resume is decided by the stale tracker: a seat at
@@ -100,19 +95,12 @@ export declare class BlendedSeat implements BlendedSeatHandle {
 }
 interface BlendCrew {
     stale: StaleTracker;
-    watching: boolean;
 }
-/**
- * The project's shared fresh-per-task machinery (locked Q1): ONE events.log
- * watcher marks every resettable blended seat stale at each task end; the
- * seats' own loops respawn lazily at the next delivery. Which seats reset is
- * read FRESH from rig.conf per event (flags and PERSIST overrides are
- * hand-edited files — no registration bookkeeping to go stale). The watcher
- * is never torn down: its 1s poll is unref'd and epsilon-cheap, and a
- * project's blend can come and go across boots within one server life.
- */
+/** Durable per-seat reset generations. The event ledger is checked at delivery
+ * time, so CLOSE followed immediately by an engine restart cannot lose intent.
+ * Persistence overrides are read fresh; the orchestrator keeps its context. */
 export declare function blendCrewFor(projectRoot: string): BlendCrew;
-/** Test seam: a fresh crew map (watchers from dropped crews stay unref'd). */
+/** Test seam: drop the in-memory crew cache; durable generations remain. */
 export declare function resetBlendCrews(): void;
 /**
  * The real starter teamproc uses for a flagged, eligible seat: staffing through

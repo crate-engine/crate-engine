@@ -1,7 +1,10 @@
+import { type ConsumerLease } from "./consumer-lease.js";
 import { type HeadlessInvocation, type TurnUsage } from "./turn.js";
 export interface RunTurnOpts {
     projectRoot: string;
     seat: string;
+    /** Internal lifetime ownership, shared by the loop and its turn. */
+    consumerLease?: ConsumerLease;
     /** Staffed agent (pi/claude/codex — must have a T0-verified wire). */
     agent: string;
     model?: string;
@@ -12,6 +15,7 @@ export interface RunTurnOpts {
 export interface TurnResult {
     ok: boolean;
     idle?: boolean;
+    recoveryRequired?: boolean;
     sessionId?: string;
     usage?: TurnUsage;
     logPath?: string;
@@ -70,7 +74,7 @@ export declare function runTurn(opts: RunTurnOpts): Promise<TurnResult>;
  * and correct across engine updates). A rig without .agents/bin (test
  * fixtures) falls back to the plain env — the tools shim needs a brain. */
 export declare function seatEnv(projectRoot: string, seat: string): NodeJS.ProcessEnv;
-export declare function execTurn(inv: HeadlessInvocation, cwd: string, logPath: string, agent: string, timeoutMs: number, env: NodeJS.ProcessEnv): Promise<{
+export declare function execTurn(inv: HeadlessInvocation, cwd: string, logPath: string, agent: string, timeoutMs: number, env: NodeJS.ProcessEnv, onSpawn?: (pid: number) => void): Promise<{
     ok: boolean;
     sessionId?: string;
     usage?: TurnUsage;

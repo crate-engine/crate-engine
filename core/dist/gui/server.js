@@ -1006,7 +1006,11 @@ export async function startGuiServer(opts = {}) {
                     if (!proj)
                         return json(res, 400, { error: "no project" });
                     const body = await readBody(req);
-                    const r = releaseGate(proj, String(body.task ?? ""), String(body.phrase ?? ""));
+                    if (typeof body.sha !== "string" || !/^[0-9a-f]{40,64}$/.test(body.sha))
+                        return json(res, 400, { ok: false, out: "Refresh the gate: a full candidate SHA is required." });
+                    if (typeof body.round !== "string" || !/^[0-9a-f]{32}$/.test(body.round))
+                        return json(res, 400, { ok: false, out: "Refresh the gate: the review round is required." });
+                    const r = releaseGate(proj, String(body.task ?? ""), String(body.phrase ?? ""), body.sha, body.round);
                     return json(res, r.ok ? 200 : 400, r);
                 }
                 case "POST /api/context/checkpoint": {

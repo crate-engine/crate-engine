@@ -4,10 +4,6 @@
  * are escaped so the line-oriented parser can never truncate a message.
  * agentctl's `[iso] (sender) text` format, verbatim. */
 export declare function mirrorNote(projectRoot: string, role: string, sender: string, text: string): void;
-/** TS port of agentctl's operator_released(): True iff THIS task's gate is
- * armed (approved) and an operator GATE_RELEASE arrived after the arming,
- * unconsumed by a later deployed/reopen. Used by releaseGate to ABSORB a
- * repeat "merge go" instead of queueing a duplicate [MERGE] order. */
 export declare function gateAlreadyReleased(projectRoot: string, task: string): boolean;
 export interface GateCard {
     /** "merge" (default, awaiting "merge go") or "design" (CE-161: the
@@ -15,6 +11,8 @@ export interface GateCard {
     kind?: "merge" | "design";
     task: string;
     branch: string;
+    sha?: string;
+    round?: string;
     deploysTo: string;
     reviewOk: boolean;
     qaOk: boolean;
@@ -64,7 +62,7 @@ export declare function honorPaneRelease(projectRoot: string, lines: string[]): 
 };
 /** The operator releases a gate by typing the phrase. Validates here AND lets
  * agentctl enforce it (defense in depth); returns the emit's output. */
-export declare function releaseGate(projectRoot: string, task: string, phrase: string): {
+export declare function releaseGate(projectRoot: string, task: string, phrase: string, expectedSha?: string, expectedRound?: string): {
     ok: boolean;
     out: string;
     absorbed?: boolean;

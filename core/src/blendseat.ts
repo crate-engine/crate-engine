@@ -1,3 +1,4 @@
+import { readWork, holdWork } from "./work-recovery.js";
 // THE BLENDED PANE — S2 supervisor (PDR dev/pdr/blended-pane.md).
 //
 // S1 (blend.ts) built the delivery physics: verified injection into a live
@@ -12,12 +13,15 @@
 // `crate runner` child — that child could not reach the pane. The supervisor
 // runs inside the engine-server process; teamproc branches flagged seats
 // here instead of spawning a runner child.
-import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { acquireConsumerLease, type ConsumerLease } from "./consumer-lease.js";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { localIsoOffset } from "./mailbox.js";
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   blendedLoop,
+  sessionWorkState,
+  reconcileBlendedRestart,
   blendEligible,
   claudeTrustHandshake,
   codexBootModals,
@@ -26,7 +30,6 @@ import {
   isBlended,
   seatsToReset,
   verifyDelivered,
-  watchTaskEnds,
   type BlendCli,
   type BlendSession,
   type StaleTracker,
@@ -37,12 +40,6 @@ import { evictSeatTty, startSeatTty, type StartTtyOpts, type StartTtyResult, typ
 import { sessionFile, turnsDir } from "./runner.js";
 import { parseRigConf, RIG_PREFIX } from "./staffing.js";
 
-/** A session file that grew within this window = the agent is mid-response.
- * The jsonl grows continuously while the model works and goes quiet at rest
- * (live-probed on claude 2.1.227; a knob, not a law — pin against S2's first
- * flagged-seat run). */
-export const RESPONDING_WINDOW_MS = 3000;
-
 const realSleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
 
 /** What teamproc (and the cockpit behind it) needs from a blended seat —
@@ -52,8 +49,7 @@ export interface BlendedSeatHandle {
   /** The standing delivery loop is up (the pane itself may be between
    * respawns — the next delivery revives it; the SEAT is still alive). */
   alive(): boolean;
-  /** The live session file grew within the responding window — the agent is
-   * mid-response; a refresh now would tear a turn in half. */
+  /** Provider evidence says unfinished or unknown; automatic reset must wait. */
   responding(): boolean;
   stop(): void;
 }
@@ -122,13 +118,16 @@ export class BlendedSeat implements BlendedSeatHandle {
     // PINNED-ONLY on purpose (all-seats coherence): pre-pin, "the newest
     // candidate" in the shared session dir may be ANOTHER seat's live file —
     // reading it would stall this seat's reset behind a neighbor's response.
-    // An unpinned session has received no delivered work yet, so there is
-    // nothing a reset could tear: not-responding is the honest answer.
-    if (!this.session || !existsSync(this.session.path)) return false;
+    // A durable work record can identify the interrupted session before
+    // the resumed pane is pinned again; preserve it until completion.
+    const work = readWork(this.o.projectRoot, this.o.seat);
+    if (!this.session && work) this.pinByMarker(work.id);
+    const path = this.session?.path ?? work?.sessionPath;
+    if (!path) return work !== undefined;
     try {
-      return Date.now() - statSync(this.session.path).mtimeMs < RESPONDING_WINDOW_MS;
+      return sessionWorkState(readFileSync(path, "utf8"), this.o.cli) !== "idle";
     } catch {
-      return false;
+      return true;
     }
   }
 
@@ -156,6 +155,16 @@ export class BlendedSeat implements BlendedSeatHandle {
   }
 
   private async run(): Promise<void> {
+    const lease = await acquireConsumerLease(this.o.projectRoot, this.o.seat, 9000);
+    try { if (!this.ac.signal.aborted) await this.runOwned(lease); }
+    finally {
+      // Keep ownership until the old PTY has really exited, including refresh.
+      if (this.tty && !this.tty.exited) await this.killAndAwaitExit(this.tty);
+      await lease.release();
+    }
+  }
+
+  private async runOwned(lease: ConsumerLease): Promise<void> {
     // Arm the external-drop lever from disk truth: a sessionFile that
     // survived an engine restart was persisted by a verified delivery — if
     // agentctl rm's it later, the drop must still read as fresh-eyes.
@@ -168,9 +177,11 @@ export class BlendedSeat implements BlendedSeatHandle {
       await this.spawnPty("blended session boot");
     } catch (e) {
       if (this.ac.signal.aborted) return;
+      holdWork(this.o.projectRoot, this.o.seat);
       this.stamp(`blended boot could not open the pane: ${e instanceof Error ? e.message : String(e)} — retrying at the next delivery`);
     }
     await blendedLoop({
+      consumerLease: lease,
       projectRoot: this.o.projectRoot,
       seat: this.o.seat,
       cli: this.o.cli,
@@ -180,7 +191,8 @@ export class BlendedSeat implements BlendedSeatHandle {
       getTty: () => (this.tty && !this.tty.exited ? this.tty : undefined),
       respawn: (reason) => this.respawn(reason),
       readSession: () => this.readSession(),
-      currentSessionId: () => this.locateSession()?.sessionId,
+      currentSessionId: () => this.session?.sessionId,
+      currentSessionPath: () => this.session?.path,
       stale: this.o.stale,
       responding: () => this.responding(),
       persistRef: this.persistRef,
@@ -238,6 +250,16 @@ export class BlendedSeat implements BlendedSeatHandle {
   }
 
   private async spawnPty(reason: string): Promise<TtySeat> {
+    const pidFile = join(turnsDir(this.o.projectRoot, this.o.seat), "pty.json");
+    if (existsSync(pidFile)) {
+      const old = JSON.parse(readFileSync(pidFile, "utf8")) as { pid?: number };
+      if (old.pid) {
+        let alive = true;
+        try { process.kill(old.pid, 0); } catch (e) { alive = (e as NodeJS.ErrnoException).code !== "ESRCH"; }
+        if (alive) throw new Error(`Previous ${this.o.seat} process ${old.pid} is still alive; inspect it before restarting this seat`);
+      }
+    }
+    reconcileBlendedRestart(this.o.projectRoot, this.o.seat, this.o.cli, this.o.home);
     const startTty = this.o.startTty ?? startSeatTty;
     const sleep = this.o.sleep ?? realSleep;
     let busyNoted = false;
@@ -378,47 +400,28 @@ export class BlendedSeat implements BlendedSeatHandle {
 
 interface BlendCrew {
   stale: StaleTracker;
-  watching: boolean;
 }
 
 const crews = new Map<string, BlendCrew>();
 
-/**
- * The project's shared fresh-per-task machinery (locked Q1): ONE events.log
- * watcher marks every resettable blended seat stale at each task end; the
- * seats' own loops respawn lazily at the next delivery. Which seats reset is
- * read FRESH from rig.conf per event (flags and PERSIST overrides are
- * hand-edited files — no registration bookkeeping to go stale). The watcher
- * is never torn down: its 1s poll is unref'd and epsilon-cheap, and a
- * project's blend can come and go across boots within one server life.
- */
+/** Durable per-seat reset generations. The event ledger is checked at delivery
+ * time, so CLOSE followed immediately by an engine restart cannot lose intent.
+ * Persistence overrides are read fresh; the orchestrator keeps its context. */
 export function blendCrewFor(projectRoot: string): BlendCrew {
   let crew = crews.get(projectRoot);
   if (!crew) {
-    crew = { stale: createStaleTracker(), watching: false };
+    // Read the durable task boundary at delivery time, including after a
+    // process restart. A watcher starting at EOF cannot provide that guarantee.
+    crew = { stale: createStaleTracker(projectRoot, seat => {
+      const conf = parseRigConf(readFileSync(join(projectRoot, ".agents/rig.conf"), "utf8"));
+      return seatsToReset([...SEATS], conf).includes(seat as Seat);
+    }) };
     crews.set(projectRoot, crew);
-  }
-  if (!crew.watching) {
-    crew.watching = true;
-    const c = crew;
-    watchTaskEnds(projectRoot, () => {
-      let conf: Record<string, string> = {};
-      try {
-        conf = parseRigConf(readFileSync(join(projectRoot, ".agents", "rig.conf"), "utf8"));
-      } catch {
-        return; // no conf = no blended seats to reset
-      }
-      // S4: same conf-only agent resolution the blend starter uses — the
-      // stale mark is consumed only by blended delivery paths, so an
-      // over-mark on an actually-headless seat is inert.
-      const blendedSeats = SEATS.filter((s) => isBlended(conf, s, conf[`${RIG_PREFIX[s]}_AGENT`] || "pi"));
-      for (const s of seatsToReset(blendedSeats, conf)) c.stale.markStale(s);
-    });
   }
   return crew;
 }
 
-/** Test seam: a fresh crew map (watchers from dropped crews stay unref'd). */
+/** Test seam: drop the in-memory crew cache; durable generations remain. */
 export function resetBlendCrews(): void {
   crews.clear();
 }

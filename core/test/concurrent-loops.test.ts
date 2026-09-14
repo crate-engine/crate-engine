@@ -1,3 +1,4 @@
+import { verdictArgs } from "./git-fixture.js";
 // PHASE-7 T6 gate run A — per-task state mechanics, driven through the REAL
 // agentctl in a scratch git rig with CONCURRENT_LOOPS=1. The design's claims,
 // pinned: task=branch keys, per-task legality (cross-task advance is
@@ -40,7 +41,7 @@ function mkRig(conf: string): string {
 function ctl(rig: string, ...args: string[]): { out: string; code: number } {
   try {
     return {
-      out: execFileSync("python3", [join(ROOT, "bin", "agentctl.py"), ...args], { cwd: rig, encoding: "utf8" }),
+      out: execFileSync("python3", [join(ROOT, "bin", "agentctl.py"), ...verdictArgs(rig, args)], { cwd: rig, encoding: "utf8" }),
       code: 0,
     };
   } catch (e) {

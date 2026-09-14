@@ -6,7 +6,7 @@
 // timeout. Also pinned here: the T2 binder law lines.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -143,4 +143,32 @@ test("binder law pinned: coder ships tests when a runner exists; template marks 
   assert.match(coder, /never bolt a framework onto/i);
   const tpl = readFileSync(join(ROOT, "templates", "AGENTS.md"), "utf8");
   assert.match(tpl, /`- Test:` line is LOAD-BEARING/);
+});
+
+test("required smoke refuses a non-web project with no runnable smoke; explicit exemption remains possible", () => {
+  const rig = mkGateRig({ "tool.py": "print('non-web fixture')\n" });
+  const required = gate(rig, { SMOKE_ENFORCE: "1" });
+  assert.equal(required.code, 1, required.out);
+  assert.match(required.out, /SMOKE\(SKIPPED\)/);
+  assert.match(required.out, /no-web-smoke/);
+  const exempt = gate(rig, { SMOKE_ENFORCE: "0" });
+  assert.equal(exempt.code, 0, exempt.out);
+});
+
+test("dependency staging removes a partial hardlink tree before copying a real directory", () => {
+  const rig = mkGateRig({
+    "package.json": JSON.stringify({ name: "fixture", scripts: { test: "node check.cjs" } }),
+    "check.cjs": "const fs=require('fs'); if(require('probe')!==42 || fs.existsSync('node_modules/partial') || fs.lstatSync('node_modules').isSymbolicLink()) process.exit(1);\n",
+  });
+  mkdirSync(join(rig, "node_modules/probe"), { recursive: true });
+  writeFileSync(join(rig, "node_modules/probe/index.js"), "module.exports=42;\n");
+  const shim = join(rig, "shim"); mkdirSync(shim);
+  writeFileSync(join(shim, "cp"), '#!/bin/sh\nif [ "$1" = "-al" ]; then mkdir -p "$3"; touch "$3/partial"; exit 1; fi\n[ "${FAIL_COPY:-0}" = 1 ] && exit 1\nexec /bin/cp "$@"\n');
+  chmodSync(join(shim, "cp"), 0o755);
+  const env = { PATH: shim + ":" + process.env.PATH };
+  const copied = gate(rig, env); assert.equal(copied.code, 0, copied.out); assert.match(copied.out, /TEST: {6}PASS/);
+  renameSync(join(rig, "node_modules"), join(rig, "dependency-cache"));
+  symlinkSync(join(rig, "dependency-cache"), join(rig, "node_modules"));
+  const symlinkSource = gate(rig, env); assert.equal(symlinkSource.code, 0, symlinkSource.out);
+  const failed = gate(rig, { ...env, FAIL_COPY: "1" }); assert.notEqual(failed.code, 0); assert.match(failed.out, /dependency staging failed/);
 });

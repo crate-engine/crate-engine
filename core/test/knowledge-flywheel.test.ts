@@ -1,3 +1,5 @@
+import { verdictArgs } from "./git-fixture.js";
+import { initProtocolGit } from "./git-fixture.js";
 // The knowledge flywheel (Phase-7 T1), pinned against the REAL shipped files
 // (run-#14 fixture law): agentctl's warn-never-block rung on an unfilled
 // AGENTS.md, the marker parity between agentctl and the shipped template, and
@@ -21,13 +23,14 @@ function mkRig(name: string): string {
   copyFileSync(join(ROOT, "config", "state-machine.yaml"), join(rig, ".agents", "config", "state-machine.yaml"));
   copyFileSync(join(ROOT, "config", "handoffs.yaml"), join(rig, ".agents", "config", "handoffs.yaml"));
   writeFileSync(join(rig, ".agents", "state", "events.log"), "");
+  initProtocolGit(rig);
   return rig;
 }
 
 function ctl(rig: string, ...args: string[]): { out: string; code: number } {
   try {
     return {
-      out: execFileSync("python3", [join(ROOT, "bin", "agentctl.py"), ...args], { cwd: rig, encoding: "utf8" }),
+      out: execFileSync("python3", [join(ROOT, "bin", "agentctl.py"), ...verdictArgs(rig, args)], { cwd: rig, encoding: "utf8" }),
       code: 0,
     };
   } catch (e) {

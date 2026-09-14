@@ -1,3 +1,4 @@
+import { initProtocolGit } from "./git-fixture.js";
 // FRESH EYES at verify dispatch (2026-08-11; FLAWS "the reviewer graded its
 // own homework"; PDR dev/pdr/blended-pane.md "auto-refresh-verifiers at
 // verify dispatch"): verifier seats keep ONE persistent session across loops,
@@ -58,6 +59,7 @@ function mails(rig: string, role: string): number {
 }
 
 function driveToImplementing(rig: string, ...startKv: string[]): void {
+  if (!existsSync(join(rig, ".git"))) initProtocolGit(rig, ["feature/x"]);
   assert.ok(ctl(rig, "emit", "boot", "--actor", "orchestrator").ok);
   assert.ok(ctl(rig, "emit", "start_impl", "--actor", "orchestrator", ...startKv).ok);
 }

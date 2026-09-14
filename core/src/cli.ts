@@ -743,6 +743,22 @@ switch (command) {
     fail("`crate up` was retired in 2.1 (cmux is gone). Boot the team headless with `crate open` (opens the app window), or `crate team` for a headless-only run.");
     break;
   }
+  case "recover": {
+    if (process.env.CRATE_SEAT) fail("Recovery is an operator action; run it outside an agent seat");
+    const seat = rest[0];
+    if (!seat || !(SEATS as readonly string[]).includes(seat)) fail("usage: crate recover <seat> --action resume|retry|complete --reason <inspection note> --project <rig>");
+    const value = (flag: string): string => { const i = rest.indexOf(flag); return i < 0 ? "" : rest[i + 1] ?? ""; };
+    const projectRoot = resolve(value("--project") || ".");
+    const { resolveWork } = await import("./work-recovery.js");
+    try {
+      await resolveWork(projectRoot, seat!, value("--action"), value("--reason"));
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error));
+    }
+    console.log("Recovery decision recorded. Restart the team; check the preserved session before continuing work.");
+    break;
+  }
+
   case "runner": {
     // crate runner <seat> [--project <path>] [--once] — PHASE-8 T1: host one
     // seat headless (turn-per-invocation; the pane's replacement). --once
@@ -940,5 +956,5 @@ switch (command) {
     break;
   }
   default:
-    fail(`usage: crate <open|stop|setup|attach|crew|gui|doctor|update|up|print|relaunch|version> ...`);
+    fail(`usage: crate <open|stop|setup|attach|crew|gui|doctor|update|up|print|relaunch|recover|version> ...`);
 }

@@ -64,6 +64,7 @@ function makeFakePty(seat: string, projectRoot: string, file: string): FakePty {
       if (s.startsWith(PASTE_START)) pending = s.slice(PASTE_START.length, -PASTE_END.length);
       else if (s === "\r" && pending !== undefined) {
         appendFileSync(file, JSON.stringify({ type: "user", message: { role: "user", content: pending } }) + "\n");
+        appendFileSync(file, JSON.stringify({ type: "assistant", message: { role: "assistant", stop_reason: "end_turn", content: [] } }) + "\n");
         pending = undefined;
       }
     },

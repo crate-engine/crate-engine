@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -73,4 +73,15 @@ test("dead-letter moves a poison message to cur/ with a .failed marker (honest, 
   assert.equal(cur.length, 1);
   assert.match(cur[0]!, /\.failed$/);
   assert.match(readFileSync(join(box, "designer", "cur", cur[0]!), "utf8"), /turn failed 3x: timeout/);
+});
+
+test("reader ignores unpublished and legacy temporary mail", t => {
+  const root = mkdtempSync(join(tmpdir(), "crate-mail-publish-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const inbox = join(root, "inbox");
+  enqueue(inbox, "coder", "reviewer", "complete instruction");
+  writeFileSync(join(inbox, "coder", "new", ".tmp-123-000001-42.msg"), "partial");
+  writeFileSync(join(inbox, "coder", "tmp", "123-000002-42.msg"), "partial");
+  const messages = readNew(inbox, "coder");
+  assert.equal(messages.length, 1); assert.equal(messages[0]!.body, "complete instruction");
 });

@@ -73,7 +73,7 @@ DEV_MEMMAX="6G"                               # systemd MemoryMax cap (cross-tea
 # --- Build/verify gate (bin/nm-gate + precheck.sh) --------------------------
 # The deterministic pre-handoff WALL: delta + typecheck + build (+ test) in an
 # isolated throwaway worktree; on a full green it records a SHA-tied gate_pass.
-NMGATE_ENFORCE="0"        # 1 = agentctl refuses code_ready for a HEAD with no matching gate_pass
+NMGATE_ENFORCE="1"        # 1 = agentctl refuses code_ready for a HEAD with no matching gate_pass
 NMGATE_BUILD_FATAL="1"    # 0 = build ADVISORY (app needs prod-like env the gate lacks); delta+typecheck stay hard
 NMGATE_LINT_DELTA="0"     # 1 = per-file no-net-new lint gate: fail ONLY on errors a CHANGED file adds vs
                           #     origin/main (legacy baseline debt ignored). 0 = lint advisory (whole-repo, never gates).
@@ -86,7 +86,7 @@ NMGATE_LINT_DELTA="0"     # 1 = per-file no-net-new lint gate: fail ONLY on erro
 # overrides) and drives the AGENTS.md "## Critical Paths" routes GET-only:
 # 404/5xx/redirect-loop/console-errors fail; 401/403 = auth-gated skip (QA owns);
 # mobile load fatal-only (overflow stays advisory). Full gate runs only (--quick skips).
-SMOKE_ENFORCE="0"         # 1 = a smoke FAIL fails the gate. Rung CRASHES stay advisory
+SMOKE_ENFORCE="1"         # 1 = required smoke must complete with PASS
                           #     even when enforced — rung-flake never false-FAILs a coder.
 SMOKE_READY_SECS="60"     # server ready-deadline before an honest advisory skip
                           #     (AGENTS.md "## Smoke Rung" 'Ready deadline:' overrides)
@@ -111,7 +111,7 @@ SMOKE_READY_SECS="60"     # server ready-deadline before an honest advisory skip
 # The orchestrator-only ownership of approved/changes_needed is ALWAYS enforced;
 # this flag additionally refuses those transitions until BOTH verdicts are on
 # record since the last code_ready (advisory warning when 0).
-JOIN_ENFORCE="0"
+JOIN_ENFORCE="1"
 
 # --- Preview transport (how the human reaches dev previews on phone/desktop) -
 # See docs/design/preview-tunnel.md. Default = LAN DEV_URL (works same-WiFi only).
@@ -149,3 +149,11 @@ CONCURRENT_LOOPS="0"
 # (doubling backoff, hard ceiling 3 per episode, honest "stopping" note). OFF by
 # default: the Relaunch button is the only revive path unless you opt in.
 AUTO_REVIVE="0"
+
+# Existing rigs keep their settings during attach/update. At an idle boundary:
+#   python3 .agents/bin/agentctl.py gates status
+#   python3 .agents/bin/agentctl.py gates enable
+# For a non-web project only, the operator may explicitly exempt HTTP smoke:
+#   python3 .agents/bin/agentctl.py gates enable --no-web-smoke --reason "CLI project with no HTTP server"
+# This keeps build/test and review gates required and records the exemption.
+# SMOKE_EXEMPT_REASON=""   # written by the explicit migration command

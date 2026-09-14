@@ -239,6 +239,7 @@ function makeFakePty(seat: string, projectRoot: string, file: string): FakePty {
       if (s.startsWith(PASTE_START)) pending = s.slice(PASTE_START.length, -PASTE_END.length);
       else if (s === "\r" && pending !== undefined) {
         appendFileSync(file, JSON.stringify({ type: "user", message: { role: "user", content: pending } }) + "\n");
+        appendFileSync(file, JSON.stringify({ type: "assistant", message: { role: "assistant", stop_reason: "end_turn", content: [] } }) + "\n");
         pending = undefined;
       }
     },
@@ -429,15 +430,59 @@ test("teamview: a blended claude seat reports gauge/responding from its live ses
   const reviewer = view.seats.find((s) => s.seat === "reviewer")!;
   assert.equal(reviewer.blended, undefined, "an opted-out (BLEND_REVIEWER=0) seat carries no blended fields");
 
-  // quiet session → responding false (the pane shows idle-since, honestly)
+  // Old timestamps do not end a tool/model turn; provider completion does.
   const old = Date.now() / 1000 - 60;
   utimesSync(sess, old, old);
   const view2 = readTeamView(proj, 5, home);
-  assert.equal(view2.seats.find((s) => s.seat === "coder")!.responding, false);
+  assert.equal(view2.seats.find((s) => s.seat === "coder")!.responding, true);
+  appendFileSync(sess, JSON.stringify({ type: "assistant", message: { stop_reason: "end_turn" } }) + "\n");
+  assert.equal(readTeamView(proj, 5, home).seats.find(s => s.seat === "coder")!.responding, false);
 });
 
 test("teamview: an INELIGIBLE agent renders NO blended pane (it fell back to headless at boot)", () => {
   const proj = rig("tv-inelig", 'DESIGNER_AGENT="aider"\n' + optOutExcept("DESIGNER"));
   const view = readTeamView(proj, 5, join(scratch, "tv-inelig-home"));
   assert.equal(view.seats.find((s) => s.seat === "designer")!.blended, undefined, "no phantom pane for a seat the boot refused to blend");
+});
+
+test("uncertain accepted paste holds the live pane and queue ownership for inspection", async () => {
+  const { acquireConsumerLease } = await import("../src/consumer-lease.js");
+  const { readWork } = await import("../src/work-recovery.js");
+  const r = ptyRig("bs-hold-live");
+  const originalStart = r.startTty;
+  const bs = makeSeat(r, { startTty: async o => {
+    const result = await originalStart(o);
+    if (result.ok) result.tty.inject = data => {
+      r.ttys[0]!.injected.push(String(data));
+      throw new Error("transport failed after possible acceptance");
+    };
+    return result;
+  } });
+  bs.start();
+  try {
+    await waitFor(() => r.ttys.length === 1);
+    enqueue(r.inbox, "coder", "operator", "long operation");
+    await waitFor(() => Boolean(readWork(r.proj, "coder")?.heldReason));
+    assert.equal(r.ttys[0]!.exited, undefined, "recovery hold did not kill potentially active work");
+    assert.equal(bs.alive(), true);
+    assert.equal(readNew(r.inbox, "coder").length, 1);
+    assert.equal(readTeamView(r.proj, 5, r.home).seats.find(s => s.seat === "coder")?.recoveryRequired !== undefined, true);
+    await assert.rejects(acquireConsumerLease(r.proj, "coder"), /another consumer/);
+  } finally { bs.stop(); }
+});
+
+test("a quiet unfinished tool remains busy even when its session timestamp is old", async () => {
+  const r = ptyRig("bs-busy-evidence"), bs = makeSeat(r);
+  bs.start();
+  try {
+    await waitFor(() => r.ttys.length === 1);
+    enqueue(r.inbox, "coder", "operator", "operation");
+    await waitFor(() => readNew(r.inbox, "coder").length === 0);
+    const path = join(r.claudeDir, "sess-1.jsonl");
+    appendFileSync(path, JSON.stringify({ type: "assistant", message: { stop_reason: "tool_use" } }) + "\n");
+    const old = Date.now() / 1000 - 600; utimesSync(path, old, old);
+    assert.equal(bs.responding(), true);
+    appendFileSync(path, JSON.stringify({ type: "assistant", message: { stop_reason: "end_turn" } }) + "\n");
+    assert.equal(bs.responding(), false);
+  } finally { bs.stop(); }
 });

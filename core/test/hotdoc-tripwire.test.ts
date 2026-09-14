@@ -1,3 +1,5 @@
+import { verdictArgs } from "./git-fixture.js";
+import { initProtocolGit } from "./git-fixture.js";
 // The HOT-DOC BUDGET TRIPWIRE (backlog #9), pinned against the REAL shipped
 // agentctl: hot records must stay small (every line taxes every future turn),
 // so at loop close code MEASURES the hot docs and any doc over budget files
@@ -22,13 +24,14 @@ function mkRig(name: string): string {
   copyFileSync(join(ROOT, "config", "state-machine.yaml"), join(rig, ".agents", "config", "state-machine.yaml"));
   copyFileSync(join(ROOT, "config", "handoffs.yaml"), join(rig, ".agents", "config", "handoffs.yaml"));
   writeFileSync(join(rig, ".agents", "state", "events.log"), "");
+  initProtocolGit(rig);
   return rig;
 }
 
 function ctl(rig: string, ...args: string[]): { out: string; code: number } {
   try {
     return {
-      out: execFileSync("python3", [join(ROOT, "bin", "agentctl.py"), ...args], { cwd: rig, encoding: "utf8" }),
+      out: execFileSync("python3", [join(ROOT, "bin", "agentctl.py"), ...verdictArgs(rig, args)], { cwd: rig, encoding: "utf8" }),
       code: 0,
     };
   } catch (e) {

@@ -1,3 +1,4 @@
+import { initProtocolGit } from "./git-fixture.js";
 // CE-113 — the scope checkpoint stops being a 2-minute formality.
 //
 // P7-T4 made the coder send a FILE PLAN and wait for [SCOPE_OK], so a wrong
@@ -29,6 +30,7 @@ function mkRig(name: string): string {
   copyFileSync(join(ROOT, "config", "state-machine.yaml"), join(rig, ".agents", "config", "state-machine.yaml"));
   copyFileSync(join(ROOT, "config", "handoffs.yaml"), join(rig, ".agents", "config", "handoffs.yaml"));
   writeFileSync(join(rig, ".agents", "state", "events.log"), "");
+  initProtocolGit(rig);
   return rig;
 }
 

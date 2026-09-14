@@ -1,3 +1,4 @@
+import { verdictArgs } from "./git-fixture.js";
 // PHASE-8 T3: the control surface — pending gate detection + "merge go"
 // release + chat plumbing, driving the REAL agentctl. Proves the full-loop
 // GATE mechanics (approved → held → merge go → deployed) with no token burn.
@@ -29,7 +30,7 @@ function makeRig(name: string, conf = ""): string {
   return rig;
 }
 function emit(rig: string, ...a: string[]): void {
-  execFileSync("python3", [join(rig, ".agents", "bin", "agentctl.py"), "emit", ...a], { cwd: rig });
+  execFileSync("python3", [join(rig, ".agents", "bin", "agentctl.py"), ...verdictArgs(rig, ["emit", ...a])], { cwd: rig });
 }
 
 test("no gate when nothing is at approved; a gate appears at approved", () => {
@@ -56,7 +57,7 @@ test("releaseGate rejects a wrong phrase, accepts 'merge go', and the merge then
   // coder — teamctl no longer hand-delivers a second copy on the GUI surface.
   const mail = readNew(join(rig, ".agents", "state", "inbox"), "coder");
   assert.equal(mail.length, 1, "exactly one mechanical merge order");
-  assert.match(mail[0]!.body, /\[MERGE\] the approved branch/);
+  assert.match(mail[0]!.body, /\[MERGE\] main at [a-f0-9]{40}/);
   // a repeat "merge go" is absorbed (GUI precheck) — still one order on file
   const again = releaseGate(rig, "(single loop)", "merge go");
   assert.equal(again.ok, true);
@@ -176,6 +177,7 @@ test("no gate armed: the pane phrase is inert (nothing emitted, nothing mailed)"
 
 test("a recorded REJECT is not a light — and joinVerdicts is task-scoped in concurrent mode", () => {
   const rig = makeRig("lights-scope", "CONCURRENT_LOOPS=1\n");
+  execFileSync("git", ["branch", "feat/a"], { cwd: rig });
   emit(rig, "boot", "--actor", "orchestrator");
   emit(rig, "start_impl", "--actor", "coder", "task=feat/a");
   emit(rig, "code_ready", "--actor", "coder", "task=feat/a");

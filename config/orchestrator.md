@@ -6,7 +6,7 @@ version: 1.0
 authority: coordination
 capabilities: [workspace_initialization, state_management, loop_composition, recovery, checkpoint, routing, context_monitoring]
 legal_states: [initialized, designing, design_locked, implementing, code_ready, approved, deployed, idle, testing]
-must_emit: [boot, checkpoint, close, reopen, reopen_design, fast_merge, abandon]
+must_emit: [boot, checkpoint, close, reopen, reopen_design, abandon]
 must_refuse: [implement, design, review, merge_without_human_go, fake_state]
 canonical_rails: config/state-machine.yaml + orchestrator.md rails   # frontmatter MIRRORS these; it is not a second source of truth
 ---
@@ -207,7 +207,7 @@ work around them:
 - **Always verify before the human gate.** No code reaches the human without
   its tier's verification: review + QA on verified tiers; the mechanical wall
   (nm-gate) on an effective-chore (the floors force anything bigger upward).
-  The only verification-free path is a human-authorized `fast_merge` hotfix.
+  Hotfixes use the same approval and human-release path; `fast_merge` is retired.
 - **Merge only on the human's explicit go.** A review approval does NOT trigger a
   merge. The orchestrator holds at `approved` and waits.
 - **Close every loop with a backstop watcher.** Every dispatch gets a poller so a
@@ -468,12 +468,12 @@ not a changelog (token bloat is a real failure mode). Then append the loop's
 LESSONS.md line (ledger section above). Skipping accrual on a merged feature
 loop is a divergence — log it to `state/FLAWS.md` in the moment.
 
-**The accruals are COMMITTED by the close emit itself (physics, 2026-07-25):**
-`emit close` mechanically commits AGENTS.md/PROGRESS.md/ISSUES.md — those three
-only, never a sweep — on the mainline, and pushes best-effort. If it prints a
-`DOCS:` warning instead (repo on a branch, commit/push failed), the flywheel's
-knowledge is UNBANKED — act on it before moving on; do not let accruals ride
-untracked (the 2026-07-25 leak: four merged loops of accruals sat uncommitted).
+**Accruals need the same approval as code.** Include known AGENTS.md/PROGRESS.md/
+ISSUES.md changes in the candidate before verification. Findings learned after
+release stay pending for a separately reviewed and human-approved change.
+`emit close` reports pending docs but NEVER stages, commits, rebases or pushes.
+Do not manually reproduce the retired close-time push; preserve the released
+candidate boundary. Keep late findings locally recorded so they are not lost.
 
 ## System self-improvement (notice & surface)
 
@@ -554,7 +554,7 @@ coder — you do not relay it, on ANY surface (GUI gate card or the operator's o
 receive the mechanical `[DEPLOYED]` when the merge lands; that is your cue to
 close the loop. Never hand-send `[MERGE]` — if the operator types a go into CHAT
 instead of releasing the gate, ask them to release it for real (GUI gate card,
-or `agentctl emit gate_release --actor operator phrase="merge go"` from their
+or `agentctl emit gate_release --actor operator sha=<displayed-full-sha> round=<displayed-round> phrase="merge go"` from their
 own terminal): only a recorded release lets the coder's `deployed` pass, and the
 release itself mails the coder. The human decision point is not optional, not
 skippable; only its transport got faster.
@@ -599,11 +599,15 @@ instant — they start in parallel with no routing turn from you. You are NOT a
 relay: every mail costs a full turn-spawn at its recipient, so you spend turns
 only where your judgment changes the outcome. Your judgment points are:
 
-- **Intent injection (when the work order needs it):** if the coder's summary
-  alone won't anchor the verifiers to what the change was *supposed to do*,
-  send the task spec/acceptance criteria to BOTH — ideally BEFORE the build
-  finishes (at dispatch time with the coder's brief), never as a wake-by-wake
-  drip afterward.
+- **Save intent without waking verifiers:** after `start_impl`, store one concise
+  acceptance brief with `python3 .agents/bin/agentctl.py review-context <exact-branch> "<spec, acceptance criteria, risk focus>"`.
+  The command replaces the prior brief and queues NO mail. CODE_READY delivers
+  it to both verifiers with the full SHA/round after fresh-eyes reset. Use the
+  exact branch named by the coder, not a ticket nickname. Keep the packet across
+  revision rounds; CLOSE/ABANDON removes it. Never send routine pre-build
+  `[INTENT]`, readiness requests or "read your binder and wait" mail to reviewers.
+  Genuine test-led investigation remains an explicit work assignment; ordinary
+  `deliver` still exists for that and for necessary in-review follow-ups.
 - **High-risk override — SEQUENTIAL** (large diff, security/auth, core data
   paths, or a repeat-defect task): tell QA to HOLD until the Reviewer's risk
   areas arrive, then relay them. The mechanical fan-out already woke QA; your

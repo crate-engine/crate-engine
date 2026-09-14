@@ -32,12 +32,39 @@ test("the bar's input survives the 2s repaint (the chatbox preservation pattern)
   assert.ok(/gbFocused\)gbi2\.focus\(\)/.test(html), "focus survives too");
 });
 
-test("release state renders from the RECORD — any surface's release shows everywhere", () => {
+test("release display needs a recorded release or a matching nonempty SHA", () => {
   const fn = html.slice(html.indexOf("function gateBarHtml"), html.indexOf("function renderGateBar"));
-  assert.ok(fn.includes("g.released||GATEREL[g.task]"), "the record (g.released) wins over client memory alone");
-  assert.ok(fn.includes("released — the coder is merging"), "released copy present");
-  assert.ok(fn.includes("merge gate holding"), "holding copy present");
+  const render = new Function("GATES", "GATEREL", "esc", fn + ";return gateBarHtml();");
+  const g = { task: "task", branch: "feature", deploysTo: "main", released: false };
+  assert.match(render([g], {}, String), /merge gate holding/);
+  assert.doesNotMatch(render([g], {}, String), /released — the coder/);
+  assert.match(render([{ ...g, sha: "new", round: "r2" }], { task: "old" }, String), /merge gate holding/);
+  assert.match(render([{ ...g, sha: "new", round: "r2" }], { task: "new:r2" }, String), /released — the coder/);
+  assert.match(render([{ ...g, sha: "new", round: "r3" }], { task: "new:r2" }, String), /merge gate holding/);
+  assert.match(render([{ ...g, released: true }], {}, String), /released — the coder/);
 });
+
+for (const replaced of [true, false]) {
+  test(`release response keeps submitted SHA when polling ${replaced ? "replaces" : "removes"} gate`, async () => {
+    const fn = html.slice(html.indexOf("async function releaseFromBar"), html.indexOf("function renderTile"));
+    const gates = [{ task: "task", sha: "old", round: "r1" }];
+    const released: Record<string, string> = {};
+    let respond!: (value: unknown) => void;
+    let submitted = "";
+    const fetch = (_url: string, opts: { body: string }) => {
+      submitted = opts.body; return new Promise(resolve => { respond = resolve; });
+    };
+    const input = { value: "merge go", textContent: "" };
+    const run = new Function("GATES", "GATEREL", "document", "fetch", "api", "TOKEN", "renderGateBar", fn + ";return releaseFromBar();");
+    const pending = run(gates, released, { getElementById: () => input }, fetch, String, "test", () => {});
+    if (replaced) gates[0] = { task: "task", sha: "new", round: "r2" }; else gates.length = 0;
+    respond({ json: async () => ({ ok: true }) });
+    await pending;
+    assert.equal(JSON.parse(submitted).sha, "old");
+    assert.equal(JSON.parse(submitted).round, "r1");
+    assert.equal(released.task, "old:r1");
+  });
+}
 
 test("the bar releases through the one shared route and is rewired per repaint", () => {
   const fn = html.slice(html.indexOf("function releaseFromBar"));

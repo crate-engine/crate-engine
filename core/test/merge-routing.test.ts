@@ -1,3 +1,5 @@
+import { verdictArgs } from "./git-fixture.js";
+import { initProtocolGit } from "./git-fixture.js";
 // The ONE deterministic [MERGE] route (2026-08-11; FLAWS "[MERGE] routing is
 // nondeterministic across loops"): the operator's gate_release emit ITSELF
 // mails the coder — same route from every surface — a repeat release is
@@ -37,12 +39,13 @@ function makeRig(name: string, conf = ""): string {
   );
   writeFileSync(join(rig, ".agents", "config", "handoffs.yaml"), "handoffs:\n");
   writeFileSync(join(rig, ".agents", "state", "events.log"), "");
+  initProtocolGit(rig, ["feat/a"]);
   return rig;
 }
 
 function ctl(rig: string, ...args: string[]): { ok: boolean; out: string } {
   try {
-    return { ok: true, out: execFileSync("python3", [AGENTCTL, ...args], { cwd: rig, encoding: "utf8" }) };
+    return { ok: true, out: execFileSync("python3", [AGENTCTL, ...verdictArgs(rig, args)], { cwd: rig, encoding: "utf8" }) };
   } catch (e) {
     const err = e as { stdout?: string; stderr?: string };
     return { ok: false, out: (err.stdout ?? "") + (err.stderr ?? "") };
@@ -75,7 +78,7 @@ test("CLI gate_release on an approved task mails EXACTLY ONE [MERGE] — maildir
   const mail = coderMail(rig);
   assert.equal(mail.length, 1, "exactly one maildir wake file");
   const body = readFileSync(join(rig, ".agents", "state", "inbox", "coder", "new", mail[0]!), "utf8");
-  assert.match(body, /\[MERGE\] the approved branch/);
+  assert.match(body, /\[MERGE\] main at [a-f0-9]{40}/);
   assert.match(body, /merge go/);
   const mergeLines = coderMirror(rig).split("\n").filter((l) => l.includes("[MERGE]"));
   assert.equal(mergeLines.length, 1, "exactly one [MERGE] line in the coder mirror");
@@ -117,13 +120,12 @@ test("a hand-sent [MERGE] with NO release on file DELIVERS (fail-open — never 
   assert.equal(coderMail(rig).length, 1, "the hand-sent order is delivered, not absorbed");
 });
 
-test("gate_release while NOT approved records the release but mails NOBODY (honest note)", () => {
+test("gate_release while NOT approved refuses and mails NOBODY", () => {
   const rig = makeRig("unarmed");
   ctl(rig, "emit", "start_impl", "--actor", "coder"); // implementing — gate not armed
   const rel = ctl(rig, "emit", "gate_release", "--actor", "operator", "phrase=merge go");
-  assert.ok(rel.ok, rel.out);
-  assert.match(rel.out, /NO merge order was sent/);
-  assert.match(rel.out, /not armed/);
+  assert.equal(rel.ok, false);
+  assert.match(rel.out, /no approved candidate/);
   assert.equal(coderMail(rig).length, 0, "an unarmed release must not order a merge");
 });
 

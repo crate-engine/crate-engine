@@ -11,19 +11,17 @@
 #                  Not legal from idle/initialized (nothing to abandon) or deployed (close instead).)
 #   reopen_design: design_locked -> designing             (orchestrator/Designer emits to revise a design after design_locked but before the human confirms; mirror of reopen)
 #   reopen       : approved -> implementing                  (orchestrator emits when a bug is found at the merge gate, after approved but before merge; the ONLY legal approved->rework path)
-#   fast_merge   : code_ready -> deployed                   (orchestrator/the coder emits AFTER a human-authorized direct [MERGE] that skipped the Reviewer; records a merge already done — then close -> idle)
 #   start_research: initialized,idle,deployed -> researching (a SPIKE: explore/read/prototype with NO merge intent — keeps research on the books instead of masquerading as idle; findings go to state files/LESSONS)
 #   research_done : researching -> idle                      (orchestrator emits with findings="..."; any build that follows is a NEW loop)
 #   rollback      : deployed -> implementing                 (a merge turned out bad BEFORE close — the coder reverts/fixes on a branch and the change goes back through the FULL loop; mirror of reopen for the post-merge moment; emit with reason="...")
 # Full legal chain for one change:
 #   design-led: boot -> start_design -> design_locked -> start_impl -> code_ready -> approved -> deployed -> close
 #   code-only:  start_impl (from idle/initialized/deployed) -> code_ready -> approved -> deployed -> close
-#   Direct-merge variant (Reviewer skipped, human-authorized): ... -> code_ready -> fast_merge -> close
 # ALWAYS-LEGAL events (state never moves; the LOG LINE is the point):
 #   gate_pass    : nm-gate records a green build+verify for a sha
 #   gate_release : the operator's "merge go" (consumed by the next deployed)
 #   verdict      : a VERIFIER's recorded verdict (JOIN PHYSICS, 2026-07-24) —
-#                  `emit verdict --actor reviewer|tester result=approve|reject`.
+#                  `emit verdict --actor reviewer|tester sha=<full-sha> round=<round> result=approve|reject`.
 #                  In a parallel review+QA loop agentctl refuses approved/
 #                  changes_needed from anyone but the orchestrator, and
 #                  (rig.conf JOIN_ENFORCE=1) until BOTH verdicts are on record
@@ -48,7 +46,6 @@ transitions:
   reopen_design: design_locked -> designing
   approved: code_ready -> approved
   deployed: approved -> deployed
-  fast_merge: code_ready -> deployed
   rollback: deployed -> implementing
   close: deployed -> idle
   start_research: initialized,idle,deployed -> researching

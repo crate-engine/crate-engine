@@ -4,6 +4,11 @@
 Dependency-free (no PyYAML needed). Run from the repo root (where .agents/ lives).
 
 Usage:
+  agentctl.py review-context <branch> <text>
+                                    save intent for CODE_READY; no verifier wake
+  agentctl.py gates status          show required-check settings
+  agentctl.py gates enable [--no-web-smoke --reason TEXT]
+                                    migrate an idle rig explicitly
   agentctl.py state                 print current session state
   agentctl.py tail [N]              show last N events (default 15)
   agentctl.py check <event>         exit 0 if legal from current state, else 1
@@ -23,7 +28,7 @@ Usage:
                inbox automatically. On an illegal move it logs a REJECTED
                event and exits 1.
 """
-import os, sys, datetime, re, subprocess, time
+import os, sys, datetime, re, subprocess, time, uuid, fcntl, hashlib, json
 
 A = ".agents"
 SM = os.path.join(A, "config", "state-machine.yaml")
@@ -132,7 +137,9 @@ def queue_message(role, sender, msg):
     global _MSG_SEQ
     name = "%d-%06d-%d.msg" % (int(time.time() * 1000), _MSG_SEQ, os.getpid())
     _MSG_SEQ += 1
-    tmp_p = os.path.join(new_dir, ".tmp-" + name)
+    tmp_dir = os.path.join(inbox_dir, role, "tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    tmp_p = os.path.join(tmp_dir, name)
     with open(tmp_p, "w", encoding="utf-8") as fh:
         fh.write("%s | %s | %s\n" % (iso, sender, msg.replace("\n", "\\n")))
     os.rename(tmp_p, os.path.join(new_dir, name))
@@ -432,13 +439,22 @@ def now():
 
 def append(line):
     with open(LOG, "a", encoding="utf-8") as fh:
-        fh.write(line + "\n")
+        fh.write(line.replace("\r", "\\r").replace("\n", "\\n") + "\n")
 
 def git_head_sha():
     """Full SHA of the working tree's current HEAD (read-only); '' if unresolved."""
     try:
         r = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
                            text=True, timeout=10)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+def git_resolve(ref):
+    """Full SHA for <ref> (a branch, a full or abbreviated sha); '' if git cannot resolve it."""
+    try:
+        r = subprocess.run(["git", "rev-parse", "--verify", "--quiet", "%s^{commit}" % ref],
+                           capture_output=True, text=True, timeout=10)
         return r.stdout.strip() if r.returncode == 0 else ""
     except Exception:
         return ""
@@ -461,18 +477,37 @@ PIN = os.path.join(A, "state", "pin-code_ready")
 def write_pin(sha, branch, path=None):
     path = path or PIN
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write("sha=%s branch=%s at=%s\n" % (sha, branch or "(detached)", now()))
+    round_id = uuid.uuid4().hex
+    tmp = path + ".tmp-" + round_id
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write("sha=%s branch=%s round=%s at=%s\n" % (sha, branch or "(detached)", round_id, now()))
+    os.replace(tmp, path)
+    return round_id
 
-def read_pin(path=None):
-    """(sha, branch) from the pin file; (None, None) when absent/unreadable."""
+def read_candidate(path=None):
     try:
         with open(path or PIN, encoding="utf-8") as fh:
-            line = fh.read().strip()
-        parts = dict(p.split("=", 1) for p in line.split() if "=" in p)
-        return parts.get("sha"), parts.get("branch")
-    except Exception:
-        return None, None
+            return dict(p.split("=", 1) for p in fh.read().split() if "=" in p)
+    except OSError:
+        return {}
+
+def read_pin(path=None):
+    candidate = read_candidate(path)
+    return candidate.get("sha"), candidate.get("branch")
+
+def event_fields(raw):
+    # Structured identity precedes the free-form report. A report mentioning
+    # another sha/result/actor must never become workflow evidence.
+    if not raw.strip() or raw.lstrip().startswith("#"):
+        return "", {}
+    tokens = raw.split(" report=", 1)[0].split()
+    fields = {}
+    for token in tokens[2:]:
+        if "=" in token:
+            key, value = token.split("=", 1)
+            fields.setdefault(key, value)
+    return (tokens[1] if len(tokens) > 1 else ""), fields
+
 
 def branch_tip(branch):
     """Tip SHA of <branch> (or current HEAD when detached-pin); '' if unresolved."""
@@ -483,6 +518,35 @@ def branch_tip(branch):
         return r.stdout.strip() if r.returncode == 0 else ""
     except Exception:
         return ""
+
+def validate_candidate(task, transition, actor, kv):
+    """Fail closed when the proposal is absent, unresolved or has moved."""
+    candidate = read_candidate(pin_path_for(task))
+    sha, branch, round_id = candidate.get("sha"), candidate.get("branch"), candidate.get("round")
+    if not sha or git_resolve(sha) != sha:
+        die("REJECTED: no valid code_ready pin on file. Return to implementing, "
+            "emit code_ready for a real commit, and repeat verification.")
+    if not round_id:
+        die("REJECTED: candidate has no review round. Reopen/re-submit this legacy loop "
+            "and obtain new verdicts before approval or release.")
+    tip = branch_tip(branch)
+    if not tip or tip != sha:
+        append("[%s] REJECTED event=%s actor=%s reason=branch_moved pinned=%s tip=%s"
+               % (now(), transition, actor, sha, tip or "unresolved"))
+        die("REJECTED: the branch moved after code_ready (or cannot be resolved). "
+            "Use changes_needed before approval, or reopen after approval; finalize "
+            "one commit and repeat verification. Nothing was released or approved.")
+    supplied = dict(p.split("=", 1) for p in kv if "=" in p)
+    if supplied.get("sha") and supplied["sha"] != sha:
+        die("REJECTED: the requested candidate SHA differs from the code_ready pin. "
+            "Refresh the approval card and review the new candidate.")
+    if supplied.get("round") and supplied["round"] != round_id:
+        die("REJECTED: stale review round. Refresh the gate and review the current round.")
+    if not supplied.get("sha"):
+        kv.append("sha=%s" % sha)
+    if not supplied.get("round"):
+        kv.append("round=%s" % round_id)
+    return sha, branch
 
 # ── the knowledge flywheel (Phase-7 T1): AGENTS.md is the project law and it
 #    ships as template placeholders. The orchestrator fills it on the FIRST
@@ -588,6 +652,39 @@ def pin_path_for(task):
         return PIN
     safe = re.sub(r"[^A-Za-z0-9._-]", "-", task)
     return os.path.join(A, "state", "pins", safe)
+
+def review_context_path(branch):
+    # Exact branch keys, including slashes and equals, cannot collide through
+    # filename sanitization. This file is context, never approval evidence.
+    key = hashlib.sha256(branch.encode("utf-8")).hexdigest()
+    return os.path.join(A, "state", "review-context", key + ".json")
+
+def read_review_context(branch):
+    path = review_context_path(branch)
+    if not os.path.exists(path):
+        directory = os.path.dirname(path)
+        if not concurrent_mode() and os.path.isdir(directory) and any(n.endswith(".json") for n in os.listdir(directory)):
+            die("REJECTED: saved review context names a different branch; replace it with review-context for the exact CODE_READY branch.")
+        return ""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            packet = json.load(fh)
+        if packet.get("branch") != branch or not isinstance(packet.get("text"), str):
+            raise ValueError("invalid context packet")
+        return packet["text"]
+    except (OSError, ValueError, TypeError) as exc:
+        die("REJECTED: saved review context is unreadable; replace it with review-context before CODE_READY: %s" % exc)
+
+def clear_review_context(task):
+    directory = os.path.join(A, "state", "review-context")
+    paths = [review_context_path(task)] if concurrent_mode() and task else (
+        [os.path.join(directory, name) for name in os.listdir(directory) if name.endswith(".json")]
+        if os.path.isdir(directory) else [])
+    for path in paths:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
 
 def seat_identity():
     """SEAT-IDENTITY (emit-identity fix, 2026-08-11; FLAWS 'emit identity is
@@ -738,39 +835,26 @@ def refuse_stripped_badge(event, actor, claim):
         % (claim, hidden))
 
 def operator_released(task):
-    """PHASE-8 T3: True iff the operator emitted a valid gate_release for THIS
-    task AFTER it most recently reached `approved` (a stale release from a
-    prior loop cannot authorize a new merge). Scans events.log in order; the
-    approved for the task arms the gate, a later operator GATE_RELEASE for the
-    same task opens it, a DEPLOYED/REOPEN re-locks it."""
-    armed, released = False, False
+    """Only the current candidate's approved round can consume a release."""
+    candidate = read_candidate(pin_path_for(task))
+    if not candidate.get("round"):
+        return False
+    armed = released = False
     if not os.path.exists(LOG):
         return False
     with open(LOG, encoding="utf-8") as fh:
         for raw in fh:
-            if raw.lstrip().startswith("#"):
+            event, row = event_fields(raw)
+            row_task = row.get("task") or row.get("branch")
+            if task and row_task and row_task != task:
                 continue
-            toks = raw.split()
-            evt = toks[1] if len(toks) > 1 else ""
-            row_task = None
-            actor = ""
-            for t in toks:
-                if t.startswith("task="): row_task = t.split("=", 1)[1]
-                elif t.startswith("branch=") and row_task is None: row_task = t.split("=", 1)[1]
-                elif t.startswith("actor="): actor = t.split("=", 1)[1]
-            if task and row_task is not None and row_task != task:
-                continue
-            # Check the EVENT before the state token: a gate_release is an
-            # always-event so its line ALSO carries the unchanged state=approved.
-            # Track to the END (never early-return) so a later reopen/merge can
-            # CONSUME a release — a stale release cannot authorize a new merge.
-            if evt == "GATE_RELEASE" and actor == "operator":
-                if armed:
-                    released = True
-            elif evt == "APPROVED" or "state=approved" in toks:
-                armed, released = True, False  # a fresh approval needs a fresh release
-            elif "state=deployed" in toks or "state=implementing" in toks:
-                armed, released = False, False  # merged or reopened
+            matches = row.get("sha") == candidate.get("sha") and row.get("round") == candidate.get("round")
+            if event == "APPROVED":
+                armed, released = matches, False
+            elif event == "GATE_RELEASE" and row.get("actor") == "operator" and matches:
+                released = armed
+            elif event in ("START_IMPL", "CODE_READY", "CHANGES_NEEDED", "REOPEN", "DEPLOYED", "CLOSE", "ABANDON", "ROLLBACK"):
+                armed = released = False
     return armed and released
 
 def last_release_iso(task):
@@ -919,30 +1003,23 @@ def join_enforced():
     return v not in ("", "0", "false", "no", "off")
 
 def join_verdicts(task):
-    """{role: result-or-None} for verifier verdicts recorded since this task's
-    most recent CODE_READY (a fresh sha voids all verdicts — same freshness law
-    as the pin). Task filtering mirrors operator_released."""
+    """Verdicts must explicitly identify the current SHA and review round."""
     v = {r: None for r in VERIFIER_ROLES}
-    if not os.path.exists(LOG):
+    candidate = read_candidate(pin_path_for(task))
+    if not candidate.get("round") or not os.path.exists(LOG):
         return v
     with open(LOG, encoding="utf-8") as fh:
         for raw in fh:
-            if raw.lstrip().startswith("#"):
+            event, row = event_fields(raw)
+            row_task = row.get("task") or row.get("branch")
+            if task and row_task != task:
                 continue
-            toks = raw.split()
-            evt = toks[1] if len(toks) > 1 else ""
-            row_task, actor, result = None, "", ""
-            for t in toks:
-                if t.startswith("task="): row_task = t.split("=", 1)[1]
-                elif t.startswith("branch=") and row_task is None: row_task = t.split("=", 1)[1]
-                elif t.startswith("actor="): actor = t.split("=", 1)[1]
-                elif t.startswith("result="): result = t.split("=", 1)[1]
-            if task and row_task is not None and row_task != task:
-                continue
-            if evt == "CODE_READY":
+            if event == "CODE_READY":
                 v = {r: None for r in VERIFIER_ROLES}
-            elif evt == "VERDICT" and actor in v:
-                v[actor] = result
+            elif (event == "VERDICT" and row.get("actor") in v
+                  and row.get("sha") == candidate.get("sha")
+                  and row.get("round") == candidate.get("round")):
+                v[row["actor"]] = row.get("result")
     return v
 
 def last_code_ready_commit(task):
@@ -1151,7 +1228,7 @@ def effective_tier_at_join(task):
             eff = row_eff
     return eff
 
-def manifest_reasons(base, paths):
+def manifest_reasons(base, paths, head="HEAD"):
     """Floor reasons from package.json diffs: a NET-NEW dependency name (a
     version bump of an existing dep stays chore-eligible) or ANY scripts-
     section change (a one-line postinstall ships arbitrary code) forces
@@ -1170,7 +1247,7 @@ def manifest_reasons(base, paths):
                 return _json.loads(out)
             except Exception:
                 return None
-        head_m, base_m = _load("HEAD"), _load(base)
+        head_m, base_m = _load(head), _load(base)
         if head_m is None or base_m is None:
             reasons.append("unparsable manifest: %s" % p)
             continue
@@ -1186,7 +1263,7 @@ def manifest_reasons(base, paths):
             reasons.append("manifest scripts changed: %s" % p)
     return reasons
 
-def route_floors(declared):
+def route_floors(declared, head="HEAD"):
     """(effective_tier, reasons, design_hit) — the escalation floors vs the
     branch's diff against main. Chore floors: ceiling (lockfiles/generated
     exempt from counts), new source files, protected paths, guardrail files
@@ -1203,7 +1280,9 @@ def route_floors(declared):
     if base is None:
         eff = "bug" if declared == "chore" else declared
         return eff, ["no main base to diff against"], False
-    numstat = run_git(["diff", "--numstat", "%s...HEAD" % base]) or ""
+    numstat = run_git(["diff", "--numstat", "%s...%s" % (base, head)])
+    if numstat is None:
+        return ("bug" if declared == "chore" else declared), ["candidate diff is unresolvable"], False
     lines, files, paths = 0, 0, []
     for row in numstat.splitlines():
         parts = row.split("\t")
@@ -1228,7 +1307,7 @@ def route_floors(declared):
         reasons.append("%d changed lines > chore ceiling %d" % (lines, conf["diff"]))
     if files > conf["files"]:
         reasons.append("%d files > chore ceiling %d" % (files, conf["files"]))
-    added = (run_git(["diff", "--name-only", "--diff-filter=A", "%s...HEAD" % base]) or "").split("\n")
+    added = (run_git(["diff", "--name-only", "--diff-filter=A", "%s...%s" % (base, head)]) or "").split("\n")
     for f in added:
         f = f.strip()
         if not f:
@@ -1246,82 +1325,28 @@ def route_floors(declared):
             reasons.append("guardrail file (never a chore): %s" % p)
         elif any(s in low for s in conf["protected"]):
             reasons.append("protected path: %s" % p)
-    reasons += manifest_reasons(base, paths)
-    okg, detail = gate_ok_for_head()
+    reasons += manifest_reasons(base, paths, head)
+    okg, detail = gate_ok_for_head(head)
     if not okg:
         reasons.append("no gate_pass on file for %s (a chore's only mechanical check is the wall)" % detail)
     return ("bug" if reasons else "chore"), reasons, design_hit
 
-# ── the FLYWHEEL COMMIT (2026-07-25; FLAWS "rig working docs can stay
-#    UNCOMMITTED forever"): the close emit mechanically lands the loop's doc
-#    accruals. Grill pins (Adam): (1) the orchestrator commits, at loop close,
-#    right after the merge lands on main — identity fallback per attach;
-#    (2) SCOPE: ONLY the three working docs, never a sweep; (3) concurrent
-#    closes never fight — commits land only when the MAINLINE is checked out
-#    (serializes locally), index.lock races retry, push races rebase-retry.
+# CLOSE records completion; it never extends the human-approved commit.
 DOC_FILES = ("AGENTS.md", "PROGRESS.md", "ISSUES.md")
 
-def commit_loop_docs(task):
-    """Commit + best-effort-push the working docs' accruals at close. Loud
-    warnings, never a wedge — a close that cannot commit docs still closes."""
-    if not git_head_sha():
-        return  # not a git repo — nothing to mechanize
-    branch = git_branch()
-    if branch not in ("main", "master"):
-        print("DOCS: accrual NOT committed — the repo is on %r, and the close commit lands "
-              "only on the mainline (concurrent-loop safety). It will land at the next "
-              "mainline close, or commit AGENTS.md/PROGRESS.md/ISSUES.md by hand."
-              % (branch or "(detached)"))
-        return
-    present = [f for f in DOC_FILES if os.path.exists(f)]
-    if not present:
-        return
+def report_pending_docs(task):
+    """Keep late accruals visible without staging, committing or pushing them."""
     try:
-        r = subprocess.run(["git", "status", "--porcelain", "--"] + present,
-                           capture_output=True, text=True, timeout=10)
-        dirty = bool(r.stdout.strip()) if r.returncode == 0 else False
-    except Exception:
-        dirty = False
-    if not dirty:
-        return
-    msg = "docs: loop close accrual%s (flywheel)" % ((" %s" % task) if task else "")
-    committed = False
-    for attempt in range(3):
-        try:
-            subprocess.run(["git", "add", "--"] + present, capture_output=True, timeout=10)
-            c = subprocess.run(["git", "commit", "-q", "-m", msg, "--"] + present,
-                              capture_output=True, text=True, timeout=15)
-            if c.returncode == 0:
-                committed = True
-                break
-            if "index.lock" in (c.stdout + c.stderr):
-                time.sleep(0.5)
-                continue
-            # any other failure: retry once with the attach identity fallback
-            # (no git identity on this account) — harmless if identity wasn't it
-            c = subprocess.run(["git", "-c", "user.email=crate@local", "-c", "user.name=crate2",
-                                "commit", "-q", "-m", msg, "--"] + present,
-                               capture_output=True, text=True, timeout=15)
-            if c.returncode == 0:
-                committed = True
-            break
-        except Exception:
-            time.sleep(0.5)
-    if not committed:
-        print("DOCS: WARNING — could not commit the loop's doc accruals (AGENTS/PROGRESS/ISSUES "
-              "are DIRTY on %s). The flywheel's knowledge is unbanked until someone commits it." % branch)
-        return
-    sha = git_head_sha()[:9]
-    pushed = ""
-    if subprocess.run(["git", "remote", "get-url", "origin"], capture_output=True, timeout=10).returncode == 0:
-        p = subprocess.run(["git", "push", "-q", "origin", branch], capture_output=True, text=True, timeout=30)
-        if p.returncode != 0:
-            subprocess.run(["git", "pull", "-q", "--rebase", "origin", branch],
-                           capture_output=True, timeout=30)
-            p = subprocess.run(["git", "push", "-q", "origin", branch], capture_output=True, text=True, timeout=30)
-        pushed = ", pushed" if p.returncode == 0 else ", PUSH FAILED (push by hand)"
-    print("DOCS COMMITTED: %s — the loop's AGENTS/PROGRESS/ISSUES accruals landed on %s%s (flywheel banked)."
-          % (sha, branch, pushed))
+        result = subprocess.run(["git", "status", "--porcelain", "--"] + list(DOC_FILES),
+                                capture_output=True, text=True, timeout=10,
+                                env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
+        if result.returncode:
+            print("DOCS: status unavailable; CLOSE made no Git changes.")
+        elif result.stdout.strip():
+            print("DOCS PENDING: accrual NOT committed or pushed. Include these changes in "
+                  "a separately reviewed and human-approved candidate. CLOSE made no Git changes.")
+    except (OSError, subprocess.TimeoutExpired):
+        print("DOCS: status unavailable; CLOSE made no Git changes.")
 
 # ── the HOT-DOC BUDGET TRIPWIRE (backlog #9, 2026-08-11): hot records — the
 #    docs agents read EVERY task — must stay small and curated, because every
@@ -1436,8 +1461,8 @@ def hotdoc_sweep():
         print("HOTDOC: WARNING — tripwire sweep failed (%s); the close still lands. "
               "Measure by hand: agentctl.py hotdoc" % e)
 
-def gate_ok_for_head():
-    """True iff events.log holds a GATE_PASS tied to the current HEAD SHA. The SHA
+def gate_ok_for_head(candidate=None):
+    """True iff events.log holds a GATE_PASS tied to the candidate (default HEAD). The SHA
     uniquely identifies the code state, so an older pass for the same SHA is still
     valid proof; any new commit invalidates it (forces a re-gate).
 
@@ -1449,7 +1474,7 @@ def gate_ok_for_head():
     the working tree. It does not: every tier measurement is `git diff
     base...HEAD`, committed history only. The failure is 'HEAD moved', so say so.
     """
-    head = git_head_sha()
+    head = candidate or git_head_sha()
     if not head:
         return False, "HEAD (unresolvable -- run from the repo root of a git checkout)"
     short = head[:9]
@@ -1457,10 +1482,11 @@ def gate_ok_for_head():
     if os.path.exists(LOG):
         with open(LOG, encoding="utf-8") as fh:
             for raw in fh:
-                if "GATE_PASS" not in raw:
+                toks = raw.split()
+                if len(toks) < 2 or toks[1] != "GATE_PASS":
                     continue
-                if ("sha=%s" % head) in raw:
-                    return True, "HEAD %s" % short
+                if "sha=%s" % head in toks:
+                    return True, "candidate %s" % short
                 for tok in raw.split():
                     if tok.startswith("sha="):
                         passed.append(tok.split("=", 1)[1])
@@ -1471,11 +1497,11 @@ def gate_ok_for_head():
             continue
         if run_git(["merge-base", "--is-ancestor", sha, head]) is None:
             continue  # not an ancestor (or unresolvable) — no claim to make
-        ahead = run_git(["rev-list", "--count", "%s..HEAD" % sha]) or "?"
-        return False, ("HEAD %s -- the branch WAS gated at %s, but %s commit(s) landed on top "
+        ahead = run_git(["rev-list", "--count", "%s..%s" % (sha, head)]) or "?"
+        return False, ("candidate %s -- the branch WAS gated at %s, but %s commit(s) landed on top "
                        "since (a gate_pass is tied to one SHA; re-gate the branch)"
                        % (short, sha[:9], ahead.strip()))
-    return False, "HEAD %s" % short
+    return False, "candidate %s" % short
 
 def main():
     if not os.path.isdir(A):
@@ -1483,7 +1509,91 @@ def main():
     args = sys.argv[1:]
     if not args: die(__doc__)
     cmd = args[0]
+    # Serialize validation, event append, pin replacement and dispatch across
+    # agentctl writers. This is coordination, not a worker security boundary.
+    if cmd in ("emit", "gates", "review-context"):
+        os.makedirs(os.path.join(A, "state"), exist_ok=True)
+        emit_lock = open(os.path.join(A, "state", "workflow.lock"), "a")
+        fcntl.flock(emit_lock.fileno(), fcntl.LOCK_EX)
     initial, always, trans = load_sm()
+
+    if cmd == "review-context":
+        if len(args) != 3 or not args[1] or re.search(r"\s", args[1]) or not args[2].strip():
+            die("Usage: agentctl review-context <exact-branch> <quoted-complete-brief>")
+        branch, brief = args[1], args[2]
+        badge = seat_identity() or stripped_seat_badge()
+        if badge not in ("", "operator", "orchestrator"):
+            die("REJECTED: review context belongs to the orchestrator or operator.")
+        state = task_state(initial, branch) if concurrent_mode() else current_state(initial)
+        if state != "implementing":
+            die("REJECTED: save review context during implementing, before CODE_READY. For an active review, deliver a targeted follow-up.")
+        if len(brief.encode("utf-8")) > 32768:
+            die("REJECTED: review context exceeds 32 KiB; save a concise acceptance brief.")
+        path = review_context_path(branch)
+        directory = os.path.dirname(path)
+        if not concurrent_mode() and os.path.isdir(directory) and any(
+                n.endswith(".json") and os.path.join(directory, n) != path for n in os.listdir(directory)):
+            die("REJECTED: single-loop review context already belongs to another branch. Finish or abandon that loop before preparing another branch.")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp-" + uuid.uuid4().hex
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"branch": branch, "text": brief}, fh)
+        os.replace(tmp, path)
+        append("[%s] REVIEW_CONTEXT_SAVED actor=%s branch=%s bytes=%d" % (now(), badge or "operator", branch, len(brief.encode("utf-8"))))
+        print("Review context saved (replaces previous brief). No verifier mail or model turn queued; CODE_READY delivers it with the candidate.")
+        return
+
+    if cmd == "gates":
+        keys = ("NMGATE_ENFORCE", "JOIN_ENFORCE", "SMOKE_ENFORCE")
+        if args[1:] == ["status"]:
+            conf = rig_conf()
+            for key in keys:
+                print("%s=%s" % (key, conf.get(key, "0")))
+            return
+        if len(args) < 2 or args[1] != "enable":
+            die("Usage: agentctl gates status | enable [--no-web-smoke --reason TEXT]")
+        if seat_identity() not in ("", "operator"):
+            die("REJECTED: gate migration belongs to the HUMAN OPERATOR, outside worker seats.")
+        refuse_stripped_badge("gates", "operator", "gate migration")
+        exemption = ""
+        if args[2:]:
+            if len(args) != 5 or args[2:4] != ["--no-web-smoke", "--reason"]:
+                die("Usage: agentctl gates enable [--no-web-smoke --reason TEXT]")
+            exemption = args[4].strip()
+            if not exemption or not re.fullmatch(r"[A-Za-z0-9 .,;:()/ _-]{1,240}", exemption):
+                die("Provide a plain-text non-web smoke exemption reason (1-240 characters).")
+        # Use the same operating mode as emit/state. In single-loop mode,
+        # task labels are annotations; folding them as concurrent loops leaves
+        # phantom active tasks after a tagged or untagged CLOSE (D1).
+        if concurrent_mode():
+            scalar, tasks = task_states(initial)
+            active = scalar not in ("idle", "down", "initialized") or any(st != "idle" for st in tasks.values())
+        else:
+            active = current_state(initial) not in ("idle", "down", "initialized")
+        if active:
+            die("REJECTED: finish or abandon active loops before enabling gates; no settings changed.")
+        updates = {key: "1" for key in keys}
+        updates["SMOKE_EXEMPT_REASON"] = exemption
+        if exemption:
+            updates["SMOKE_ENFORCE"] = "0"
+        with open(RC, encoding="utf-8") as fh:
+            lines = fh.readlines()
+        # Remove every old assignment, including exported duplicates. Preserve
+        # unrelated configuration without ever printing its contents.
+        kept = [line for line in lines if not re.match(
+            r"^\s*(?:export\s+)?(?:" + "|".join(updates) + r")\s*=", line)]
+        tmp = RC + ".tmp-" + uuid.uuid4().hex
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write("".join(kept).rstrip("\n") + "\n")
+            for key, value in updates.items():
+                fh.write('%s="%s"\n' % (key, value))
+        os.chmod(tmp, os.stat(RC).st_mode & 0o777)
+        os.replace(tmp, RC)
+        append("[%s] GATES_ENABLED actor=operator smoke=%s reason=%s" %
+               (now(), updates["SMOKE_ENFORCE"], exemption or "required"))
+        print("Required gate settings enabled. Smoke: %s. Existing loop evidence was not changed." %
+              ("explicit non-web exemption" if exemption else "required"))
+        return
 
     if cmd == "preview":
         # PHASE-8 T5: flag a page for the human's eyes. `preview <url>
@@ -1665,6 +1775,20 @@ def main():
                 actor = args[i + 1]; i += 2; continue
             if "=" in a: kv.append(a)
             i += 1
+        # One representation: validation and readers must never disagree on
+        # duplicate identity/result fields or caller-supplied state/actor.
+        seen = set()
+        for item in kv:
+            key, value = item.split("=", 1)
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", key):
+                die("REJECTED: invalid event field name.")
+            if key in seen or key in ("actor", "state"):
+                die("REJECTED: duplicate or reserved event field: %s" % key)
+            seen.add(key)
+            if key in ("sha", "commit", "round", "branch", "task", "result") and re.search(r"\s", value):
+                die("REJECTED: structured event field %s must be one token." % key)
+        if re.search(r"\s", name + actor):
+            die("REJECTED: event and actor must be single tokens.")
         if actor == "?":
             # LESSONS #7 (2026-08-14, banked by the rig itself): a silent '?'
             # breaks the ledger's one-truth grammar (grep-by-actor misses the
@@ -1738,6 +1862,29 @@ def main():
                 die("REJECTED: '%s' is not legal from %sstate '%s'. Legal from: %s. Nothing was sent."
                     % (transition, ("task %s's " % cur_task) if cur_task else "", cur, ", ".join(froms)))
             new = to
+        # Resolve the proposal ONCE, before any gate, diff or pin uses it.
+        # Worktree callers normally emit from a root still checked out on main.
+        candidate_sha, candidate_branch = "", ""
+        if transition == "code_ready":
+            proposed = dict(p.split("=", 1) for p in kv if "=" in p)
+            named = proposed.get("commit") or proposed.get("sha") or ""
+            candidate_branch = proposed.get("branch") or cur_task or git_branch()
+            ref = named or candidate_branch or "HEAD"
+            candidate_sha = git_resolve(ref)
+            if named and not candidate_sha:
+                die("REFUSED: code_ready names commit %s but git cannot resolve it in this rig -- "
+                    "push/fetch the branch, or name a commit that exists here." % named)
+            if not candidate_sha:
+                die("REJECTED: code_ready candidate %s cannot be resolved. Name an existing "
+                    "branch or commit; no previous pin can be reused." % ref)
+            if candidate_branch and branch_tip(candidate_branch) != candidate_sha:
+                die("REJECTED: code_ready commit does not match the named branch tip. "
+                    "Finalize one candidate and re-run its gate before submitting.")
+        # Retired even with an old rig's state-machine copy: no alternate
+        # transition may skip the approved -> operator release -> deployed path.
+        if transition == "fast_merge":
+            die("REJECTED: fast_merge is retired. Emit approved, obtain the operator's "
+                "merge go, then emit deployed for that verified candidate.")
         # SEAT-IDENTITY: NMGATE_OVERRIDE is an EMERGENCY HUMAN bypass — a seat
         # prefixing it is the same forgeable-identity class as a forged
         # gate_release (the runner stamps CRATE_SEAT; a human terminal has none).
@@ -1755,7 +1902,7 @@ def main():
             # stripped seat session is the same forgery, one layer deeper.
             refuse_stripped_badge("code_ready", actor, "NMGATE_OVERRIDE=1")
         if transition == "code_ready" and enforce_gate() and os.environ.get("NMGATE_OVERRIDE") != "1":
-            okg, detail = gate_ok_for_head()
+            okg, detail = gate_ok_for_head(candidate_sha)
             if not okg:
                 append("[%s] REJECTED event=code_ready actor=%s reason=no_gate_pass %s" % (now(), actor, detail))
                 die("REJECTED: code_ready blocked by nm-gate -- %s has no recorded gate_pass.\n"
@@ -1764,6 +1911,7 @@ def main():
                     "  Then re-emit code_ready. (Emergency human bypass: prefix NMGATE_OVERRIDE=1 -- logged.)"
                     % detail)
         if transition == "code_ready":
+            saved_review_context = read_review_context(candidate_branch)
             # ── THE PAPERWORK GATE (LESSONS #7, 2026-08-14) ──────────────────
             # Round 3 of ticket #7 existed ONLY because round 2's remediation
             # never touched PROGRESS.md ("rounds that add scope outrun the
@@ -1777,7 +1925,7 @@ def main():
             _br = kvmap.get("branch") or kvmap.get("task") or ""
             _prev = last_code_ready_commit(_br)
             if _prev and os.path.exists("PROGRESS.md"):
-                _r = subprocess.run(["git", "diff", "--name-only", "%s..HEAD" % _prev, "--", "PROGRESS.md"],
+                _r = subprocess.run(["git", "diff", "--name-only", "%s..%s" % (_prev, candidate_sha or "HEAD"), "--", "PROGRESS.md"],
                                     capture_output=True, text=True)
                 if _r.returncode == 0 and _r.stdout.strip() == "":
                     append("[%s] REJECTED event=code_ready actor=%s reason=stale_docs prev=%s"
@@ -1815,6 +1963,14 @@ def main():
                 append("[%s] REJECTED event=verdict actor=%s reason=bad_result" % (now(), actor))
                 die("REJECTED: verdict needs result=approve or result=reject (got %r). "
                     "Nothing was recorded." % (kvmap.get("result", "")))
+            if cur != "code_ready":
+                die("REJECTED: verdict requires the current code_ready review round.")
+            candidate = read_candidate(pin_path_for(cur_task))
+            if (not candidate.get("round") or kvmap.get("round") != candidate.get("round")
+                    or kvmap.get("sha") != candidate.get("sha")):
+                die("REJECTED: verdict requires the exact sha= and round= from your "
+                    "CODE_READY brief. Missing, stale or different candidate evidence cannot count.")
+            validate_candidate(cur_task, transition, actor, kv)
         # approved / changes_needed are the JOIN — refuse the live-proven race:
         # in a parallel review+QA loop only the orchestrator (or the human) may
         # close, and (JOIN_ENFORCE=1) only with BOTH verdicts on record.
@@ -1833,11 +1989,9 @@ def main():
                 kv.append("join_override=1")
                 print("JOIN OVERRIDE: join checks skipped by the human -- recorded in the log.")
             elif effective_tier_at_join(cur_task) == "chore":
-                # TIERING: no verifiers were summoned on an effective-chore
-                # loop — there are no verdicts to wait for. The actor rule is
-                # moot (nobody but the orchestrator is awake) and the human
-                # merge gate still holds downstream.
-                pass
+                if actor not in ("orchestrator", "operator"):
+                    die("REJECTED: the JOIN belongs to the ORCHESTRATOR, including chores. "
+                        "The coder cannot approve its own change.")
             else:
                 if actor not in ("orchestrator", "operator"):
                     append("[%s] REJECTED event=%s actor=%s%s reason=join_owner"
@@ -1880,28 +2034,10 @@ def main():
                         print("WARNING: the JOIN is not mechanically complete -- %s. Confirm both "
                               "verdicts by hand before closing (rig.conf JOIN_ENFORCE=1 makes this "
                               "a refusal)." % detail)
-        # SHA-PIN enforcement at the approved JOIN (run #14): the reviewed sha
-        # was recorded when code_ready was emitted; if the branch tip moved
-        # since, the two verification lenses were NOT looking at what would
-        # merge -- refuse the join mechanically instead of trusting the
-        # orchestrator to notice.
-        if transition == "approved":
-            ppath = pin_path_for(cur_task)
-            psha, pbranch = read_pin(ppath)
-            if psha:
-                tip = branch_tip(pbranch)
-                if tip and tip != psha:
-                    append("[%s] REJECTED event=approved actor=%s%s reason=branch_moved pinned=%s tip=%s"
-                           % (now(), actor, (" task=%s" % cur_task) if cur_task else "", psha[:9], tip[:9]))
-                    die("REJECTED: the branch moved after code_ready -- pinned %s but %s is now at %s.\n"
-                        "  Review/QA verdicts do not cover the current tip. Recover honestly:\n"
-                        "      emit changes_needed, have the Coder finalize ONE commit, re-emit\n"
-                        "      code_ready (which re-pins), and re-run Review + QA on the frozen sha.\n"
-                        "  Nothing was approved." % (psha[:9], pbranch or "the branch", tip[:9]))
-            else:
-                print("WARNING: no code_ready pin on file (%s) -- the join cannot "
-                      "mechanically verify Review and QA saw the sha that will merge. Confirm by hand."
-                      % os.path.relpath(ppath, A))
+        # Validate at approval AND at deployment; release validates below,
+        # after checking operator identity and before absorbing duplicates.
+        if transition in ("approved", "deployed"):
+            validate_candidate(cur_task, transition, actor, kv)
         # PHASE-8 T3: the "merge go" gate is PHYSICS, not manners. The merge
         # (deployed) refuses unless the OPERATOR released THIS task since it
         # reached approved, by typing the exact phrase — mechanical +
@@ -1912,7 +2048,7 @@ def main():
                 append("[%s] REJECTED event=deployed actor=%s%s reason=awaiting_merge_go"
                        % (now(), actor, (" task=%s" % cur_task) if cur_task else ""))
                 die("REJECTED: the merge is HELD at the gate — no operator 'merge go' on file for %s.\n"
-                    "  The human releases it (GUI gate card, or): agentctl emit gate_release --actor operator%s phrase=\"merge go\"\n"
+                    "  The human releases it (GUI gate card, or): agentctl emit gate_release --actor operator%s sha=<displayed-full-sha> round=<displayed-round> phrase=\"merge go\"\n"
                     "  Nothing was merged." % (("task %s" % cur_task) if cur_task else "this task",
                                                (" task=%s" % cur_task) if cur_task else ""))
         # gate_release: ONLY the operator, ONLY the exact phrase — the release
@@ -1946,6 +2082,11 @@ def main():
             if phrase != "merge go":
                 append("[%s] REJECTED event=gate_release actor=%s reason=wrong_phrase" % (now(), actor))
                 die("REJECTED: the release phrase must be exactly 'merge go'. Nothing was released.")
+            if cur != "approved":
+                die("REJECTED: no approved candidate is awaiting release. Approve first.")
+            if not kvmap.get("sha") or not kvmap.get("round"):
+                die("REJECTED: gate_release requires explicit sha= and round= from the displayed candidate.")
+            validate_candidate(cur_task, transition, actor, kv)
             # ── absorb a REPEAT release (2026-08-11): this moves the 07-25
             # GUI-only absorb (teamctl gateAlreadyReleased) into the ENGINE so
             # a CLI re-emit is absorbed too — first release wins on EVERY
@@ -1977,17 +2118,17 @@ def main():
                           "  The reviewer will see that the file plan was never approved. If you "
                           "proceeded on a stall,\n"
                           "  say so in your report and name what you deliberately did NOT touch.")
-            sha = git_head_sha()
-            if sha:
-                write_pin(sha, git_branch(), pin_path_for(cur_task))
-                if not any(a.startswith("sha=") for a in kv):
-                    kv.append("sha=%s" % sha[:9])
+            if candidate_sha:
+                round_id = write_pin(candidate_sha, candidate_branch, pin_path_for(cur_task))
+                kv = [a for a in kv if not a.startswith(("sha=", "commit=", "round="))]
+                kv += ["sha=%s" % candidate_sha, "commit=%s" % candidate_sha, "round=%s" % round_id]
                 print("PINNED: %s frozen at %s -- no more commits until a verdict returns "
-                      "(the approved join verifies this exact sha)." % (git_branch() or "HEAD", sha[:9]))
+                      "(approval, release and deployment verify this exact sha)."
+                      % (candidate_branch or "HEAD", candidate_sha[:9]))
             # ── the TIER ROUTER: the declared tier's meaning, mechanically ───
             declared = loop_tier(cur_task)
             if declared:
-                effective, reasons, design_hit = route_floors(declared)
+                effective, reasons, design_hit = route_floors(declared, candidate_sha or "HEAD")
                 if not any(a.startswith("tier=") for a in kv):
                     kv.append("tier=%s" % declared)
                 kv.append("tier_effective=%s" % effective)
@@ -2016,18 +2157,24 @@ def main():
                           "code's call; exclusion stays judgment).")
         if cur_task and not any(a.startswith("task=") for a in kv):
             kv.append("task=%s" % cur_task)  # every task-scoped event files under its task
-        parts = ["[%s]" % now(), transition.upper(), "actor=%s" % actor] + kv + ["state=%s" % new]
+        # Keep structured fields before report text for unambiguous evidence.
+        kv = [a for a in kv if not a.startswith("report=")] + [a for a in kv if a.startswith("report=")]
+        # Preserve readable mail, but keep every non-report log value one
+        # token. A summary containing "result=approve" is never evidence.
+        log_kv = [a if a.startswith("report=") else re.sub(
+            r"\s", lambda m: "\\u%04x" % ord(m.group()), a) for a in kv]
+        parts = ["[%s]" % now(), transition.upper(), "actor=%s" % actor] + log_kv + ["state=%s" % new]
         append(" ".join(parts))
         for line in post_append:
             append(line)
-        # FLYWHEEL COMMIT: the close mechanically banks the loop's doc accruals
-        # (scope: the three working docs only; mainline-only; loud, never a wedge).
+        # Late accruals remain pending; CLOSE never changes Git state.
         if transition == "close":
-            commit_loop_docs(cur_task)
+            report_pending_docs(cur_task)
             # HOT-DOC TRIPWIRE (backlog #9): measure the hot docs and file the
             # distillation chore mechanically when one is over budget.
             hotdoc_sweep()
         if transition in ("close", "abandon"):
+            clear_review_context(cur_task)
             # PREVIEW HYGIENE (Adam, 2026-08-13): a loop's registered previews
             # die with the loop — a stale entry kept the cockpit's Preview
             # chip lit ("needs attention") long after CLOSE.
@@ -2072,7 +2219,8 @@ def main():
         if transition == "gate_release":
             if cur == "approved":
                 relmap = dict(p.split("=", 1) for p in kv if "=" in p)
-                target = cur_task or relmap.get("task") or relmap.get("branch") or "the approved branch"
+                psha, pbranch = read_pin(pin_path_for(cur_task))
+                target = "%s at %s" % (pbranch or cur_task or "the approved branch", psha)
                 qname = queue_message("coder", "operator",
                                       "[MERGE] %s — the operator typed \"merge go\"; the gate is "
                                       "released. Merge into main now and emit deployed." % target)
@@ -2111,7 +2259,10 @@ def main():
             msg = signal + ((" " + " ".join(kv)) if kv else "")
             for tr in targets:
                 if tr in ROLES or tr == "operator":
-                    qname = queue_message(tr, actor, msg)
+                    delivered = msg
+                    if transition == "code_ready" and tr in VERIFIER_ROLES and saved_review_context:
+                        delivered += "\n[REVIEW_CONTEXT: intent, not verification evidence]\n" + saved_review_context
+                    qname = queue_message(tr, actor, delivered)
                     if qname:
                         print_queue_receipt(tr, qname, "SIGNAL QUEUED")
                     else:

@@ -94,12 +94,23 @@ trap cleanup EXIT INT TERM
 git worktree add --detach "$WT" "$RESOLVED" >/dev/null 2>&1 \
   || { echo "precheck: git worktree add failed for $RESOLVED" >&2; exit 2; }
 
-# Provide deps as a HARDLINKED tree: same filesystem, near-instant (no data copy),
-# and a REAL directory -- Turbopack rejects a node_modules symlink that escapes the
-# worktree root. Fallback to a symlink if hardlinking is unavailable (cross-fs).
-# Build output stays isolated (the worktree gets its own .next).
-cp -al "$REPO_ROOT/node_modules" "$WT/node_modules" 2>/dev/null \
-  || ln -s "$REPO_ROOT/node_modules" "$WT/node_modules"
+# Stage a real dependency directory. A failed hardlink copy can leave a partial
+# tree across Linux bind mounts (EXDEV); remove it before the ordinary copy.
+# Never replace it with an escaping symlink (Turbopack rejects that shape).
+if [ -d "$REPO_ROOT/node_modules" ]; then
+  DEPS_SOURCE="$(cd "$REPO_ROOT/node_modules" && pwd -P)" || exit 2
+  if ! cp -al "$DEPS_SOURCE" "$WT/node_modules" 2>/dev/null; then
+    rm -rf "$WT/node_modules"
+    if ! cp -a "$DEPS_SOURCE" "$WT/node_modules"; then
+      echo "precheck: dependency staging failed; no gate pass is possible" >&2
+      exit 2
+    fi
+  fi
+  if [ ! -d "$WT/node_modules" ] || [ -L "$WT/node_modules" ]; then
+    echo "precheck: dependency staging did not produce a real directory" >&2
+    exit 2
+  fi
+fi
 
 # Symlink the repo's local env files so Next loads them NATIVELY (its dotenv parser
 # handles values with spaces/quotes, e.g. FROM_ADDRESS="Name <a@b>", which a bash
@@ -236,13 +247,13 @@ echo "TEST:      $TEST_STATUS $TEST_TAG"
 # --- RUNTIME SMOKE RUNG (PDR dev/pdr/runtime-smoke-rung.md; 2026-07-25) ---
 # Boots the BUILT worktree ephemerally (prod-first via serve-resolve), drives the
 # AGENTS.md Critical-Path routes GET-only, and reports SMOKE: lines. ADVISORY by
-# default; rig.conf SMOKE_ENFORCE=1 makes a smoke FAIL fail the gate. Absorbs
+# legacy mode; SMOKE_ENFORCE=1 requires PASS, including successful completion. Absorbs
 # the old MOBILE step (mobile load fatal-only; overflow stays an advisory line;
 # mobile JUDGMENT stays QA's). Full runs only (--quick skips; SMOKE_ON_QUICK=1
 # opt-in for debugging the rung itself). Riders (all mechanized below):
 #   1 kill the process GROUP + prove the port freed (leftover server = flake)
 #   2 never smoke a listener that is not our own child group (stale-dev lesson)
-#   3 hard ready-deadline, tunable — deadline passed = advisory skip, never hang
+#   3 hard ready-deadline, tunable — deadline passed = incomplete (required smoke fails), never hang
 #   4 serve inherits the gate env EXACTLY (incl. PREVIEW_DB_URL redirect); GET-only
 SMOKE_STATUS="SKIPPED"; SMOKE_NOTE=""
 # BUILD SKIPPED (a no-build project: the tree IS the deployable artifact) still
@@ -256,7 +267,7 @@ if { [ "$BUILD_STATUS" = "PASS" ] || [ "$BUILD_STATUS" = "SKIPPED" ]; } && { [ "
   SMODE="$(printf '%s\n' "$RES" | sed -n 's/^MODE=//p')"
   SCMD="$(printf '%s\n' "$RES" | sed -n 's/^CMD=//p')"
   if [ -z "$SCMD" ] || [ "$SMODE" = "none" ]; then
-    SMOKE_NOTE="no serve command resolves (non-web or empty project) — set GATE_START_CMD to opt in"
+    SMOKE_NOTE="no serve command resolves — configure GATE_START_CMD; for non-web projects the operator may use agentctl gates enable --no-web-smoke --reason TEXT"
     echo "SMOKE:     SKIPPED ($SMOKE_NOTE)"
   else
     # b. Verified-free port (portable node listen-probe).
@@ -357,10 +368,12 @@ FAILED=""
 [ "$BUILD_STATUS" = "FAIL" ] && [ "${BUILD_FATAL:-1}" != "0" ] && FAILED="$FAILED BUILD"
 [ "$TEST_STATUS" = "FAIL" ] && FAILED="$FAILED TEST"
 [ "$TEST_STATUS" = "TIMEOUT" ] && FAILED="$FAILED TEST(TIMEOUT)"
-# SMOKE: advisory by default; a GATE only under opt-in SMOKE_ENFORCE=1 — and
-# only a real FAIL gates. ERROR (rung crash) stays advisory even under enforce:
-# a flaky gate is worse than no gate (doctrine), so rung-flake never false-FAILs.
-[ "${SMOKE_ENFORCE:-0}" = "1" ] && [ "$SMOKE_STATUS" = "FAIL" ] && FAILED="$FAILED SMOKE"
+# Required smoke must complete successfully. Missing prerequisites, startup
+# failure and tool errors are incomplete verification, never a green gate.
+# Legacy rigs with SMOKE_ENFORCE=0 retain advisory behaviour.
+if [ "${SMOKE_ENFORCE:-0}" = "1" ] && [ "$QUICK" != "1" ] && [ "$SMOKE_STATUS" != "PASS" ]; then
+  FAILED="$FAILED SMOKE($SMOKE_STATUS)"
+fi
 
 print_tail() { echo "--- $1 tail ---"; tail -n 15 "$2"; }
 [ "$LINT_STATUS" = "FAIL" ]  && print_tail LINT "$LINT_LOG"

@@ -85,7 +85,7 @@ test("re-emitting code_ready re-pins the new tip; approved then joins cleanly", 
   assert.match(r.out, /OK: approved/);
 });
 
-test("no pin on file → approved warns plainly but does not block (legacy/mid-flight rigs)", () => {
+test("no pin on file → approved refuses, including legacy/mid-flight rigs", () => {
   const bare = join(scratch, "bare-rig");
   mkdirSync(join(bare, ".agents", "state"), { recursive: true });
   mkdirSync(join(bare, ".agents", "config"), { recursive: true });
@@ -96,11 +96,8 @@ test("no pin on file → approved warns plainly but does not block (legacy/mid-f
   );
   writeFileSync(join(bare, ".agents", "config", "handoffs.yaml"), "handoffs:\n");
   writeFileSync(join(bare, ".agents", "state", "events.log"), "");
-  const out = execFileSync("python3", [AGENTCTL, "emit", "approved", "--actor", "orchestrator"], {
-    cwd: bare,
-    encoding: "utf8",
-  });
-  assert.match(out, /WARNING: no code_ready pin on file/);
-  assert.match(out, /OK: approved/);
+  assert.throws(() => execFileSync("python3", [AGENTCTL, "emit", "approved", "--actor", "orchestrator"], {
+    cwd: bare, encoding: "utf8", stdio: "pipe",
+  }), /no valid code_ready pin/);
   assert.ok(!existsSync(join(bare, ".agents", "state", "pin-code_ready")));
 });

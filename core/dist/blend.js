@@ -1,3 +1,4 @@
+import { readWork, saveWork, clearWork, finishRecordedMail, recoveryMessage } from "./work-recovery.js";
 // THE BLENDED PANE — S1 transport (PDR dev/pdr/blended-pane.md, GREENLIT).
 //
 // A blended seat is ONE live interactive agent session in an engine-owned
@@ -30,10 +31,11 @@
 // Session lifecycle: the orchestrator PERSISTS; workers get a FRESH session
 // per task (reset = visible respawn, lazily at the next delivery), with a
 // per-seat rig.conf override (BLEND_<PREFIX>_PERSIST=1).
-import { appendFileSync, existsSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, renameSync, existsSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { acquireConsumerLease, assertConsumerLease } from "./consumer-lease.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { complete, localIsoOffset, readNew } from "./mailbox.js";
 import { ackPhrase, attendedFile, isAck, runnerLoop, sessionFile, turnsDir } from "./runner.js";
 import { claudeProjectDir } from "./ptyseat.js";
@@ -403,6 +405,84 @@ export function assistantTurnStartedAfter(jsonlText, marker, cli) {
     }
     return false;
 }
+/** Completed provider turns, not file silence, permit an automatic reset.
+ * A quiet tool call is still busy. Unknown/partial evidence fails closed. */
+export function sessionWorkState(text, cli) {
+    if (!text)
+        return "unknown";
+    let state = "unknown";
+    for (const line of text.split("\n")) {
+        if (!line.trim())
+            continue;
+        let d;
+        try {
+            d = JSON.parse(line);
+        }
+        catch {
+            state = "unknown";
+            continue;
+        }
+        if (d.isSidechain)
+            continue;
+        const m = d.message;
+        if (cli === "claude") {
+            if (d.type === "user")
+                state = "busy";
+            if (d.type === "assistant")
+                state = m?.stop_reason === "end_turn" ? "idle" : "busy";
+        }
+        else if (cli === "pi") {
+            if (d.type === "message" && ["user", "toolResult"].includes(m?.role ?? ""))
+                state = "busy";
+            if (d.type === "message" && m?.role === "assistant")
+                state = m?.stopReason === "stop" ? "idle" : "busy";
+        }
+        else if (cli === "codex") {
+            if (d.type === "event_msg" && ["task_started", "user_message"].includes(d.payload?.type ?? ""))
+                state = "busy";
+            if (d.type === "event_msg" && d.payload?.type === "task_complete")
+                state = "idle";
+        }
+    }
+    return state;
+}
+/** Called BEFORE reopening a dead pane. Receipt can be reconciled without
+ * replay; unfinished/unknown work needs an explicit operator decision. */
+export function reconcileBlendedRestart(root, seat, cli, home) {
+    let work = readWork(root, seat);
+    if (!work)
+        return; // older installs have no attempt evidence
+    if (work.mode !== "blended")
+        throw new Error(recoveryMessage(seat));
+    const candidates = findBlendSessionCandidates(cli, { projectRoot: root, home, sinceMs: 0 });
+    candidates.sort((a, b) => Number(b.path === work.sessionPath) - Number(a.path === work.sessionPath));
+    const match = candidates.find(c => {
+        try {
+            return verifyDelivered(readFileSync(c.path, "utf8"), `#${work.id}`, cli);
+        }
+        catch {
+            return false;
+        }
+    });
+    if (!match)
+        throw new Error(recoveryMessage(seat));
+    const text = readFileSync(match.path, "utf8");
+    const wasPrepared = work.phase === "prepared";
+    work = { ...work, phase: "received", sessionId: match.sessionId, sessionPath: match.path };
+    saveWork(root, seat, work);
+    // A crash may precede session persistence and inbox acknowledgement.
+    if (wasPrepared)
+        writeFileSync(sessionFile(root, seat), JSON.stringify({ agent: cli, sessionId: match.sessionId, blended: true }));
+    finishRecordedMail(root, seat, work);
+    if (sessionWorkState(text, cli) !== "idle") {
+        if (work.resumeApproved) {
+            saveWork(root, seat, { ...work, resumeApproved: false });
+            return; // explicit one-time continuation; work evidence protects resets
+        }
+        throw new Error(recoveryMessage(seat));
+    }
+    clearWork(root, seat);
+}
 /** Gauge fuel without headless stream-json: the LAST assistant record's
  * message.usage. Context fullness = input + cache-read tokens. Absent or
  * unparseable → undefined — degrade honestly, never fake a gauge. The exact
@@ -508,7 +588,7 @@ export async function deliverToBlendedSeat(o) {
             await sleep(o.quietPollMs ?? 250);
         }
     };
-    for (const attempt of [1, 2]) {
+    for (const attempt of (o.maxAttempts === 1 ? [1] : [1, 2])) {
         if (o.signal?.aborted)
             return { ok: false, id, attempts: attempt - 1, error: "aborted" };
         await waitQuiet();
@@ -519,8 +599,12 @@ export async function deliverToBlendedSeat(o) {
         if ((attempt === 2 || o.redelivery) && verified())
             return { ok: true, id, attempts: attempt - 1 };
         const block = renderMailBlock(o.msgs, id, attempt === 2 || o.redelivery === true, o.orientation);
+        if (o.signal?.aborted)
+            return { ok: false, id, attempts: attempt - 1, error: "aborted" };
         o.tty.inject(PASTE_START + block + PASTE_END);
         await sleep(submitDelayMs);
+        if (o.signal?.aborted)
+            return { ok: false, id, attempts: attempt, error: "aborted after paste" };
         o.tty.inject("\r"); // a SEPARATE CR — an immediate one is swallowed into the paste (codex)
         const t0 = now();
         while (!o.signal?.aborted) {
@@ -541,7 +625,8 @@ export async function deliverToBlendedSeat(o) {
             await sleep(verifyPollMs);
         }
     }
-    return { ok: false, id, attempts: 2, error: `not verified in session file after 2 attempts` };
+    const attempts = o.maxAttempts ?? 2;
+    return { ok: false, id, attempts, error: `not verified in session file after ${attempts} attempts` };
 }
 // ── the early-stop watchdog (delivered ≠ attended) ────────────────────────
 /** How long a verified delivery may sit with NO assistant turn before the
@@ -608,6 +693,8 @@ export async function watchForEarlyStop(o) {
  * idle: CLOSE, ABANDON, RESEARCH_DONE (state-machine.yaml is the authority;
  * REJECTED lines never count). */
 export function isTaskEndEvent(line) {
+    if (line.trimStart().startsWith("#"))
+        return false;
     const t = line.trim().split(/\s+/)[1];
     return t === "CLOSE" || t === "ABANDON" || t === "RESEARCH_DONE";
 }
@@ -620,12 +707,59 @@ export function taskEndsIn(chunk) {
 export function seatsToReset(blendedSeats, conf) {
     return blendedSeats.filter((s) => s !== "orchestrator" && !persistOverridden(conf, s));
 }
-export function createStaleTracker() {
-    const stale = new Set();
+export function createStaleTracker(projectRoot, resetAtBoundary = s => s !== "orchestrator") {
+    if (!projectRoot) {
+        const stale = new Set();
+        return { isStale: s => stale.has(s), markStale: s => { stale.add(s); }, clear: s => { stale.delete(s); } };
+    }
+    const dir = join(projectRoot, ".agents/state/reset-generations");
+    const observed = new Map();
+    const file = (seat) => {
+        if (!/^[a-z]+$/.test(seat))
+            throw new Error("invalid reset seat");
+        return join(dir, seat + ".json");
+    };
+    const read = (seat) => {
+        const path = file(seat);
+        if (!existsSync(path))
+            return {};
+        const value = JSON.parse(readFileSync(path, "utf8"));
+        if (!value || typeof value !== "object" || [value.acknowledged, value.forced, value.acknowledgedForce].some(v => v !== undefined && typeof v !== "string"))
+            throw new Error("invalid reset generation record");
+        return value;
+    };
+    const write = (seat, value) => {
+        mkdirSync(dir, { recursive: true });
+        const path = file(seat), tmp = path + ".tmp-" + randomUUID();
+        writeFileSync(tmp, JSON.stringify(value));
+        renameSync(tmp, path);
+    };
+    const boundary = (seat) => {
+        if (!resetAtBoundary(seat))
+            return read(seat).acknowledged ?? "";
+        const log = join(projectRoot, ".agents/state/events.log");
+        if (!existsSync(log))
+            return "";
+        const lines = readFileSync(log, "utf8").split("\n");
+        for (let i = lines.length - 1; i >= 0; i--) {
+            if (isTaskEndEvent(lines[i]))
+                return createHash("sha256").update(i + ":" + lines[i]).digest("hex");
+        }
+        return "";
+    };
     return {
-        isStale: (s) => stale.has(s),
-        markStale: (s) => stale.add(s),
-        clear: (s) => stale.delete(s),
+        isStale(seat) {
+            const record = read(seat), current = { boundary: boundary(seat), forced: record.forced };
+            observed.set(seat, current);
+            return (record.acknowledged ?? "") !== current.boundary || record.acknowledgedForce !== current.forced;
+        },
+        markStale(seat) { write(seat, { ...read(seat), forced: randomUUID() }); },
+        clear(seat) {
+            const record = read(seat), generation = observed.get(seat) ?? { boundary: boundary(seat), forced: record.forced };
+            // A newer CLOSE or reset request arriving during respawn stays pending.
+            write(seat, { ...record, acknowledged: generation.boundary, acknowledgedForce: generation.forced });
+            observed.delete(seat);
+        },
     };
 }
 /**
@@ -847,6 +981,10 @@ export async function blendedTurn(o) {
     const { projectRoot, seat } = o;
     const sleep = o.sleep ?? realSleep;
     const inboxRoot = join(projectRoot, ".agents", "state", "inbox");
+    const pending = readWork(projectRoot, seat);
+    if (pending?.phase === "prepared" || (pending && pending.mode !== "blended")) {
+        return { ok: false, recoveryRequired: true, error: recoveryMessage(seat) };
+    }
     const mail = readNew(inboxRoot, seat);
     if (mail.length === 0)
         return { ok: true, idle: true };
@@ -921,13 +1059,18 @@ export async function blendedTurn(o) {
     // brand-new mail (live-found by the rig's own orchestrator, 2026-08-12).
     const batchKey = mail.map((m) => m.name).join("|");
     const retryId = o.retryRef?.batch === batchKey ? o.retryRef.id : undefined;
+    const deliveryId = retryId ?? newDeliveryId();
+    const work = { version: 1, mode: "blended", agent: o.cli, phase: "prepared",
+        id: deliveryId, messages: mail.map(m => m.name), at: new Date().toISOString(), };
+    saveWork(projectRoot, seat, work);
     const r = await deliverToBlendedSeat({
         tty,
         msgs: mail,
         cli: o.cli,
         readSession: o.readSession,
         orientation: needsOrient ? renderOrientation(seat) : undefined,
-        id: retryId,
+        id: deliveryId,
+        maxAttempts: 1,
         redelivery: retryId !== undefined,
         quietMs: o.quietMs,
         longQuietMs: o.longQuietMs,
@@ -948,13 +1091,12 @@ export async function blendedTurn(o) {
         }
         stampTurns(projectRoot, seat, `delivery FAILED | #${r.id} | ${r.error ?? "unverified"} — mail stays queued`);
         stampDeliverFailed(projectRoot, seat, r.id, r.error ?? "unverified");
-        return { ok: false, error: `delivery #${r.id} ${r.error ?? "unverified"}` };
+        return { ok: false, recoveryRequired: true, error: `delivery #${r.id} ${r.error ?? "unverified"}; ${recoveryMessage(seat)}` };
     }
     if (o.retryRef) {
         o.retryRef.id = undefined;
         o.retryRef.batch = undefined;
     }
-    complete(inboxRoot, seat, mail); // ack ONLY after on-disk verification (at-least-once)
     // Pin BEFORE reading the id: the marker just proved which candidate file
     // is OURS (all-seats coherence — several blended seats share one cwd).
     o.onVerified?.(r.id);
@@ -966,6 +1108,8 @@ export async function blendedTurn(o) {
         if (o.persistRef)
             o.persistRef.persisted = true; // arms the external-drop lever
     }
+    saveWork(projectRoot, seat, { ...work, phase: "received", sessionId: sid, sessionPath: o.currentSessionPath?.() });
+    complete(inboxRoot, seat, mail); // receipt only; work record survives until reconciled
     const usage = sessionUsage(o.readSession() ?? "");
     stampTurns(projectRoot, seat, `delivered | #${r.id} | mail=${mail.length} | verified in ${sid ? `${sid.slice(0, 8)}….jsonl` : "session file"}` +
         `${r.verifyMs !== undefined ? ` after ${r.verifyMs}ms` : ""}${r.attempts > 1 ? " | on redelivery" : ""}` +
@@ -1017,7 +1161,18 @@ export async function blendedTurn(o) {
  * in-process state — a `crate runner` child could never reach the pane), so
  * the orphan watchdog is neutralized: the supervisor's lifetime IS ours.
  */
-export function blendedLoop(o) {
+export async function blendedLoop(o) {
+    const lease = o.consumerLease ?? await acquireConsumerLease(o.projectRoot, o.seat);
+    assertConsumerLease(lease, o.projectRoot, o.seat);
+    try {
+        await ownedBlendedLoop({ ...o, consumerLease: lease });
+    }
+    finally {
+        if (!o.consumerLease)
+            await lease.release();
+    }
+}
+function ownedBlendedLoop(o) {
     // A stale attended marker would silently freeze deliveries via the loop's
     // hold check — blended seats are never held. Clear it before the first wake.
     const att = attendedFile(o.projectRoot, o.seat);
@@ -1036,6 +1191,7 @@ export function blendedLoop(o) {
     const turnOpts = { ...o, retryRef: o.retryRef ?? {}, wdRef: o.wdRef ?? { gen: 0 } };
     const loopOpts = {
         projectRoot: o.projectRoot,
+        consumerLease: o.consumerLease,
         seat: o.seat,
         agent: o.cli,
         model: o.model,
@@ -1049,12 +1205,17 @@ export function blendedLoop(o) {
         // retry/dead-letter machinery inherited), never kill the standing loop.
         runTurnImpl: async () => {
             try {
-                return await blendedTurn(turnOpts);
+                const result = await blendedTurn(turnOpts);
+                // A receipt is not a completed model turn. The inherited headless
+                // auto-refresh hook may only drop context with completion evidence.
+                if (result.ok && sessionWorkState(o.readSession(), o.cli) !== "idle")
+                    return { ...result, usage: undefined };
+                return result;
             }
             catch (e) {
                 const msg = e instanceof Error ? e.message : String(e);
                 stampTurns(o.projectRoot, o.seat, `delivery turn CRASHED: ${msg} — mail stays queued`);
-                return { ok: false, error: msg };
+                return { ok: false, recoveryRequired: readWork(o.projectRoot, o.seat) !== undefined, error: msg };
             }
         },
     };

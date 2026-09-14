@@ -1,3 +1,4 @@
+import { workHoldReason } from "../work-recovery.js";
 // PHASE-8 T2 — the thin viewer's data layer: read the headless artifacts a
 // runner produces (turn logs, session, mailbox, state files) into a shape
 // the /team page renders. READ-ONLY (the viewer is glass, never a control
@@ -7,7 +8,7 @@ import { resolveSeatStaffing } from "../launcher.js";
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { blendEligible, isBlended, sessionUsage, type BlendCli } from "../blend.js";
+import { blendEligible, isBlended, sessionUsage, sessionWorkState, type BlendCli } from "../blend.js";
 import { claudeProjectDir, liveTty } from "../ptyseat.js";
 import { isAttended, sessionFile } from "../runner.js";
 import { parseRigConf, RIG_PREFIX } from "../staffing.js";
@@ -136,6 +137,7 @@ export interface SeatView {
   blended?: boolean;
   /** blended only: the live session file grew in the last few seconds. */
   responding?: boolean;
+  recoveryRequired?: string;
   /** blended only: ISO of the session file's last growth (the idle chip). */
   lastOutputAt?: string;
   /** blended only: the live PTY's spawn epoch — the client reopens its
@@ -380,11 +382,12 @@ function blendedSeatView(
     }
     const p = join(claudeProjectDir(root, home), `${j.sessionId}.jsonl`);
     const mtimeMs = statSync(p).mtimeMs;
-    const usage = sessionUsage(readFileSync(p, "utf8"));
+    const text = readFileSync(p, "utf8");
+    const usage = sessionUsage(text);
     const gauge = gaugeFrom(usage?.inputTokens, model); // absent usage → no gauge, never a fake 0%
     return {
       ...(gauge ? { gauge } : {}),
-      responding: Date.now() - mtimeMs < 3000,
+      responding: sessionWorkState(text, cli) !== "idle",
       lastOutputAt: new Date(mtimeMs).toISOString(),
     };
   } catch {
@@ -454,6 +457,7 @@ export function readTeamView(projectRoot: string, maxTurnsPerSeat = 5, home: str
     const pty = blended ? liveTty(projectRoot, seat) : undefined;
     return {
       seat, title: titles[seat]!, agent: agentRaw,
+      recoveryRequired: workHoldReason(projectRoot, seat),
       ...(model ? { model } : {}),
       unread,
       attended,

@@ -1,3 +1,4 @@
+import { readWork } from "../work-recovery.js";
 // PHASE-8 T7-3 — the team lifecycle manager: the GUI OWNS the headless team.
 // Until now the team ran as a separate `crate team` process; the GUI was a
 // pure viewer. T7-3 lets the GUI boot, stop, and per-seat relaunch the runners
@@ -232,13 +233,13 @@ export class TeamProcess {
   refreshBlended(seat: Seat, opts: { force?: boolean } = {}): { handled: boolean; ok?: boolean; reason?: string } {
     const b = this.blends.get(seat);
     if (!b || !b.alive()) return { handled: false };
-    if (!opts.force && b.responding()) {
+    if (b.responding() && (!opts.force || readWork(this.projectRoot, seat))) {
       return {
         handled: true,
         ok: false,
         reason:
           `${seat} is mid-response in its live pane — a refresh now would tear the turn in half. ` +
-          `Wait for it to go quiet, or force to override.`,
+          `Wait for the turn to finish. If interrupted, stop the team and inspect its work before using crate recover.`,
       };
     }
     try {

@@ -87,8 +87,8 @@ export declare const LoadoutSchema: z.ZodObject<{
         permission_mode?: "default" | "bypassPermissions" | undefined;
     }>;
 }, "strict", z.ZodTypeAny, {
-    seat: "orchestrator" | "coder" | "reviewer" | "designer" | "tester";
     agent: "pi" | "claude-code";
+    seat: "orchestrator" | "coder" | "reviewer" | "designer" | "tester";
     binder: string;
     append_system: string[];
     skills: string[];

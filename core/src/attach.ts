@@ -331,7 +331,7 @@ CONCURRENT_LOOPS="0"
 AUTO_REVIVE="0"
 
 # --- Build/verify gate (bin/nm-gate + precheck.sh) ----------------------------
-NMGATE_ENFORCE="0"        # 1 = agentctl refuses code_ready with no SHA-tied gate_pass
+NMGATE_ENFORCE="1"        # 1 = agentctl refuses code_ready with no SHA-tied gate_pass
 NMGATE_BUILD_FATAL="1"
 NMGATE_LINT_DELTA="0"
 
@@ -339,7 +339,7 @@ NMGATE_LINT_DELTA="0"
 # Verifiers RECORD verdicts (agentctl emit verdict); orchestrator-only ownership
 # of approved/changes_needed is ALWAYS enforced. JOIN_ENFORCE=1 additionally
 # refuses the join until BOTH verdicts are on record (advisory warning when 0).
-JOIN_ENFORCE="0"
+JOIN_ENFORCE="1"
 
 # --- Workflow tiering (2026-07-25; PDR dev/pdr/workflow-tiering.md) ------------
 # The orchestrator may declare tier=chore|bug|feature on start_impl (omitted =
@@ -350,8 +350,8 @@ JOIN_ENFORCE="0"
 # --- Runtime smoke rung (in the gate; PDR dev/pdr/runtime-smoke-rung.md) -------
 # Boots the built worktree ephemerally, drives AGENTS.md Critical-Path routes
 # GET-only (404/5xx/redirect-loop/console errors; 401/403 = auth-gated skip).
-SMOKE_ENFORCE="0"         # 1 = a smoke FAIL fails the gate (rung crashes stay advisory)
-SMOKE_READY_SECS="60"     # server ready-deadline before an honest advisory skip
+SMOKE_ENFORCE="1"         # 1 = failed or incomplete required smoke blocks the gate
+SMOKE_READY_SECS="60"     # server ready-deadline; incomplete required smoke fails
 # SMOKE_ALLOWLIST=""      # extra console-noise substrings (favicon.ico always allowed)
 # GATE_START_CMD='npm run preview -- --port \$GATE_PORT --strictPort'
                           # prod-serve override (SINGLE-quoted; default: detected by shape)

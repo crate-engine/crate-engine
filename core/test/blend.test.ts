@@ -1056,42 +1056,20 @@ test("watchForEarlyStop: a newer delivery supersedes; a vanished marker (respawn
   assert.equal(tty.injected.length, 0, "a stale watchdog never nudges a session about mail it cannot see");
 });
 
-test("blendedTurn + retryRef: a failed batch RETRIES under its own id; the late landing is drained, not re-minted", async () => {
-  const retryRef: { id?: string; batch?: string } = {};
-  const rig = turnRig("bt-retry-id", { retryRef, sleep: noSleep }); // never lands → attempt fails
-  enqueue(rig.inbox, "coder", "orchestrator", "slow boundary");
-  const r1 = await blendedTurn(rig.opts);
-  assert.equal(r1.ok, false);
-  const id = rig.tty.injected[0]!.match(/#([0-9a-f]{8})/)![1]!;
-  assert.equal(retryRef.id, id, "the failed id is parked for the retry");
-
-  // the paste lands LATE (the long tool execution ends) before the retry turn
-  rig.session.text = claudeUser(`[team mail #${id} — engine delivery]\nslow boundary`);
-  const pastesBefore = rig.tty.injected.filter((s) => s.startsWith("\x1b[200~")).length;
-  const r2 = await blendedTurn(rig.opts);
-  assert.equal(r2.ok, true);
-  assert.equal(rig.tty.injected.filter((s) => s.startsWith("\x1b[200~")).length, pastesBefore, "drained — ZERO new pastes, no duplicate mail");
-  assert.equal(readNew(rig.inbox, "coder").length, 0, "the batch completed under its ORIGINAL id");
-  assert.equal(retryRef.id, undefined, "continuity cleared on success");
-  const log = readFileSync(join(rig.proj, ".agents", "state", "turns", "coder", "turns.log"), "utf8");
-  assert.match(log, new RegExp(`delivered \\| #${id} .*late landing drained`));
-});
-
-test("blendedTurn + retryRef: a CHANGED batch (new mail joined) mints fresh — content differs, no false drain", async () => {
-  const retryRef: { id?: string; batch?: string } = {};
-  const rig = turnRig("bt-retry-grow", { retryRef, sleep: noSleep });
+test("blendedTurn: an uncertain send holds its original batch despite late receipt and new mail", async () => {
+  const rig = turnRig("bt-retry-hold", { sleep: noSleep });
   enqueue(rig.inbox, "coder", "orchestrator", "first");
-  const r1 = await blendedTurn(rig.opts);
-  assert.equal(r1.ok, false);
-  const failedId = retryRef.id!;
-
-  enqueue(rig.inbox, "coder", "reviewer", "second — joined while queued");
-  rig.opts.sleep = autoLandSleep(rig);
-  const r2 = await blendedTurn(rig.opts);
-  assert.equal(r2.ok, true);
-  const lastPaste = rig.tty.injected.filter((s) => s.startsWith("\x1b[200~")).at(-1)!;
-  assert.ok(!lastPaste.includes(`#${failedId}`), "a grown batch is NEW mail under a new id");
-  assert.ok(!lastPaste.includes("REDELIVERY"), "…and honestly not a redelivery");
+  const first = await blendedTurn(rig.opts);
+  assert.equal(first.recoveryRequired, true);
+  const pastes = rig.tty.injected.filter(s => s.startsWith("\x1b[200~"));
+  assert.equal(pastes.length, 1, "production never blindly re-pastes an uncertain send");
+  const id = pastes[0]!.match(/#([0-9a-f]{8})/)![1]!;
+  rig.session.text = claudeUser(`[team mail #${id}] first`);
+  enqueue(rig.inbox, "coder", "reviewer", "new arrival");
+  const next = await blendedTurn(rig.opts);
+  assert.equal(next.recoveryRequired, true);
+  assert.equal(rig.tty.injected.filter(s => s.startsWith("\x1b[200~")).length, 1);
+  assert.equal(readNew(rig.inbox, "coder").length, 2, "both messages survive pending restart reconciliation");
 });
 
 test("blendedTurn + wdRef: a verified-but-unattended delivery gets the standing nudge + inert WATCHDOG_NUDGE record", async () => {
@@ -1242,4 +1220,47 @@ test("CE-155 live: a modal that resolves ITSELF mid-answer never gets the CR", a
   );
   assert.equal(n, 0, "a modal that vanished mid-answer was never actually answered");
   assert.deepEqual(tty.injected, ["1"], "the choice may have gone out; the CR must not follow it");
+});
+
+test("short actionable acknowledgement is delivered through the real blended queue", async () => {
+  const rig = turnRig("bt-actionable-ack");
+  const body = "Acknowledged. Please fix the failing authentication check before merging.";
+  enqueue(rig.inbox, "coder", "reviewer", body);
+  const r = await blendedTurn(rig.opts);
+  assert.ok(r.ok);
+  assert.ok(rig.tty.injected.some(s => s.includes(body)), "instruction reaches client, not ack absorption");
+});
+
+test("durable reset survives CLOSE before watcher/engine restart and is consumed only after reset", () => {
+  const root = makeProject("durable-reset");
+  const log = join(root, ".agents/state/events.log");
+  writeFileSync(log, "[t] START_IMPL state=implementing\n[t] CLOSE state=idle\n");
+  const first = createStaleTracker(root);
+  assert.equal(first.isStale("reviewer"), true);
+  assert.equal(first.isStale("orchestrator"), false);
+  const restarted = createStaleTracker(root);
+  assert.equal(restarted.isStale("reviewer"), true);
+  restarted.clear("reviewer");
+  assert.equal(createStaleTracker(root).isStale("reviewer"), false);
+  appendFileSync(log, "[t2] START_IMPL state=implementing\n");
+  assert.equal(createStaleTracker(root).isStale("reviewer"), false, "same task resumes");
+});
+test("a newer boundary or forced reset arriving during respawn is not consumed", () => {
+  const root = makeProject("durable-reset-race"); const log = join(root, ".agents/state/events.log");
+  writeFileSync(log, "[t] CLOSE state=idle\n");
+  const tracker = createStaleTracker(root); assert.ok(tracker.isStale("coder"));
+  appendFileSync(log, "[t2] CLOSE state=idle\n"); tracker.clear("coder");
+  assert.ok(createStaleTracker(root).isStale("coder"));
+  tracker.isStale("coder"); tracker.clear("coder");
+  tracker.markStale("coder"); assert.ok(tracker.isStale("coder"));
+  createStaleTracker(root).markStale("coder"); tracker.clear("coder");
+  assert.ok(createStaleTracker(root).isStale("coder"));
+});
+test("persistence override keeps context while an explicit reset still survives restart", () => {
+  const root = makeProject("durable-persist"); const log = join(root, ".agents/state/events.log");
+  writeFileSync(log, "[t] CLOSE state=idle\n");
+  const tracker = createStaleTracker(root, () => false);
+  assert.equal(tracker.isStale("tester"), false);
+  tracker.markStale("tester");
+  assert.ok(createStaleTracker(root, () => false).isStale("tester"));
 });

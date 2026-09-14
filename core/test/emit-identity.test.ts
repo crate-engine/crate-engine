@@ -1,3 +1,5 @@
+import { verdictArgs } from "./git-fixture.js";
+import { initProtocolGit } from "./git-fixture.js";
 // SEAT-IDENTITY (emit-identity fix, 2026-08-11; FLAWS "emit identity is
 // self-declared"): `--actor` was pure self-declaration — a live coder
 // re-emitted `gate_release --actor operator` and merged its own work. The
@@ -36,6 +38,7 @@ function makeRig(name: string, conf = 'PROJECT="rig"\n'): string {
   );
   writeFileSync(join(rig, ".agents", "config", "handoffs.yaml"), "handoffs:\n");
   writeFileSync(join(rig, ".agents", "state", "events.log"), "");
+  initProtocolGit(rig);
   return rig;
 }
 
@@ -51,7 +54,7 @@ function ctl(
   delete env.CRATE_SEAT;
   if (opts.seat) env.CRATE_SEAT = opts.seat;
   try {
-    return { ok: true, out: execFileSync("python3", [AGENTCTL, ...args], { cwd: rig, encoding: "utf8", env }) };
+    return { ok: true, out: execFileSync("python3", [AGENTCTL, ...verdictArgs(rig, args)], { cwd: rig, encoding: "utf8", env }) };
   } catch (e) {
     const err = e as { stdout?: string; stderr?: string };
     return { ok: false, out: (err.stdout ?? "") + (err.stderr ?? "") };

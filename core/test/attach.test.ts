@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -372,4 +372,35 @@ test("rig.conf.example: no foreign absolute paths, and every generated key is do
   }
   // cmux died in 2.1 — its layout keys must not linger in a shipped file.
   assert.doesNotMatch(example, /WORKSPACE_NAME|WORKSPACE_END|cmux/, "cmux-era keys are gone");
+});
+
+test("fresh attach requires all three gates; reattach preserves explicit legacy settings", () => {
+  const root = join(scratch, "required-gates");
+  mkdirSync(root);
+  git(["init", "-qb", "main"], root);
+  executeAttach(planAttach(resolveTarget(root, { cwd: "/" }), engine));
+  const path = join(root, ".agents/rig.conf");
+  const conf = readFileSync(path, "utf8");
+  for (const key of ["NMGATE_ENFORCE", "JOIN_ENFORCE", "SMOKE_ENFORCE"]) assert.match(conf, new RegExp(key + '=\"1\"'));
+  const legacy = conf.replace(/(NMGATE_ENFORCE|JOIN_ENFORCE|SMOKE_ENFORCE)="1"/g, '$1="0"');
+  writeFileSync(path, legacy);
+  executeAttach(planAttach(resolveTarget(root, { cwd: "/" }), engine));
+  assert.equal(readFileSync(path, "utf8"), legacy);
+});
+
+test("fresh generated smoke setting reaches real nm-gate and refuses incomplete verification", () => {
+  const root = join(scratch, "smoke-enforcement"); mkdirSync(root);
+  git(["init", "-qb", "main"], root);
+  writeFileSync(join(root, "tool.py"), "print('non-web fixture')\n");
+  git(["add", "tool.py"], root); git(["commit", "-qm", "base"], root);
+  const realEngine = fileURLToPath(new URL("../../", import.meta.url));
+  executeAttach(planAttach(resolveTarget(root, { cwd: "/" }), realEngine));
+  git(["checkout", "-qb", "feature/check"], root);
+  writeFileSync(join(root, "tool.py"), "print('changed fixture')\n");
+  git(["add", "tool.py"], root); git(["commit", "-qm", "candidate"], root);
+  const result = spawnSync("bash", [".agents/bin/nm-gate", "feature/check"], { cwd: root, encoding: "utf8", timeout: 30000 });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /SMOKE\(SKIPPED\)/);
+  const log = join(root, ".agents/state/events.log");
+  assert.doesNotMatch(existsSync(log) ? readFileSync(log, "utf8") : "", / GATE_PASS /);
 });

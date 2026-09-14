@@ -1,3 +1,5 @@
+import { verdictArgs } from "./git-fixture.js";
+import { initProtocolGit } from "./git-fixture.js";
 // PHASE-8 T3: the "merge go" gate is machine physics. The merge (deployed)
 // refuses unless the OPERATOR released THIS task since it reached approved,
 // with the exact phrase "merge go". Drives the REAL bin/agentctl.py.
@@ -32,12 +34,13 @@ function makeRig(name: string): string {
   );
   writeFileSync(join(rig, ".agents", "config", "handoffs.yaml"), "handoffs:\n");
   writeFileSync(join(rig, ".agents", "state", "events.log"), "");
+  initProtocolGit(rig);
   return rig;
 }
 
 function ctl(rig: string, ...args: string[]): { ok: boolean; out: string } {
   try {
-    return { ok: true, out: execFileSync("python3", [AGENTCTL, ...args], { cwd: rig, encoding: "utf8" }) };
+    return { ok: true, out: execFileSync("python3", [AGENTCTL, ...verdictArgs(rig, args)], { cwd: rig, encoding: "utf8" }) };
   } catch (e) {
     const err = e as { stdout?: string; stderr?: string };
     return { ok: false, out: (err.stdout ?? "") + (err.stderr ?? "") };

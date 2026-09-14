@@ -76,7 +76,7 @@ if [ -n "$BASESHA" ] && [ "$BASESHA" = "$FULLSHA" ]; then
   echo "nm-gate: FAIL delta — $REF (@ $SHORT) has no commits beyond $BASE. Nothing to gate."
   exit 1
 fi
-if [ -z "$(git diff --name-only "$BASE...$RESOLVED" 2>/dev/null)" ]; then
+if [ -z "$(git diff --name-only "$BASESHA...$FULLSHA" 2>/dev/null)" ]; then
   echo "nm-gate: FAIL delta — no file changes vs $BASE."
   exit 1
 fi
@@ -89,27 +89,27 @@ fi
 # per-repo: build is a hard gate by default; rig.conf NMGATE_BUILD_FATAL=0 makes
 # build ADVISORY (e.g. an app whose full build needs prod-like env the gate lacks).
 # delta + typecheck stay hard regardless.
-BF="$(grep -E '^[[:space:]]*NMGATE_BUILD_FATAL' "$REPO_ROOT/.agents/rig.conf" 2>/dev/null | head -1 | cut -d= -f2 | tr -dc '01')"
+BF="$(grep -E '^[[:space:]]*NMGATE_BUILD_FATAL' "$REPO_ROOT/.agents/rig.conf" 2>/dev/null | head -1 | sed 's/#.*//' | cut -d= -f2 | tr -dc '01')"
 [ -n "$BF" ] && export BUILD_FATAL="$BF"
 
 # per-repo: lint is ADVISORY by default; rig.conf NMGATE_LINT_DELTA=1 turns on the
 # per-file no-net-new delta lint gate (fail only on errors a changed file ADDS vs
 # origin/main). Off by default so legacy baseline debt never blocks the gate.
-LD="$(grep -E '^[[:space:]]*NMGATE_LINT_DELTA' "$REPO_ROOT/.agents/rig.conf" 2>/dev/null | head -1 | cut -d= -f2 | tr -dc '01')"
+LD="$(grep -E '^[[:space:]]*NMGATE_LINT_DELTA' "$REPO_ROOT/.agents/rig.conf" 2>/dev/null | head -1 | sed 's/#.*//' | cut -d= -f2 | tr -dc '01')"
 [ -n "$LD" ] && export LINT_DELTA="$LD"
 
 # per-repo: test-rung timeout override in seconds (default 300 in precheck). A
 # hung suite fails the gate loudly at the deadline instead of wedging the loop (T2).
-TTO="$(grep -E '^[[:space:]]*NMGATE_TEST_TIMEOUT' "$REPO_ROOT/.agents/rig.conf" 2>/dev/null | head -1 | cut -d= -f2 | tr -dc '0-9')"
+TTO="$(grep -E '^[[:space:]]*NMGATE_TEST_TIMEOUT' "$REPO_ROOT/.agents/rig.conf" 2>/dev/null | head -1 | sed 's/#.*//' | cut -d= -f2 | tr -dc '0-9')"
 [ -n "$TTO" ] && export NMGATE_TEST_TIMEOUT="$TTO"
 
 # per-repo: the runtime SMOKE rung (PDR dev/pdr/runtime-smoke-rung.md) is
-# ADVISORY by default; SMOKE_ENFORCE=1 makes a smoke FAIL fail the gate.
+# Legacy advisory mode is preserved; SMOKE_ENFORCE=1 requires completed PASS.
 # SMOKE_READY_SECS tunes the server ready-deadline (default 60; AGENTS.md
 # "Ready deadline:" overrides per project). Full runs only (--quick skips).
-SE="$(grep -E '^[[:space:]]*SMOKE_ENFORCE' "$REPO_ROOT/.agents/rig.conf" 2>/dev/null | head -1 | cut -d= -f2 | tr -dc '01')"
+SE="$(grep -E '^[[:space:]]*SMOKE_ENFORCE' "$REPO_ROOT/.agents/rig.conf" 2>/dev/null | head -1 | sed 's/#.*//' | cut -d= -f2 | tr -dc '01')"
 [ -n "$SE" ] && export SMOKE_ENFORCE="$SE"
-SRS="$(grep -E '^[[:space:]]*SMOKE_READY_SECS' "$REPO_ROOT/.agents/rig.conf" 2>/dev/null | head -1 | cut -d= -f2 | tr -dc '0-9')"
+SRS="$(grep -E '^[[:space:]]*SMOKE_READY_SECS' "$REPO_ROOT/.agents/rig.conf" 2>/dev/null | head -1 | sed 's/#.*//' | cut -d= -f2 | tr -dc '0-9')"
 [ -n "$SRS" ] && export SMOKE_READY_SECS="$SRS"
 
 # Gate DB isolation: if rig.conf sets PREVIEW_DB_URL (a non-prod Neon branch), point
@@ -123,11 +123,11 @@ if [ -n "$PDB" ]; then export POSTGRES_URL="$PDB"; echo "nm-gate: gate DB -> PRE
 PRECHECK="$REPO_ROOT/.agents/bin/precheck.sh"
 [ -x "$PRECHECK" ] || [ -f "$PRECHECK" ] || { echo "nm-gate: precheck.sh not found at $PRECHECK" >&2; exit 2; }
 if [ "$QUICK" = "1" ]; then
-  bash "$PRECHECK" --quick "$REF" || { echo "nm-gate: --quick FAIL ($REF @ $SHORT)."; exit 1; }
+  bash "$PRECHECK" --quick "$FULLSHA" || { echo "nm-gate: --quick FAIL ($REF @ $SHORT)."; exit 1; }
   echo "nm-gate: --quick PASS ($REF @ $SHORT). No gate_pass recorded (dev iteration)."
   exit 0
 fi
-bash "$PRECHECK" "$REF" || { echo "nm-gate: FAIL — precheck did not pass for $REF (@ $SHORT). No gate_pass recorded."; exit 1; }
+bash "$PRECHECK" "$FULLSHA" || { echo "nm-gate: FAIL — precheck did not pass for $REF (@ $SHORT). No gate_pass recorded."; exit 1; }
 
 # ── STAGE 4: record the SHA-tied proof (what agentctl checks for code_ready) ──
 if ! python3 "$REPO_ROOT/.agents/bin/agentctl.py" emit gate_pass --actor coder sha="$FULLSHA" ref="$REF" >/dev/null 2>&1; then

@@ -1,3 +1,4 @@
+import { verdictArgs } from "./git-fixture.js";
 // Backlog 13 (the Servers panel, grilled 2026-08-13). Laws under test:
 // registration feeds a registry that SURVIVES close (close re-TAGS rows
 // "orphaned", it never kills — the one automation moves a LABEL); discovery
@@ -244,7 +245,7 @@ function ctl(rig: string, ...args: string[]): { ok: boolean; out: string } {
   const env = { ...process.env };
   delete env.CRATE_SEAT;
   try {
-    return { ok: true, out: execFileSync("python3", [AGENTCTL, ...args], { cwd: rig, encoding: "utf8", env }) };
+    return { ok: true, out: execFileSync("python3", [AGENTCTL, ...verdictArgs(rig, args)], { cwd: rig, encoding: "utf8", env }) };
   } catch (e) {
     const err = e as { stdout?: string; stderr?: string };
     return { ok: false, out: (err.stdout ?? "") + (err.stderr ?? "") };

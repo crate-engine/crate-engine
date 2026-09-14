@@ -1,3 +1,4 @@
+import { type ConsumerLease } from "./consumer-lease.js";
 import { type Message } from "./mailbox.js";
 import { type TurnResult } from "./runner.js";
 import type { Seat } from "./manifest.js";
@@ -122,6 +123,12 @@ export declare function verifyDelivered(jsonlText: string, marker: string, cli: 
  * signal. Records before the marker never count: an assistant that was
  * mid-response when the mail queued has not necessarily seen it. */
 export declare function assistantTurnStartedAfter(jsonlText: string, marker: string, cli: BlendCli): boolean;
+/** Completed provider turns, not file silence, permit an automatic reset.
+ * A quiet tool call is still busy. Unknown/partial evidence fails closed. */
+export declare function sessionWorkState(text: string | undefined, cli: BlendCli): "idle" | "busy" | "unknown";
+/** Called BEFORE reopening a dead pane. Receipt can be reconciled without
+ * replay; unfinished/unknown work needs an explicit operator decision. */
+export declare function reconcileBlendedRestart(root: string, seat: string, cli: BlendCli, home: string): void;
 /** Gauge fuel without headless stream-json: the LAST assistant record's
  * message.usage. Context fullness = input + cache-read tokens. Absent or
  * unparseable → undefined — degrade honestly, never fake a gauge. The exact
@@ -174,6 +181,8 @@ export interface DeliverOpts {
      * header, and the marker is checked BEFORE the first paste — a slow write
      * that landed the earlier attempt late is drained, never duplicated. */
     redelivery?: boolean;
+    /** Production transport holds uncertain sends instead of re-pasting. */
+    maxAttempts?: 1 | 2;
     quietMs?: number;
     longQuietMs?: number;
     quietPollMs?: number;
@@ -264,7 +273,7 @@ export interface StaleTracker {
     markStale(seat: string): void;
     clear(seat: string): void;
 }
-export declare function createStaleTracker(): StaleTracker;
+export declare function createStaleTracker(projectRoot?: string, resetAtBoundary?: (seat: string) => boolean): StaleTracker;
 /**
  * Watch events.log for task ends and mark the resettable blended seats
  * stale. The reset itself is LAZY — the next delivery respawns (memory
@@ -351,6 +360,7 @@ export interface BlendedTurnOpts {
     readSession: () => string | undefined;
     /** The discovered session id, for the sessionFile persist + stamps. */
     currentSessionId: () => string | undefined;
+    currentSessionPath?: () => string | undefined;
     stale: StaleTracker;
     /** The agent is mid-response (session file still growing) — a lazy reset
      * defers on this, never tearing a running turn in half (the D12 rail in
@@ -414,6 +424,7 @@ export interface BlendedTurnOpts {
  */
 export declare function blendedTurn(o: BlendedTurnOpts): Promise<TurnResult>;
 export interface BlendedLoopOpts extends BlendedTurnOpts {
+    consumerLease?: ConsumerLease;
     pollMs?: number;
     maxRetries?: number;
     /** Staffed model — the gauge's window denominator (D12 bands). */

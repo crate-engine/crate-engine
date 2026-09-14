@@ -44,7 +44,7 @@ export interface Message {
 
 let seq = 0;
 
-function seatDir(inboxRoot: string, seat: string, sub: "new" | "cur"): string {
+function seatDir(inboxRoot: string, seat: string, sub: "new" | "cur" | "tmp"): string {
   const d = join(inboxRoot, seat, sub);
   mkdirSync(d, { recursive: true });
   return d;
@@ -61,14 +61,14 @@ export function auditLog(inboxRoot: string, seat: string): string {
 /**
  * Durably enqueue one message. Unique filename (time + in-process seq +
  * pid) makes concurrent senders collision-free by construction; the write
- * is to a temp name in the SAME directory then renamed in (atomic on
+ * is to the sibling tmp/ directory then renamed into new/ (atomic on
  * POSIX), so a reader never sees a half-written message.
  */
 export function enqueue(inboxRoot: string, seat: string, from: string, body: string): string {
   const dir = seatDir(inboxRoot, seat, "new");
   const at = localIsoOffset(); // one clock (Pack 5): the same shape agentctl stamps
   const name = `${Date.now()}-${String(seq++).padStart(6, "0")}-${process.pid}.msg`;
-  const tmp = join(dir, `.tmp-${name}`);
+  const tmp = join(seatDir(inboxRoot, seat, "tmp"), name);
   const line = `${at} | ${from} | ${body.replaceAll("\n", "\\n")}\n`;
   writeFileSync(tmp, line);
   const final = join(dir, name);
@@ -83,7 +83,7 @@ export function enqueue(inboxRoot: string, seat: string, from: string, body: str
 export function readNew(inboxRoot: string, seat: string): Message[] {
   const dir = seatDir(inboxRoot, seat, "new");
   return readdirSync(dir)
-    .filter((f) => f.endsWith(".msg"))
+    .filter((f) => /^\d+-\d+-\d+\.msg$/.test(f))
     .sort()
     .map((name) => {
       const path = join(dir, name);

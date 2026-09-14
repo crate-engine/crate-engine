@@ -130,7 +130,7 @@ adapter — a printed ack reaches no one) before you start.
    findings on EVERY write so a previous run's note never reads as current
    (the P7-T1 stale-concern find).
 4. **Record your verdict — one command, and it is also your report:**
-       python3 .agents/bin/agentctl.py emit verdict --actor tester result=approve|reject report="..." [task=<branch>]
+       python3 .agents/bin/agentctl.py emit verdict --actor tester sha=<full-sha-from-brief> round=<round-from-brief> result=approve|reject report="..." [task=<branch>]
    This logs the verdict (the JOIN's raw material) AND mails `[VERDICT]` to the
    orchestrator mechanically — never anything to the coder. `result=approve` =
    all paths green; `result=reject` = numbered bugs (repro + severity) in the
@@ -186,3 +186,11 @@ update `state/tester.md`, then deliver `[VERIFIED]` to the orchestrator and emit
 For pure-behavior or bug tasks where QA leads: the orchestrator dispatches
 directly to you. You investigate, reproduce, document, and deliver `[BUGS_FOUND]`
 to the orchestrator — same as above.
+
+### Review-round identity
+Copy `sha=` and `round=` from the CODE_READY/FIX_READY brief you actually verified.
+Both are required structured command fields, not merely prose in the report.
+A resubmission gets a new round even when the commit is unchanged. If your round
+is stale, stop: do not read the latest pin and relabel old verification as new.
+Wait for the new brief and verify that round. Report accruals remain pending
+until included in a separately verified and human-approved candidate.
