@@ -818,6 +818,17 @@ export async function startGuiServer(opts = {}) {
                     });
                     return json(res, 200, { workspaces, active });
                 }
+                case "POST /api/workspaces/view": {
+                    // Returning to a project is a view change, never a team lifecycle action.
+                    const { listWorkspaces, setWorkspaceFocused } = await import("./workspaces.js");
+                    const body = await readBody(req);
+                    const p = String(body.path ?? "");
+                    const workspace = listWorkspaces(state.home).find(w => w.path === p);
+                    if (!workspace?.exists || !workspace.rig)
+                        return json(res, 404, { error: "Project unavailable; locate it with Open Project or reconnect its drive." });
+                    setWorkspaceFocused(state.home, p);
+                    return json(res, 200, { ok: true });
+                }
                 case "POST /api/workspaces/open": {
                     // Lifecycle S1 (PDR decision 4): THE open door — register + focus +
                     // desired=running + boot-if-not-live. Touches NOTHING else: no

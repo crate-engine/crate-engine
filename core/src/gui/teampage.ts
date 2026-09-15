@@ -2196,12 +2196,43 @@ anchorPanels();
 // card mode (no project attached) — CARD carries the machine label so the
 // card can SAY whose disk the picker browses (the PDR's honest-limits note).
 const CARD_JS = `
+// Shell recents include remote computers; ordinary browsers use this engine's registry.
+window.crateSetRecentProjects=function(payload){
+  const section=document.getElementById("recent-projects");if(!section)return;
+  section.replaceChildren();
+  const rows=(payload.rows||[]).slice(0,5);
+  if(!rows.length&&!payload.error){section.hidden=true;return;}
+  section.hidden=false;
+  const heading=document.createElement("h3");heading.textContent="Recent projects";
+  heading.style.cssText="font-size:14px;margin:0 0 10px";section.appendChild(heading);
+  if(payload.error){const note=document.createElement("p");note.setAttribute("role","status");note.textContent=payload.error;note.style.cssText="font-size:13px;color:var(--amber);line-height:1.5";section.appendChild(note);}
+  rows.forEach(row=>{
+    const b=document.createElement("button");b.className="door";
+    b.style.cssText="display:block;width:100%;text-align:left;margin:6px 0;padding:10px 12px";
+    const name=document.createElement("b");name.textContent=row.name;b.appendChild(name);
+    const detail=document.createElement("span");
+    detail.textContent=row.host+" · "+row.path+(row.openedAt?" · "+new Date(row.openedAt).toLocaleDateString():"");
+    detail.style.overflowWrap="anywhere";b.appendChild(detail);
+    if(row.id===payload.errorID||row.available===false){const retry=document.createElement("span");retry.textContent="Unavailable · Retry";b.appendChild(retry);}
+    b.onclick=async()=>{
+      if(window.crateShell&&window.webkit?.messageHandlers?.crateRecent){window.webkit.messageHandlers.crateRecent.postMessage(row.id);return;}
+      b.disabled=true;
+      try{
+        const r=await fetch(api("/api/workspaces/view"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({path:row.path})}).then(r=>r.json());
+        if(r.error)throw new Error(r.error);
+        switchWorkspace(row.path);
+      }catch(e){b.disabled=false;let note=section.querySelector('[role="status"]');if(!note){note=document.createElement("p");note.setAttribute("role","status");section.prepend(note);}note.textContent="Project unavailable. Reconnect its drive or use Open Project to locate it, then retry.";}
+    };
+    section.appendChild(b);
+  });
+};
 if(CARD){
 (function(){
   const cw=document.createElement("div");cw.className="cardwrap";cw.id="cardwrap";
   cw.innerHTML='<div class="acard">'
     +(CARD.dismissable?'<button class="acquiet" id="acdismiss" style="float:right;margin:-4px -8px 0 0" title="Back to your rig">×</button>':'')
     +'<p class="aeyebrow">New project</p><h2 class="ahead">What are we building?</h2>'
+    +'<section id="recent-projects" hidden style="margin:18px 0 24px" aria-label="Recent projects"></section>'
     +'<div class="abeat"><div class="albl">Which computer?</div>'
     +'<div class="mchips" id="acmachines"></div>'
     +'<div class="aprog" id="acmprog"><span class="wd"></span><span id="acmnote"></span></div></div>'
@@ -2215,6 +2246,10 @@ if(CARD){
     +'<div class="trust">Crate adds one small folder for your team — <b>.agents/</b> (its wiring and notes, kept out of git). Your code is untouched.</div>'
     +'</div>';
   document.body.appendChild(cw);
+  if(!window.crateShell)fetch(api("/api/workspaces"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json()).then(r=>{
+    window.crateSetRecentProjects({rows:(r.workspaces||[]).filter(w=>w.focusedAt).sort((a,b)=>b.focusedAt-a.focusedAt).slice(0,5).map(w=>({id:w.path,name:w.name,path:w.path,host:CARD.machine,openedAt:w.focusedAt,available:w.exists&&w.rig}))});
+  }).catch(()=>{});
+
   // ?door=new|browse|clone|server — the File menu's deep links (the machine
   // chips render after a fetch, so the server door is polled briefly)
   (function(){

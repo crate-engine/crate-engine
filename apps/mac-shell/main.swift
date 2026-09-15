@@ -41,7 +41,7 @@ func looksAsleep(_ msg: String) -> Bool {
   return needles.contains { low.contains($0) }
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
   var window: NSWindow!
   var webView: WKWebView!
   /// Satellite preview windows (Adam, 2026-08-13): retained here — a closed
@@ -57,6 +57,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
   var hubURL: URL?
   /// A Retry press abandons the CLI-supplied door and runs the full flow.
   var retriedOnce = false
+  let recentProjects = RecentProjects(file: FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".crate/recent-projects.json"))
+  var knownOrigins: [String: String] = [:]
+  var connectionGeneration = 0
+  var recentError = ""
+  var recentErrorID = ""
+
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     let frame = NSRect(x: 0, y: 0, width: 1440, height: 900)
@@ -84,6 +91,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     // satellites (same configuration).
     conf.userContentController.addUserScript(
       WKUserScript(source: "window.crateShell=true", injectionTime: .atDocumentStart, forMainFrameOnly: false))
+    conf.userContentController.add(self, name: "crateRecent")
     webView = WKWebView(frame: frame, configuration: conf)
     webView.autoresizingMask = [.width, .height]
     webView.navigationDelegate = self // the Retry link routes back into the launch flow
@@ -101,56 +109,142 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
 
   /// The launch flow — first boot AND every Retry press run exactly this.
   func startLaunch() {
-    // `crate open` hands the door in directly (fresh-install run 2026-09-11:
-    // the CLI now launches THIS app instead of a Chrome app-mode window —
-    // `open <app> --args --url <door>`). The URL is the CLI's own tokened
-    // loopback door, already up; loading it skips a second launch flow.
-    // Retry (crate-retry://) re-enters below WITHOUT the argument, so a dead
-    // door recovers through the normal flow.
-    if let direct = directDoorURL(), !retriedOnce {
-      hubURL = direct
-      webView.load(URLRequest(url: direct))
-      return
-    }
-    let remote = readRemoteHost()
-    let where_ = remote.isEmpty ? "on this Mac" : "on \(remote)"
-    webView.loadHTMLString(
-      BRAND_HTML("Starting the engine", "Bringing the Crate Engine up \(where_) — checking the server, opening the tunnel. A few seconds.", false),
-      baseURL: nil)
-
+    connectionGeneration += 1
+    let generation = connectionGeneration
+    let direct = retriedOnce ? nil : directDoorURL()
+    webView.loadHTMLString(BRAND_HTML("Opening your workspace", "Connecting to the local engine…", false), baseURL: nil)
     DispatchQueue.global(qos: .userInitiated).async { [self] in
-      let result = launchEngine(remote: remote)
-      // FLEET (PDR fleet-rail): the LOCAL engine is the fleet brain — ensure
-      // it is up even when the window points at a remote (a bare local open
-      // boots no teams since the lifecycle ship, so this is cheap). The hub
-      // feeds the Fleet menu regardless of where the glass looks.
-      if remote.isEmpty {
-        if case .success(let url) = result { DispatchQueue.main.async { self.hubURL = url } }
-      } else {
-        DispatchQueue.global(qos: .utility).async { [self] in
-          if case .success(let url) = launchEngine(remote: "") {
-            DispatchQueue.main.async { self.hubURL = url }
+      let result = launchEngine(remote: "")
+      DispatchQueue.main.async { [self] in
+        guard generation == connectionGeneration else { return }
+        switch result {
+        case .success(let hub):
+          hubURL = hub
+          knownOrigins[origin(hub)] = ""
+          if let direct = direct {
+            webView.load(URLRequest(url: direct))
+          } else if let last = recentProjects.entries.first {
+            openRecent(last)
+          } else if !readRemoteHost().isEmpty {
+            // Preserve the explicit pre-history app-shell.conf preference.
+            openConnection(host: readRemoteHost(), entry: nil)
+          } else {
+            webView.load(URLRequest(url: hub))
           }
+        case .failure(let message):
+          webView.loadHTMLString(BRAND_HTML("The engine did not come up", htmlEscape(message), true), baseURL: nil)
         }
       }
-      DispatchQueue.main.async { [self] in
-        switch result {
-        case .success(let url):
-          webView.load(URLRequest(url: url))
-        case .failure(let msg):
-          if looksAsleep(msg), !remote.isEmpty {
-            webView.loadHTMLString(
-              BRAND_HTML(
-                "The server machine looks asleep",
-                "\(remote) is not answering — if it sleeps overnight, that's all this is.\n"
-                  + "Wake it (power button / network wake), give it a few seconds, then hit Retry.\n\nDetail: \(msg)",
-                true),
-              baseURL: nil)
-          } else {
-            webView.loadHTMLString(
-              BRAND_HTML("The engine did not come up", msg + "\n\nFix it in a terminal, then hit Retry.", true),
-              baseURL: nil)
+    }
+  }
+
+  func origin(_ url: URL) -> String {
+    let token = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "token" })?.value ?? ""
+    return "\(url.scheme ?? "")://\(url.host ?? ""):\(url.port ?? 80)/\(token)"
+  }
+
+  func sameEngine(_ a: URL, _ b: URL) -> Bool {
+    let tokenA = URLComponents(url: a, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "token" })?.value
+    let tokenB = URLComponents(url: b, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "token" })?.value
+    return tokenA != nil && tokenA != "" && tokenA == tokenB
+  }
+
+  func showRecentFailure(_ entry: RecentProject?, _ message: String) {
+    recentError = message
+    recentErrorID = entry?.id ?? ""
+    if let hub = hubURL, var c = URLComponents(url: hub, resolvingAgainstBaseURL: false) {
+      c.path = "/team"
+      c.queryItems = (c.queryItems ?? []).filter { $0.name == "token" } + [URLQueryItem(name: "card", value: "1")]
+      if let url = c.url { webView.load(URLRequest(url: url)) }
+    }
+  }
+
+  func openRecent(_ entry: RecentProject) { openConnection(host: entry.host, entry: entry) }
+
+  func openConnection(host: String, entry: RecentProject?) {
+    connectionGeneration += 1
+    let generation = connectionGeneration
+    cockpitReady = false
+    let label = host.isEmpty ? "This Mac" : host
+    webView.loadHTMLString(BRAND_HTML("Opening your workspace", htmlEscape("Connecting to \(label)…"), false), baseURL: nil)
+    let localDoor = hubURL
+    DispatchQueue.global(qos: .userInitiated).async { [self] in
+      let result: LaunchResult = host.isEmpty && localDoor != nil ? .success(localDoor!) : launchEngine(remote: host)
+      var door: URL?
+      var failure = "Couldn’t connect to \(label). Retry when the computer is available."
+      if case .success(let fresh) = result {
+        if let entry = entry {
+          if let data = shellJSON(fresh, route: "/api/workspaces"), let rows = data["workspaces"] as? [[String: Any]] {
+            if rows.contains(where: { $0["path"] as? String == entry.path && $0["exists"] as? Bool == true && $0["rig"] as? Bool == true }) {
+              door = projectDoor(fresh, project: entry.path)
+            } else {
+              failure = "Project unavailable on \(label). It may have moved or its drive may be disconnected. Retry or use Open Project to locate it."
+            }
           }
+        } else { door = fresh }
+      }
+      DispatchQueue.main.async { [self] in
+        guard generation == connectionGeneration else { return }
+        if let door = door {
+          recentError = ""; recentErrorID = ""
+          knownOrigins[origin(door)] = host
+          webView.load(URLRequest(url: door)) // view only: never boot, dispatch or resume a task
+        } else { showRecentFailure(entry, failure) }
+      }
+    }
+  }
+
+  func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+    guard message.webView == webView, message.frameInfo.isMainFrame,
+      let frameURL = message.frameInfo.request.url, frameURL.path == "/team",
+      frameURL.host == "127.0.0.1" || frameURL.host == "localhost",
+      message.name == "crateRecent", let id = message.body as? String,
+      let entry = recentProjects.entries.first(where: { $0.id == id }) else { return }
+    openRecent(entry)
+  }
+
+  func renderRecents() {
+    let rows: [[String: Any]] = recentProjects.entries.map {
+      ["id": $0.id, "name": $0.name, "path": $0.path, "host": $0.host.isEmpty ? "This Mac" : $0.host,
+       "openedAt": $0.openedAt.timeIntervalSince1970 * 1000]
+    }
+    guard let data = try? JSONSerialization.data(withJSONObject: ["rows": rows, "error": recentError, "errorID": recentErrorID]),
+      let json = String(data: data, encoding: .utf8) else { return }
+    webView.evaluateJavaScript("window.crateSetRecentProjects && window.crateSetRecentProjects(\(json))", completionHandler: nil)
+  }
+
+  func rememberView(attempt: Int = 0) {
+    guard let viewedURL = webView.url, viewedURL.path == "/team" else { return }
+    webView.evaluateJavaScript("typeof PROJECT === 'string' ? PROJECT : ''") { [weak self] value, _ in
+      guard let self = self, self.webView.url == viewedURL, let project = value as? String, !project.isEmpty else { return }
+      let capturedHub = self.hubURL
+      let known = self.knownOrigins[self.origin(viewedURL)]
+      DispatchQueue.global(qos: .utility).async {
+        var host = known
+        if host == nil, let hub = capturedHub,
+           let fleet = shellJSON(hub, route: "/api/fleet"), let hosts = fleet["hosts"] as? [[String: Any]] {
+          for h in hosts {
+            if let s = h["cockpitUrl"] as? String, let u = URL(string: s), self.sameEngine(u, viewedURL) {
+              host = h["local"] as? Bool == true ? "" : h["host"] as? String
+              break
+            }
+          }
+        }
+        if host == nil && attempt < 10 {
+          DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            if self.webView.url == viewedURL { self.rememberView(attempt: attempt + 1) }
+          }
+        }
+        // Unknown tunnels must never be mislabelled as local projects.
+        guard let host = host,
+          let data = shellJSON(viewedURL, route: "/api/workspaces"), let rows = data["workspaces"] as? [[String: Any]],
+          let row = rows.first(where: { $0["path"] as? String == project && $0["rig"] as? Bool == true }) else { return }
+        let entry = RecentProject(host: host, path: project, name: row["name"] as? String ?? URL(fileURLWithPath: project).lastPathComponent, openedAt: Date())
+        DispatchQueue.main.async {
+          guard self.webView.url == viewedURL else { return }
+          do { try self.recentProjects.record(entry) }
+          catch { self.recentError = "Couldn’t save recent projects. Check that your Crate settings folder is writable." }
+          self.renderRecents()
         }
       }
     }
@@ -169,12 +263,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     guard webView == self.webView else { return }
     let host = webView.url?.host ?? ""
     cockpitReady = (host == "127.0.0.1" || host == "localhost")
+    if cockpitReady { renderRecents(); rememberView() }
   }
 
   func webView(
     _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
   ) {
+    if navigationAction.targetFrame?.isMainFrame == true,
+      let host = navigationAction.request.url?.host, host == "127.0.0.1" || host == "localhost" {
+      connectionGeneration += 1 // cancel a pending reconnect if the operator navigates elsewhere
+    }
     if navigationAction.request.url?.scheme == "crate-retry" {
       decisionHandler(.cancel)
       retriedOnce = true
@@ -329,6 +428,28 @@ func launchEngine(remote: String) -> LaunchResult {
     return .failure(detail.isEmpty ? "the launch flow printed no cockpit URL" : detail)
   }
   return .success(url)
+}
+
+func htmlEscape(_ value: String) -> String {
+  value.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;")
+}
+
+func shellJSON(_ door: URL, route: String) -> [String: Any]? {
+  guard var c = URLComponents(url: door, resolvingAgainstBaseURL: false) else { return nil }
+  c.path = route; c.fragment = nil
+  c.queryItems = (c.queryItems ?? []).filter { $0.name == "token" }
+  guard let url = c.url else { return nil }
+  var result: [String: Any]?
+  let done = DispatchSemaphore(value: 0)
+  let task = URLSession.shared.dataTask(with: URLRequest(url: url, timeoutInterval: 5)) { data, response, _ in
+    if (response as? HTTPURLResponse)?.statusCode == 200, let data = data {
+      result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+    done.signal()
+  }
+  task.resume()
+  if done.wait(timeout: .now() + 6) == .timedOut { task.cancel() }
+  return result
 }
 
 let app = NSApplication.shared
@@ -608,6 +729,26 @@ final class AppActions: NSObject {
   @objc func website(_ sender: Any?) { NSWorkspace.shared.open(URL(string: "https://crate-engine.ai")!) }
 }
 
+final class RecentMenu: NSObject, NSMenuDelegate {
+  static let shared = RecentMenu()
+  func menuNeedsUpdate(_ menu: NSMenu) {
+    menu.removeAllItems()
+    guard let d = NSApp.delegate as? AppDelegate else { return }
+    for entry in d.recentProjects.entries {
+      let item = NSMenuItem(title: "\(entry.name) — \(entry.host.isEmpty ? "This Mac" : entry.host)", action: #selector(open(_:)), keyEquivalent: "")
+      item.target = self; item.representedObject = entry.id
+      item.toolTip = entry.path
+      menu.addItem(item)
+    }
+    if menu.items.isEmpty { menu.addItem(withTitle: "No recent projects yet", action: nil, keyEquivalent: "") }
+  }
+  @objc func open(_ sender: NSMenuItem) {
+    guard let d = NSApp.delegate as? AppDelegate, let id = sender.representedObject as? String,
+      let entry = d.recentProjects.entries.first(where: { $0.id == id }) else { return }
+    d.openRecent(entry)
+  }
+}
+
 // Minimal real menus — copy/paste and Cmd-Q must work inside the cockpit
 // (and inside TUI panes). Without an Edit menu, WKWebView eats shortcuts.
 let mainMenu = NSMenu()
@@ -641,6 +782,11 @@ for (title, sel, key) in [
   it.target = AppActions.shared
   fileMenu.addItem(it)
 }
+let recentItem = NSMenuItem(title: "Recent Projects", action: nil, keyEquivalent: "")
+let recentMenu = NSMenu(title: "Recent Projects")
+recentMenu.delegate = RecentMenu.shared
+recentItem.submenu = recentMenu
+fileMenu.addItem(recentItem)
 fileMenu.addItem(NSMenuItem.separator())
 fileMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
 fileItem.submenu = fileMenu

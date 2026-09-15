@@ -25,7 +25,7 @@ fi
 [ -f AppIcon.icns ] || { echo "no AppIcon.icns and no Chrome to render one — need either"; exit 1; }
 
 echo "== [2/3] compile (swiftc)"
-swiftc -O -o "$BUILD/CrateEngine" main.swift -framework Cocoa -framework WebKit
+swiftc -O -o "$BUILD/CrateEngine" main.swift RecentProjects.swift -framework Cocoa -framework WebKit
 
 echo "== [3/3] bundle → $APP"
 rm -rf "$APP"
