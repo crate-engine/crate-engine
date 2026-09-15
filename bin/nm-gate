@@ -135,5 +135,5 @@ if ! python3 "$REPO_ROOT/.agents/bin/agentctl.py" emit gate_pass --actor coder s
   echo "         (Ensure state-machine.yaml lists gate_pass in always_legal.)" >&2
   exit 1
 fi
-echo "nm-gate: ALL PASS — gate_pass recorded for $REF @ $SHORT (sha $FULLSHA)."
+echo "nm-gate: REQUIRED CHECKS PASS (see precheck results for advisory failures and skips) — gate_pass recorded for $REF @ $SHORT (sha $FULLSHA)."
 exit 0

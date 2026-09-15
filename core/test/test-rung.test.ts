@@ -62,7 +62,7 @@ test("with-runner: a real passing test script runs and passes the gate", () => {
   });
   const r = gate(rig);
   assert.match(r.out, /TEST: {6}PASS \(package\.json: npm test/);
-  assert.match(r.out, /RESULT: ALL PASS/);
+  assert.match(r.out, /RESULT: REQUIRED CHECKS PASS/);
   assert.equal(r.code, 0);
 });
 
@@ -85,7 +85,7 @@ test("npm's placeholder test script is NOT a runner — rung silent, gate green 
   });
   const r = gate(rig);
   assert.match(r.out, /TEST: {6}SKIPPED/);
-  assert.match(r.out, /RESULT: ALL PASS/);
+  assert.match(r.out, /RESULT: REQUIRED CHECKS PASS/);
   assert.equal(r.code, 0);
 });
 
@@ -95,7 +95,7 @@ test("greenfield (no package.json at all): typecheck/build/test all skip, gate g
   assert.match(r.out, /TYPECHECK: SKIPPED/);
   assert.match(r.out, /BUILD: {5}SKIPPED/);
   assert.match(r.out, /TEST: {6}SKIPPED/);
-  assert.match(r.out, /RESULT: ALL PASS/);
+  assert.match(r.out, /RESULT: REQUIRED CHECKS PASS/);
   assert.equal(r.code, 0);
 });
 
@@ -153,6 +153,42 @@ test("required smoke refuses a non-web project with no runnable smoke; explicit 
   assert.match(required.out, /no-web-smoke/);
   const exempt = gate(rig, { SMOKE_ENFORCE: "0" });
   assert.equal(exempt.code, 0, exempt.out);
+  assert.doesNotMatch(exempt.out, /ALL PASS/);
+  assert.match(exempt.out, /RESULT: REQUIRED CHECKS PASS/);
+  assert.match(exempt.out, /SMOKE=SKIPPED/);
+});
+
+test("failed advisory smoke stays visible; required smoke blocks", t => {
+  const rig = mkGateRig({
+    "index.html": "<h1>Fixture</h1>",
+    "AGENTS.md": "## Critical Paths\n1. Home (/) — loads\n2. Missing (/missing) — fails\n",
+  });
+  const advisory = gate(rig, { SMOKE_ENFORCE: "0" });
+  if (!/ROUTE \/missing: FAIL/.test(advisory.out)) {
+    assert.match(advisory.out, /SMOKE: +(?:SKIPPED|ERROR)|no playwright browser/);
+    t.skip("browser smoke prerequisites unavailable on this host");
+    return;
+  }
+  assert.equal(advisory.code, 0, advisory.out);
+  assert.doesNotMatch(advisory.out, /ALL PASS/);
+  assert.match(advisory.out, /RESULT: REQUIRED CHECKS PASS.*SMOKE=FAIL/);
+  const required = gate(rig, { SMOKE_ENFORCE: "1" });
+  assert.equal(required.code, 1, required.out);
+  assert.match(required.out, /RESULT: FAIL.*SMOKE\(FAIL\)/);
+});
+
+test("nm-gate never describes skipped checks as all passed", () => {
+  const rig = mkGateRig({ "tool.py": "print('fixture')\n" });
+  symlinkSync(join(ROOT, "config"), join(rig, ".agents/config"));
+  mkdirSync(join(rig, ".agents/state"));
+  writeFileSync(join(rig, ".agents/state/events.log"), "[t] START_IMPL state=implementing\n");
+  const out = execFileSync("bash", [join(rig, ".agents/bin/nm-gate"), "feat"], {
+    cwd: rig, encoding: "utf8", env: { ...process.env, SMOKE_ENFORCE: "0", CRATE_SEAT: "" },
+  });
+  assert.doesNotMatch(out, /ALL PASS/);
+  assert.match(out, /nm-gate: REQUIRED CHECKS PASS.*gate_pass recorded/);
+  assert.match(out, /SMOKE=SKIPPED/);
+  assert.match(readFileSync(join(rig, ".agents/state/events.log"), "utf8"), /GATE_PASS/);
 });
 
 test("dependency staging removes a partial hardlink tree before copying a real directory", () => {

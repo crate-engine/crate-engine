@@ -8,7 +8,7 @@
 # rig state.
 #
 # Usage: precheck.sh <ref>     (ref = a branch name or a commit)
-# Exit:  0 iff all non-skipped checks PASS; non-zero otherwise.
+# Exit: 0 iff required checks pass; advisory failures and skips remain visible.
 
 set -u
 
@@ -385,5 +385,7 @@ if [ -n "$FAILED" ]; then
   echo "RESULT: FAIL ($(echo "$FAILED" | xargs))"
   exit 1
 fi
-echo "RESULT: ALL PASS"
+# Passing the configured requirements does not turn advisory failures or
+# skipped checks into passes. Carry the individual outcomes in the summary.
+echo "RESULT: REQUIRED CHECKS PASS — LINT=$LINT_STATUS TYPECHECK=$TC_STATUS BUILD=$BUILD_STATUS TEST=$TEST_STATUS SMOKE=$SMOKE_STATUS (advisory failures and skips are not passes)"
 exit 0
