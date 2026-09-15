@@ -6,8 +6,8 @@
 // --print-url`) and loads the door it prints. Closing the window never stops
 // the engine or the team — the shell is a viewport, the engine is the truth.
 //
-// Config: ~/.crate/app-shell.conf — REMOTE="<ssh-host>" launches the remote
-// flow (Adam's daily drive: superman-wifi); absent/empty = local engine.
+// App launch shows recent projects; selecting one reconnects to its computer.
+// Explicit CLI --url launches still open the requested workspace directly.
 import Cocoa
 import WebKit
 
@@ -123,13 +123,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
           knownOrigins[origin(hub)] = ""
           if let direct = direct {
             webView.load(URLRequest(url: direct))
-          } else if let last = recentProjects.entries.first {
-            openRecent(last)
-          } else if !readRemoteHost().isEmpty {
-            // Preserve the explicit pre-history app-shell.conf preference.
-            openConnection(host: readRemoteHost(), entry: nil)
           } else {
-            webView.load(URLRequest(url: hub))
+            // App launch is a project chooser, even when a previous view or
+            // legacy REMOTE preference exists. Only an explicit selection opens it.
+            showRecentProjects()
           }
         case .failure(let message):
           webView.loadHTMLString(BRAND_HTML("The engine did not come up", htmlEscape(message), true), baseURL: nil)
@@ -152,6 +149,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
   func showRecentFailure(_ entry: RecentProject?, _ message: String) {
     recentError = message
     recentErrorID = entry?.id ?? ""
+    showRecentProjects()
+  }
+
+  func showRecentProjects() {
     if let hub = hubURL, var c = URLComponents(url: hub, resolvingAgainstBaseURL: false) {
       c.path = "/team"
       c.queryItems = (c.queryItems ?? []).filter { $0.name == "token" } + [URLQueryItem(name: "card", value: "1")]
