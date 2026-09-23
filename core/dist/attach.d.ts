@@ -114,6 +114,8 @@ export interface AttachReport {
     /** Why the GitHub step was skipped/failed — the attach itself succeeded. */
     githubNote?: string;
 }
+/** Template entries (rel to srcDir) absent from destDir — CE-178's heal set. */
+export declare function missingSeeds(srcDir: string, destDir: string, rel?: string): string[];
 /** Rewrite the managed .gitignore block: strip any old block, append the fresh one. */
 export declare function writeManagedGitignore(file: string): void;
 export declare function executeAttach(plan: AttachPlan, opts?: {

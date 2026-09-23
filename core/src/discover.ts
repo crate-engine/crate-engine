@@ -4,9 +4,11 @@
 // Pure and bounded: roots only, one level deep, capped, never a crawl.
 import { existsSync, lstatSync, readdirSync, readlinkSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
+import { missingSeeds } from "./attach.js";
 
 /** ready = a Crate project wired to THIS engine; heal = wired to an older/moved
- * engine (attach re-points it); new = a repo Crate has not met yet. */
+ * engine, or missing state files this engine expects (attach repairs both);
+ * new = a repo Crate has not met yet. */
 export type ProjectState = "ready" | "heal" | "new";
 
 export interface DiscoveredProject {
@@ -30,6 +32,9 @@ export function projectState(dir: string, engineDir: string): ProjectState {
       return "heal";
     }
   }
+  // CE-178: links right but the state dir predates this engine (no session.md
+  // …) — attach's additive seed still has work to do, so it is not "ready".
+  if (missingSeeds(join(engineDir, "templates", "state"), join(agents, "state")).length) return "heal";
   return "ready";
 }
 

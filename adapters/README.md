@@ -52,12 +52,12 @@ Bring your own coding agent (installed + authed) — the engine never handles ke
 Adding a *known* agent = staff a station with it (`<STATION>_AGENT=<name>`). A new
 agent the library doesn't cover = `crate adapter new <name>`.
 
-- `claude/`   — Claude Code (workstation). Also carries `orchestrator-ops.md`.
+- `claude/`   — Claude Code (workstation). Also carries `orchestrator-ops.md` (the harness-neutral base every orchestrator can follow).
 - `codex/`    — OpenAI Codex CLI (workstation).
 - `aider/`    — Aider (workstation).
 - `opencode/` — OpenCode (workstation).
 - `gemini/`   — Gemini CLI (workstation).
-- `pi/`       — Pi (pi.dev) — multi-provider agent harness (15+ providers via API key/OAuth); model chosen in-session.
+- `pi/`       — Pi (pi.dev) — multi-provider agent harness (15+ providers via API key/OAuth); model chosen in-session. Also carries `orchestrator-ops.md` (CE-171).
 - `openclaw/` — OpenClaw (openclaw.ai) — open-source autonomous local agent.
 
 Models are a staffing value (`<STATION>_MODEL`), never a separate adapter. In the

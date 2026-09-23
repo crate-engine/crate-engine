@@ -25,6 +25,7 @@ import {
   resolveTarget,
   writeManagedGitignore,
 } from "../src/attach.js";
+import { projectState } from "../src/discover.js";
 
 const scratch = mkdtempSync(join(tmpdir(), "crate2-attach-"));
 
@@ -403,4 +404,39 @@ test("fresh generated smoke setting reaches real nm-gate and refuses incomplete 
   assert.match(result.stdout, /SMOKE\(SKIPPED\)/);
   const log = join(root, ".agents/state/events.log");
   assert.doesNotMatch(existsSync(log) ? readFileSync(log, "utf8") : "", / GATE_PASS /);
+});
+
+// CE-178 (docket loop 2026-09-13): healing an OLDER rig kept its v1 state dir
+// (correct — history) but the 2.x binders read state files it never had, so
+// every seat boot logged `ENOENT … state/session.md`. The cure: keep, then seed
+// ONLY what is missing — pinned on a v1-shaped rig.
+test("CE-178: an older rig's state dir is kept byte-identical and only MISSING seeds are added", () => {
+  const repo = join(scratch, "repo-v1-state");
+  mkdirSync(join(repo, ".agents", "state", "inbox"), { recursive: true });
+  git(["init", "--quiet"], repo);
+  writeFileSync(join(repo, ".agents", "rig.conf"), 'PROJECT="repo-v1-state"\n');
+  writeFileSync(join(repo, ".agents", "state", "events.log"), "[2026-07-03T15:17:39] GATE_PASS actor=coder\n");
+  writeFileSync(join(repo, ".agents", "state", "FLAWS.md"), "# my v1 flaws — hand-written history\n");
+  const v1 = snapshot(join(repo, ".agents", "state"));
+
+  const e = join(scratch, "engine");
+  assert.equal(projectState(repo, e), "heal", "links fine or not, a state dir missing session.md is not ready");
+  const plan = planAttach(resolveTarget(repo, { cwd: "/" }), e);
+  const st = plan.writes.find((w) => w.rel === ".agents/state/");
+  assert.equal(st?.action, "heal");
+  assert.match(st?.note ?? "", /session\.md/);
+  assert.match(st?.note ?? "", /checkpoints\//);
+  assert.doesNotMatch(st?.note ?? "", /FLAWS\.md/, "an existing file is never listed for seeding");
+  executeAttach(plan);
+
+  const after = snapshot(join(repo, ".agents", "state"));
+  for (const [k, v] of v1) assert.equal(after.get(k), v, `existing state ${k} must be byte-identical`);
+  assert.match(readFileSync(join(repo, ".agents", "state", "session.md"), "utf8"), /repo-v1-state/);
+  assert.equal(readFileSync(join(repo, ".agents", "state", "FLAWS.md"), "utf8"), "# my v1 flaws — hand-written history\n");
+  assert.ok(existsSync(join(repo, ".agents", "state", "checkpoints")));
+
+  // healed = ready, and a re-run is a keep
+  assert.equal(projectState(repo, e), "ready");
+  const again = planAttach(resolveTarget(repo, { cwd: "/" }), e);
+  assert.equal(again.writes.find((w) => w.rel === ".agents/state/")?.action, "keep");
 });

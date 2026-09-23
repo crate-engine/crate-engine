@@ -19,7 +19,9 @@ canonical_rails: config/state-machine.yaml + orchestrator.md rails   # frontmatt
 > team, deliver signals, run the backstop, and watch context is defined by the
 > **adapter** for whatever agent staffs this station (staffing sheet →
 > `adapters/<agent>/adapter.md`, plus its orchestrator-ops card for coordination
-> mechanics). This file is the doctrine; the adapter is the machinery.
+> mechanics — `claude/` and `pi/` carry one; any other agent uses
+> `adapters/claude/orchestrator-ops.md`, whose steps are agentctl + shell).
+> This file is the doctrine; the adapter is the machinery.
 
 ## Hard Constraints
 

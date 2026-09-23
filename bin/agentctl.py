@@ -1715,9 +1715,34 @@ def main():
             die("usage: deliver <role> <message...>  (roles: %s, or 'operator')" % ", ".join(ROLES))
         role = args[1]
         rest = list(args[2:])
-        sender = "operator"
+        # CE-185 (Jev Stage-0 log audit, 2026-09-23): seat reports were archived
+        # as "from operator". Two causes: every adapter card documents the
+        # TRAILING form (`deliver <role> "<msg>" --from <station>`), which only
+        # the LEADING parse knew — the flag was swallowed into the body — and a
+        # missing --from defaulted to "operator", so a peer read a seat's words
+        # as the human's. Accept --from at either end; default the sender to
+        # the caller's badge; a seat signs as ITSELF (CE-160's rule, applied to
+        # mail — the operator's badge-free terminal and the GUI keep latitude).
+        claimed = None
         if len(rest) > 2 and rest[0] == "--from":
-            sender, rest = rest[1], rest[2:]
+            claimed, rest = rest[1], rest[2:]
+        elif len(rest) > 2 and rest[-2] == "--from":
+            claimed, rest = rest[-1], rest[:-2]
+        badge = seat_identity()
+        if not badge and claimed in (None, "operator"):
+            badge = stripped_seat_badge()
+        if badge and badge != "operator":
+            if claimed not in (None, badge):
+                append("[%s] REJECTED event=deliver actor=%s reason=sender_forgery seat=%s"
+                       % (now(), claimed, badge))
+                die("REJECTED: this command runs inside the %s seat, and a seat signs its mail "
+                    "AS ITSELF — '--from %s' would put words in %s's mouth. Send it as "
+                    "`deliver %s --from %s \"<message>\"`. Nothing was delivered."
+                    % (badge, claimed, "the operator" if claimed == "operator" else "the " + claimed,
+                       role, badge))
+            sender = badge
+        else:
+            sender = claimed or "operator"
         msg = " ".join(rest).strip()
         if not msg: die("deliver: empty message")
         # ── duplicate-[MERGE] absorb (2026-08-11; FLAWS "[MERGE] routing is

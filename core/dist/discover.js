@@ -4,6 +4,7 @@
 // Pure and bounded: roots only, one level deep, capped, never a crawl.
 import { existsSync, lstatSync, readdirSync, readlinkSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
+import { missingSeeds } from "./attach.js";
 export function projectState(dir, engineDir) {
     const agents = join(dir, ".agents");
     if (!existsSync(join(agents, "rig.conf")))
@@ -21,6 +22,10 @@ export function projectState(dir, engineDir) {
             return "heal";
         }
     }
+    // CE-178: links right but the state dir predates this engine (no session.md
+    // …) — attach's additive seed still has work to do, so it is not "ready".
+    if (missingSeeds(join(engineDir, "templates", "state"), join(agents, "state")).length)
+        return "heal";
     return "ready";
 }
 function isProjectDir(dir) {

@@ -1,5 +1,6 @@
 /** ready = a Crate project wired to THIS engine; heal = wired to an older/moved
- * engine (attach re-points it); new = a repo Crate has not met yet. */
+ * engine, or missing state files this engine expects (attach repairs both);
+ * new = a repo Crate has not met yet. */
 export type ProjectState = "ready" | "heal" | "new";
 export interface DiscoveredProject {
     name: string;

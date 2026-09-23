@@ -455,11 +455,19 @@ export function planAttach(
   });
 
   const stateExists = existsSync(join(agentsDir, "state"));
+  // CE-178: an OLDER rig's state dir is history and stays untouched — but the
+  // 2.x binders read files it never had (session.md …), so every seat boot
+  // logged ENOENT. Keep, then seed only what is MISSING.
+  const missingState = stateExists ? missingSeeds(join(engineDir, "templates", "state"), join(agentsDir, "state")) : [];
   writes.push({
     rel: ".agents/state/",
     kind: "local",
-    action: stateExists ? "keep" : "create",
-    note: stateExists ? "your live state — never overwritten" : "fresh team state (incl. FLAWS.md)",
+    action: !stateExists ? "create" : missingState.length ? "heal" : "keep",
+    note: !stateExists
+      ? "fresh team state (incl. FLAWS.md)"
+      : missingState.length
+        ? `your live state kept; added what this engine expects and it lacked (${missingState.join(", ")}) — nothing existing touched`
+        : "your live state — never overwritten",
   });
 
   for (const doc of DOC_SEEDS) {
@@ -531,12 +539,32 @@ export interface AttachReport {
   githubNote?: string;
 }
 
-function seedTree(srcDir: string, destDir: string, subst: (s: string) => string): void {
+/** A `.gitkeep` only stands for its directory: an existing dir satisfies it. */
+const satisfied = (dest: string, name: string): boolean =>
+  existsSync(dest) || (name === ".gitkeep" && existsSync(dirname(dest)));
+
+/** Template entries (rel to srcDir) absent from destDir — CE-178's heal set. */
+export function missingSeeds(srcDir: string, destDir: string, rel = ""): string[] {
+  if (!existsSync(srcDir)) return [];
+  const out: string[] = [];
+  for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+    const dest = join(destDir, entry.name);
+    const r = rel ? `${rel}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      if (!existsSync(dest)) out.push(`${r}/`);
+      else out.push(...missingSeeds(join(srcDir, entry.name), dest, r));
+    } else if (!satisfied(dest, entry.name)) out.push(r);
+  }
+  return out;
+}
+
+function seedTree(srcDir: string, destDir: string, subst: (s: string) => string, onlyMissing = false): void {
   mkdirSync(destDir, { recursive: true });
   for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
     const src = join(srcDir, entry.name);
     const dest = join(destDir, entry.name);
-    if (entry.isDirectory()) seedTree(src, dest, subst);
+    if (entry.isDirectory()) seedTree(src, dest, subst, onlyMissing);
+    else if (onlyMissing && satisfied(dest, entry.name)) continue;
     else if (entry.name.endsWith(".md") || entry.name.endsWith(".yaml")) {
       writeFileSync(dest, subst(readFileSync(src, "utf8")));
     } else copyFileSync(src, dest);
@@ -597,7 +625,7 @@ export function executeAttach(plan: AttachPlan, opts: { gitInit?: boolean; githu
     } else if (w.rel === ".agents/.gitignore") {
       writeManagedGitignore(abs);
     } else if (w.rel === ".agents/state/") {
-      seedTree(join(engineDir, "templates", "state"), join(agentsDir, "state"), subst);
+      seedTree(join(engineDir, "templates", "state"), join(agentsDir, "state"), subst, w.action === "heal");
     } else if ((DOC_SEEDS as readonly string[]).includes(w.rel)) {
       writeFileSync(abs, subst(readFileSync(join(engineDir, "templates", w.rel), "utf8")));
     } else if (w.rel === ".agents/rig.conf") {
