@@ -28,6 +28,8 @@ export interface TaggedProc {
   cmd: string;
   /** started under `crate team` (hosted outside the app) — the sweep never claims it */
   selfHosted?: boolean;
+  /** resident memory in KB (0 when unreadable) — the Workspaces menu's memory figure */
+  rssKb: number;
 }
 
 /** Canonical project path for comparisons (symlinks, /private/var on macOS). */
@@ -58,7 +60,13 @@ export function listTagged(): TaggedProc[] {
         if (!tag || tag === "CRATE_PROJECT=") continue;
         const cmd = readFileSync(`/proc/${d}/cmdline`, "utf8").split("\0").join(" ").trim();
         const selfHosted = env.includes("CRATE_SELF_HOSTED=1");
-        out.push({ pid: Number(d), project: tag.slice("CRATE_PROJECT=".length), cmd, ...(selfHosted ? { selfHosted } : {}) });
+        let rssKb = 0;
+        try {
+          rssKb = Number(/VmRSS:\s+(\d+)/.exec(readFileSync(`/proc/${d}/status`, "utf8"))?.[1] ?? 0);
+        } catch {
+          /* unreadable — counts as 0 */
+        }
+        out.push({ pid: Number(d), project: tag.slice("CRATE_PROJECT=".length), cmd, rssKb, ...(selfHosted ? { selfHosted } : {}) });
       } catch {
         /* exited mid-scan, or another user's process */
       }
@@ -69,17 +77,17 @@ export function listTagged(): TaggedProc[] {
   // a seat can have started). -ww: never truncate — the tag can sit late.
   let text = "";
   try {
-    text = execFileSync("ps", ["-E", "-ww", "-A", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    text = execFileSync("ps", ["-E", "-ww", "-A", "-o", "pid=,rss=,command="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   } catch {
     return out;
   }
   for (const raw of text.split("\n")) {
     const line = raw.trim();
-    const m = /^(\d+)\s+(.*)$/.exec(line);
+    const m = /^(\d+)\s+(\d+)\s+(.*)$/.exec(line);
     if (!m) continue;
-    const project = tagFromPsLine(m[2]!);
-    const selfHosted = /(?:^|\s)CRATE_SELF_HOSTED=1(?=\s|$)/.test(m[2]!);
-    if (project) out.push({ pid: Number(m[1]), project, cmd: m[2]!.slice(0, 160), ...(selfHosted ? { selfHosted } : {}) });
+    const project = tagFromPsLine(m[3]!);
+    const selfHosted = /(?:^|\s)CRATE_SELF_HOSTED=1(?=\s|$)/.test(m[3]!);
+    if (project) out.push({ pid: Number(m[1]), project, cmd: m[3]!.slice(0, 160), rssKb: Number(m[2]), ...(selfHosted ? { selfHosted } : {}) });
   }
   return out;
 }
@@ -216,4 +224,17 @@ export async function sweepStopped(stopped: Set<string>, graceMs?: number): Prom
     report.push({ project, closed: pids.length });
   }
   return report;
+}
+
+/** Resident memory (MB) per workspace, from one scan — canonical path → MB.
+ * Walled seats whose sandbox wrapper hides its own stats still count their
+ * agent processes, which is where the memory lives. */
+export function memoryByProject(all: TaggedProc[] = listTagged()): Map<string, number> {
+  const mb = new Map<string, number>();
+  for (const t of all) {
+    const p = canonProject(t.project);
+    mb.set(p, (mb.get(p) ?? 0) + t.rssKb / 1024);
+  }
+  for (const [p, v] of mb) mb.set(p, Math.round(v));
+  return mb;
 }

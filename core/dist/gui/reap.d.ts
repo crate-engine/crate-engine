@@ -4,6 +4,8 @@ export interface TaggedProc {
     cmd: string;
     /** started under `crate team` (hosted outside the app) — the sweep never claims it */
     selfHosted?: boolean;
+    /** resident memory in KB (0 when unreadable) — the Workspaces menu's memory figure */
+    rssKb: number;
 }
 /** Canonical project path for comparisons (symlinks, /private/var on macOS). */
 export declare function canonProject(p: string): string;
@@ -45,3 +47,7 @@ export declare function sweepStopped(stopped: Set<string>, graceMs?: number): Pr
     project: string;
     closed: number;
 }[]>;
+/** Resident memory (MB) per workspace, from one scan — canonical path → MB.
+ * Walled seats whose sandbox wrapper hides its own stats still count their
+ * agent processes, which is where the memory lives. */
+export declare function memoryByProject(all?: TaggedProc[]): Map<string, number>;

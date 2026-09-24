@@ -29,6 +29,7 @@ import os
 import re
 import subprocess
 import threading
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -157,6 +158,7 @@ class Shell:
         self.win = Gtk.Window(title="Crate Engine")
         self.win.set_default_size(1440, 900)
         restore_geometry("main", self.win) or self.win.set_position(Gtk.WindowPosition.CENTER)
+        self.win.connect("delete-event", lambda *_: not self.confirm_quit())  # S4: quitting says what keeps running
         self.win.connect("destroy", Gtk.main_quit)
         self.win.connect("configure-event", lambda w, e: (save_geometry("main", w), False)[1])
 
@@ -323,7 +325,7 @@ class Shell:
         # Adam's ask (2026-08-18): the updater lives where Preferences would —
         # one click, whole fleet (ctrl+U kept from the retired Update menu).
         item(app_menu, "Update Crate Engine…", Gdk.KEY_u, Gdk.ModifierType.CONTROL_MASK, self.on_fleet_update)
-        item(app_menu, "Quit", Gdk.KEY_q, Gdk.ModifierType.CONTROL_MASK, lambda *_: Gtk.main_quit())
+        item(app_menu, "Quit", Gdk.KEY_q, Gdk.ModifierType.CONTROL_MASK, lambda *_: self.confirm_quit() and Gtk.main_quit())
         bar.append(app_root)
 
         # File (chrome reorg, Adam 2026-09-13): the doors a person reaches for
@@ -353,8 +355,9 @@ class Shell:
         view_root = Gtk.MenuItem(label="View")
         view_menu = Gtk.Menu()
         view_root.set_submenu(view_menu)
-        # View = what is shown: the Workspaces drawer, the four panels, the studio.
-        for label, key, panel in (("Workspaces", Gdk.KEY_w, "workspaces"), ("Team", Gdk.KEY_1, "team"), ("Context", Gdk.KEY_2, "context"),
+        # View = what is shown: the four panels, the studio. (The Workspaces
+        # drawer lives in the Workspaces menu — one home per control, 2026-09-24.)
+        for label, key, panel in (("Team", Gdk.KEY_1, "team"), ("Context", Gdk.KEY_2, "context"),
                                   ("Health", Gdk.KEY_3, "health"), ("Dev Servers", Gdk.KEY_5, "servers")):
             it = item(view_menu, label, key, Gdk.ModifierType.CONTROL_MASK,
                       lambda _w, p=panel: self.run_js(f"window.crateOpenPanel && window.crateOpenPanel('{p}')"))
@@ -370,6 +373,14 @@ class Shell:
         # Rows rebuilt from the hub's /api/fleet on every open (the "show"
         # signal); click swaps the webview to that workspace's cockpit. The
         # fetch caps at 1.2s — an asleep host must never hang the menu.
+        # Workspaces (Workspace Controls S3): projects on every computer + their
+        # actions — the same engine routes the drawer uses. Rebuilt on "show".
+        ws_root = Gtk.MenuItem(label="Workspaces")
+        ws_menu = Gtk.Menu()
+        ws_root.set_submenu(ws_menu)
+        ws_menu.connect("show", self.on_workspaces_open)
+        bar.append(ws_root)
+
         fleet_root = Gtk.MenuItem(label="Computers")  # was "Fleet", then "Servers" (Adam, 2026-09-13): the operator's word
         fleet_menu = Gtk.Menu()
         fleet_root.set_submenu(fleet_menu)
@@ -418,13 +429,19 @@ class Shell:
                 # row is the door to the card (&card=1 on the host's cockpit).
                 # Another computer's row opens the Open Project dialog with it selected
                 # (PDR open-project-doors); this machine's doors live in File.
+                # Workspace Controls (2026-09-24): Computers is about MACHINES —
+                # projects live in the Workspaces menu. Plain update status +
+                # a one-click Restart to finish.
+                if host.get("restartNeeded") is True:
+                    row("   Restart to finish update…", lambda h: self.restart_hosts([h], True), host)
+                elif host.get("restartNeeded") is False:
+                    row("   Up to date")
+                ws = host.get("workspaces", [])
+                running = sum(1 for w in ws if w.get("liveSeats", 0) > 0)
+                row(f"   {sum(1 for w in ws if not w.get('archived'))} workspaces · {running} running — see Workspaces")
                 if host.get("cockpitUrl") and not host.get("local"):
                     row(f"   Open a project on {host.get('host', '?')}…",
                         lambda h: self.open_door("open", h), host.get("host"))
-                for w in host.get("workspaces", []):
-                    live = w.get("liveSeats", 0)
-                    state = f"{live} live" if live else ("resuming" if w.get("desired") == "running" else "parked")
-                    row(f"   {w.get('name', '?')} · {state}", lambda u: self.web.load_uri(u), w.get("url"))
             else:
                 note = host.get("note") or host.get("state", "unknown")
                 row(f"   {note} — Connect", self._fleet_connect, host.get("host"))
@@ -478,19 +495,275 @@ class Shell:
                 for res in results:
                     host = "this machine" if res.get("local") else res.get("host", "?")
                     lines.append(("✓" if res.get("ok") else "✗") + f" {host} — {res.get('note', '')}")
-                msg = "\n".join(lines) + "\n\nRunning engines pick this up at their next relaunch (the Fleet menu shows ⚠ on anyone still behind)."
+                behind = [h for h in (self._fleet() or {}).get("hosts", []) if h.get("restartNeeded") is True]
+                msg = "\n".join(lines)
+                if behind:
+                    msg += ("\n\nStill running the old engine: " + ", ".join(h.get("host", "?") for h in behind)
+                            + ". Restart finishes it — workspaces stop for a few seconds and come straight back.")
             except OSError:
-                msg = "Fleet update did not answer — check the Fleet menu, or run `crate update` in a terminal to see the detail."
-            GLib.idle_add(self._fleet_update_report, msg)
+                behind = []
+                msg = "Fleet update did not answer — check the Computers menu, or run `crate update` in a terminal to see the detail."
+            GLib.idle_add(self._fleet_update_report, msg, behind)
         threading.Thread(target=work, daemon=True).start()
 
-    def _fleet_update_report(self, msg):
+    def _fleet_update_report(self, msg, behind=()):
+        if behind:
+            if self._ask("Crate Engine updated — restart to finish", msg, "Restart Now", "Later"):
+                self.restart_hosts(list(behind), False)
+            return False
         d = Gtk.MessageDialog(transient_for=self.win, modal=True, message_type=Gtk.MessageType.INFO,
-                              buttons=Gtk.ButtonsType.OK, text="Crate Engine fleet update")
+                              buttons=Gtk.ButtonsType.OK, text="Crate Engine update")
         d.format_secondary_text(msg)
         d.run()
         d.destroy()
         return False
+
+    # ── Workspace Controls S2–S4 (PDR dev/pdr/workspace-controls.md) ──
+    def _fleet(self, timeout=1.5):
+        api = self._hub_api("/api/fleet")
+        if not api:
+            return None
+        try:
+            with urllib.request.urlopen(api, timeout=timeout) as r:
+                return json.load(r)
+        except OSError:
+            return None
+
+    def _ask(self, title, text, ok, cancel="Cancel", warn=False):
+        d = Gtk.MessageDialog(transient_for=self.win, modal=True,
+                              message_type=Gtk.MessageType.WARNING if warn else Gtk.MessageType.QUESTION,
+                              buttons=Gtk.ButtonsType.NONE, text=title)
+        d.format_secondary_text(text)
+        d.add_button(cancel, Gtk.ResponseType.CANCEL)
+        d.add_button(ok, Gtk.ResponseType.OK)
+        d.set_default_response(Gtk.ResponseType.OK)
+        r = d.run()
+        d.destroy()
+        return r == Gtk.ResponseType.OK
+
+    def _tell(self, title, text):
+        d = Gtk.MessageDialog(transient_for=self.win, modal=True, message_type=Gtk.MessageType.INFO,
+                              buttons=Gtk.ButtonsType.OK, text=title)
+        d.format_secondary_text(text)
+        d.run()
+        d.destroy()
+        return False
+
+    @staticmethod
+    def ws_status(w):
+        live = w.get("liveSeats", 0)
+        if live:
+            busy = bool(w.get("busySeats"))
+            ago = ""
+            ms = w.get("lastActivityMs")
+            if ms:
+                import time
+                m = max(0, int((time.time() * 1000 - ms) / 60000))
+                ago = "just now" if m < 1 else f"{m}m" if m < 60 else f"{m // 60}h" if m < 1440 else f"{m // 1440}d"
+            parts = ["working" if busy else ("idle " + ago).strip(), f"{live} agents"]
+            mb = w.get("memMB") or 0
+            if mb:
+                parts.append(f"{mb / 1024:.1f} GB" if mb >= 1024 else f"{mb} MB")
+            return " · ".join(parts)
+        return "resuming" if w.get("desired") == "running" else "stopped"
+
+    def _ws_post(self, host, path, action):
+        api = self._hub_api("/api/fleet/workspace")
+        if not api:
+            return {"error": "the local engine is not up"}
+        try:
+            req = urllib.request.Request(api, data=json.dumps({"host": host, "path": path, "action": action}).encode(),
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            try:
+                return json.load(e)
+            except Exception:
+                return {"error": str(e)}
+        except OSError as e:
+            return {"error": str(e)}
+
+    def confirm_stop(self, host, w, archive):
+        live = w.get("liveSeats", 0)
+        busy = w.get("busySeats") or []
+        if not live and not archive:
+            return True
+        info = (f"This closes its {live} agent session{'' if live == 1 else 's'} on {host}. " if live else "")
+        info += ("Everything is saved — it moves to Archived, and one click restores it." if archive
+                 else "Everything is saved — resume it anytime from the Workspaces menu.")
+        if busy:
+            info += f"\n\n⚠ {', '.join(busy)} {'is' if len(busy) == 1 else 'are'} in the middle of a task — that turn will be lost."
+        return self._ask(f"{'Archive' if archive else 'Stop'} {w.get('name', 'this workspace')}?", info,
+                         "Archive Workspace" if archive else "Stop Workspace", warn=bool(busy))
+
+    def ws_action(self, host, w, action):
+        name = w.get("name", "this workspace")
+        if action == "open":
+            if w.get("url"):
+                self.web.load_uri(w["url"])
+            return
+        if action in ("stop", "archive") and not self.confirm_stop(host, w, action == "archive"):
+            return
+        if action == "resume-fresh" and not self._ask(
+                f"Resume {name} fresh?",
+                "Every agent starts a clean conversation, reads the note written when it stopped, "
+                "then scouts the project before doing anything.", "Resume Fresh"):
+            return
+
+        def work():
+            r = self._ws_post(host, w.get("path", ""), action) or {}
+            if r.get("error"):
+                GLib.idle_add(self._tell, f"{name}: that didn't work", r["error"])
+            elif (r.get("teardown") or {}).get("remaining", 0) > 0:
+                GLib.idle_add(self._tell, f"{name} stopped — {r['teardown']['remaining']} process(es) held on",
+                              "The engine's sweep retries within 5 minutes.")
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_workspaces_open(self, menu):
+        for child in menu.get_children():
+            menu.remove(child)
+
+        def add(m, label, cb=None):
+            it = Gtk.MenuItem(label=label)
+            if cb is None:
+                it.set_sensitive(False)
+            else:
+                it.connect("activate", lambda *_: cb())
+            m.append(it)
+            return it
+
+        fleet = self._fleet()
+        if not fleet:
+            add(menu, "The local engine isn't answering yet — give it a moment")
+        for host in (fleet or {}).get("hosts", []):
+            name = host.get("host", "?")
+            add(menu, name)
+            if not (host.get("local") or host.get("state") == "connected"):
+                note = host.get("note") or host.get("state", "not connected")
+                add(menu, f"   {note} — Connect", lambda h=name: self._fleet_connect(h))
+                menu.append(Gtk.SeparatorMenuItem())
+                continue
+            rows = host.get("workspaces", [])
+            current = [w for w in rows if not w.get("archived")]
+            archived = [w for w in rows if w.get("archived")]
+            if not current:
+                add(menu, "   No workspaces")
+            for w in current:
+                live = w.get("liveSeats", 0) > 0
+                it = Gtk.MenuItem(label=f"{'●' if live else '○'}  {w.get('name', '?')}  —  {self.ws_status(w)}")
+                sub = Gtk.Menu()
+                add(sub, "Open", lambda h=name, w=w: self.ws_action(h, w, "open"))
+                sub.append(Gtk.SeparatorMenuItem())
+                if live:
+                    add(sub, "Stop…", lambda h=name, w=w: self.ws_action(h, w, "stop"))
+                else:
+                    add(sub, "Resume", lambda h=name, w=w: self.ws_action(h, w, "resume"))
+                    add(sub, "Resume Fresh…", lambda h=name, w=w: self.ws_action(h, w, "resume-fresh"))
+                    add(sub, "Archive…", lambda h=name, w=w: self.ws_action(h, w, "archive"))
+                it.set_submenu(sub)
+                menu.append(it)
+            if archived:
+                arch = Gtk.MenuItem(label=f"   Archived ({len(archived)})")
+                asub = Gtk.Menu()
+                for w in archived:
+                    row = Gtk.MenuItem(label=w.get("name", "?"))
+                    rs = Gtk.Menu()
+                    add(rs, "Restore", lambda h=name, w=w: self.ws_action(h, w, "unarchive"))
+                    add(rs, "Resume", lambda h=name, w=w: self.ws_action(h, w, "resume"))
+                    row.set_submenu(rs)
+                    asub.append(row)
+                arch.set_submenu(asub)
+                menu.append(arch)
+            running = [w for w in current if w.get("liveSeats", 0) > 0]
+            if running:
+                add(menu, f"   Stop All on {name}…", lambda h=name, rs=running: self.stop_all(h, rs))
+            menu.append(Gtk.SeparatorMenuItem())
+        panel = add(menu, "Show Workspaces Panel",
+                    lambda: self.run_js("window.crateOpenPanel && window.crateOpenPanel('workspaces')"))
+        panel.set_sensitive(self.cockpit_ready)
+        menu.show_all()
+
+    def stop_all(self, host, rows):
+        agents = sum(w.get("liveSeats", 0) for w in rows)
+        busy = [w.get("name", "?") for w in rows if w.get("busySeats")]
+        text = (f"This closes {agents} agent session{'' if agents == 1 else 's'}. Everything is saved — "
+                "resume any of them from the Workspaces menu.")
+        if busy:
+            text += f"\n\n⚠ Mid-task right now: {', '.join(busy)} — those turns will be lost."
+        if not self._ask(f"Stop all {len(rows)} workspace{'' if len(rows) == 1 else 's'} on {host}?", text, "Stop All", warn=bool(busy)):
+            return
+        threading.Thread(target=lambda: [self._ws_post(host, w.get("path", ""), "stop") for w in rows], daemon=True).start()
+
+    def restart_hosts(self, hosts, confirm):
+        """S4: Restart to finish — the proven launch flow (`crate open [--remote]`)
+        restarts a stale server in place; never while a team is mid-task."""
+        blocked = [h for h in hosts if h.get("busy")]
+        ready = [h for h in hosts if not h.get("busy")]
+        if blocked:
+            self._tell("Not yet — a team is in the middle of a task" if not ready else "Some computers must wait",
+                       "\n".join(f"{h.get('host', '?')}: {', '.join(h['busy'])} {'is' if len(h['busy']) == 1 else 'are'} mid-task."
+                                 for h in blocked) + "\n\nRestarting now would cut those turns off. Try again when they finish.")
+        if not ready:
+            return
+        if confirm and not self._ask(f"Restart {' and '.join(h.get('host', '?') for h in ready)} to finish the update?",
+                                     "Running workspaces stop for a few seconds and come straight back on the new engine. Nothing is lost.",
+                                     "Restart"):
+            return
+        remotes = [h for h in ready if not h.get("local")]
+        local = any(h.get("local") for h in ready)
+
+        def work():
+            for h in remotes:
+                status, door = launch_engine(h.get("host", ""))
+                if status == "ok":
+                    self._fleet_connect(h.get("host", ""))
+            if local:
+                GLib.idle_add(lambda: (self.start_launch(), False)[1])
+        threading.Thread(target=work, daemon=True).start()
+
+    def confirm_quit(self):
+        """S4 — quitting SAYS what keeps running (teams run on by law, never
+        invisibly). Returns True to go ahead and quit."""
+        prefs = os.path.join(HOME, ".crate", "shell-prefs.json")
+        try:
+            with open(prefs) as f:
+                if json.load(f).get("quitNoteSuppressed"):
+                    return True
+        except (OSError, ValueError):
+            pass
+        fleet = self._fleet(timeout=1.0)
+        running = [(h.get("host", "?"), w) for h in (fleet or {}).get("hosts", [])
+                   for w in h.get("workspaces", []) if w.get("liveSeats", 0) > 0]
+        if not running:
+            return True
+        d = Gtk.MessageDialog(transient_for=self.win, modal=True, message_type=Gtk.MessageType.INFO,
+                              buttons=Gtk.ButtonsType.NONE,
+                              text=f"{len(running)} workspace{'' if len(running) == 1 else 's'} keep{'s' if len(running) == 1 else ''} running in the background")
+        d.format_secondary_text("\n".join(f"• {w.get('name', '?')} on {h}" for h, w in running)
+                                + "\n\nYour agents keep working after the app closes. Reopen Crate Engine anytime to check on them.")
+        check = Gtk.CheckButton(label="Don't show this again")
+        d.get_message_area().pack_start(check, False, False, 0)
+        check.show()
+        d.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        d.add_button("Stop Them Too", 2)
+        d.add_button("Quit", Gtk.ResponseType.OK)
+        d.set_default_response(Gtk.ResponseType.OK)
+        r = d.run()
+        suppress = check.get_active()
+        d.destroy()
+        if suppress:
+            try:
+                os.makedirs(os.path.dirname(prefs), exist_ok=True)
+                with open(prefs, "w") as f:
+                    json.dump({"quitNoteSuppressed": True}, f)
+            except OSError:
+                pass
+        if r == 2:
+            for h, w in running:
+                self._ws_post(h, w.get("path", ""), "stop")
+            return True
+        return r == Gtk.ResponseType.OK
 
     def active_view(self):
         w = self.win.get_window()

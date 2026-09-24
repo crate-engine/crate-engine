@@ -24,6 +24,12 @@ export interface FleetWorkspaceRow {
    * engine (honest degrade: name-only rows, the skew marker says why). */
   desired?: "running" | "parked";
   liveSeats?: number;
+  /** Workspace Controls S2–S4 (absent on an older remote engine — honest
+   * degrade): archived, the mid-task seats, memory held, last activity. */
+  archived?: boolean;
+  busySeats?: string[];
+  memMB?: number;
+  lastActivityMs?: number | null;
   /** The cockpit URL the window loads to view this workspace. */
   url: string;
 }
@@ -38,6 +44,12 @@ export interface FleetHostRow {
   /** True when this host's engine sha differs from the hub's (decision 5:
    * shown honestly, never auto-fixed — the UPDATE menu fans out). */
   skew: boolean;
+  /** S4: this computer's server runs an older engine than its disk has —
+   * "Restart to finish". Absent when unknown (older remote engine). */
+  restartNeeded?: boolean;
+  /** S4: names of this computer's workspaces with a seat mid-task — the
+   * Restart button waits for these and names them. */
+  busy?: string[];
   workspaces: FleetWorkspaceRow[];
   /** CE-136: the host's cockpit door — the "＋ new rig on this host" row
    * loads this + &card=1 (the summonable card), so an EMPTY host is never
@@ -96,6 +108,7 @@ interface HostLink {
   app?: { port: string; token: string };
   tunnel?: { kill(): void; alive(): boolean };
   engineSha?: string;
+  restartNeeded?: boolean;
   /** last successful workspace read (cache — the menu renders this while a
    * background refresh runs; an asleep host shows its last-known rows). */
   workspaces?: FleetWorkspaceRow[];
@@ -193,13 +206,22 @@ async function refreshRemoteRows(link: HostLink, exec: FleetExec): Promise<void>
     const v = (await exec.fetchJson(`${base}/api/version?token=${tok}`, 2_000)) as { loadedSha?: string };
     link.engineSha = v.loadedSha;
     const w = (await exec.fetchJson(`${base}/api/workspaces?token=${tok}`, 2_000)) as {
-      workspaces?: Array<{ name: string; path: string; desired?: "running" | "parked"; liveSeats?: number }>;
+      workspaces?: Array<{
+        name: string; path: string; rig?: boolean; desired?: "running" | "parked"; liveSeats?: number;
+        archived?: boolean; busySeats?: string[]; memMB?: number; lastActivityMs?: number | null;
+      }>;
+      host?: { restartNeeded?: boolean };
     };
-    link.workspaces = (w.workspaces ?? []).map((x) => ({
+    if (w.host?.restartNeeded !== undefined) link.restartNeeded = w.host.restartNeeded;
+    link.workspaces = (w.workspaces ?? []).filter((x) => x.rig !== false).map((x) => ({
       name: x.name,
       path: x.path,
       ...(x.desired !== undefined ? { desired: x.desired } : {}),
       ...(x.liveSeats !== undefined ? { liveSeats: x.liveSeats } : {}),
+      ...(x.archived ? { archived: true } : {}),
+      ...(x.busySeats !== undefined ? { busySeats: x.busySeats } : {}),
+      ...(x.memMB !== undefined ? { memMB: x.memMB } : {}),
+      ...(x.lastActivityMs !== undefined ? { lastActivityMs: x.lastActivityMs } : {}),
       url: `${base}/team?token=${tok}&project=${encodeURIComponent(x.path)}`,
     }));
     link.fetchedAt = Date.now();
@@ -219,8 +241,15 @@ export interface FleetLocalDeps {
   hubToken: string;
   hostLabel: string;
   /** The hub's workspace rows (the server passes its own /api/workspaces truth). */
-  localWorkspaces: Array<{ name: string; path: string; desired: "running" | "parked"; liveSeats: number }>;
+  localWorkspaces: Array<{
+    name: string; path: string; desired: "running" | "parked"; liveSeats: number;
+    archived?: boolean; busySeats?: string[]; memMB?: number; lastActivityMs?: number | null;
+  }>;
+  /** S4: the hub's own server is behind its disk engine. */
+  localRestartNeeded?: boolean;
 }
+
+const busyNames = (rows: FleetWorkspaceRow[]): string[] => rows.filter((w) => (w.busySeats?.length ?? 0) > 0).map((w) => w.name);
 
 /**
  * The whole fleet, cache-first: the local row is always fresh; remote rows
@@ -236,6 +265,8 @@ export function fleetView(deps: FleetLocalDeps, exec: FleetExec = defaultFleetEx
       state: "connected",
       engineSha: deps.hubSha,
       skew: false,
+      ...(deps.localRestartNeeded !== undefined ? { restartNeeded: deps.localRestartNeeded } : {}),
+      busy: busyNames(deps.localWorkspaces.map((w) => ({ ...w, url: "" }))),
       workspaces: deps.localWorkspaces.map((w) => ({
         ...w,
         url: `${deps.hubOrigin}/team?token=${deps.hubToken}&project=${encodeURIComponent(w.path)}`,
@@ -259,6 +290,8 @@ export function fleetView(deps: FleetLocalDeps, exec: FleetExec = defaultFleetEx
       ...(link.note !== undefined ? { note: link.note } : {}),
       ...(link.engineSha !== undefined ? { engineSha: link.engineSha } : {}),
       skew: link.engineSha !== undefined && link.engineSha !== deps.hubSha,
+      ...(link.restartNeeded !== undefined ? { restartNeeded: link.restartNeeded } : {}),
+      busy: busyNames(link.workspaces ?? []),
       workspaces: link.workspaces ?? [],
       ...(link.app ? { cockpitUrl: `http://127.0.0.1:${link.app.port}/team?token=${link.app.token}` } : {}),
     });
@@ -341,4 +374,51 @@ export async function connectHost(
     workspaces: link.workspaces ?? [],
     ...(link.app ? { cockpitUrl: `http://127.0.0.1:${link.app.port}/team?token=${link.app.token}` } : {}),
   };
+}
+
+/** Workspace Controls S3 — the per-workspace actions every menu offers, on ANY
+ * computer. Each maps onto that computer's own route, so a remote workspace is
+ * acted on by ITS engine (the record, the teardown and the note stay local to
+ * where the agents run). */
+export type WorkspaceAction = "stop" | "resume" | "resume-fresh" | "archive" | "unarchive";
+
+export function workspaceActionRequest(action: WorkspaceAction, path: string): { method: "POST"; route: string; body?: unknown } {
+  switch (action) {
+    case "stop":
+      return { method: "POST", route: `/api/team/stop?project=${encodeURIComponent(path)}` };
+    case "resume":
+      return { method: "POST", route: "/api/workspaces/open", body: { path } };
+    case "resume-fresh":
+      return { method: "POST", route: "/api/workspaces/open", body: { path, fresh: true } };
+    case "archive":
+      return { method: "POST", route: "/api/workspaces/archive", body: { path } };
+    case "unarchive":
+      return { method: "POST", route: "/api/workspaces/unarchive", body: { path } };
+  }
+}
+
+/** The tokened origin of a CONNECTED remote host's engine (via its tunnel). */
+export function remoteTarget(host: string): { base: string; token: string } | undefined {
+  const link = links.get(host);
+  if (!link || link.state !== "connected" || !link.app) return undefined;
+  return { base: `http://127.0.0.1:${link.app.port}`, token: link.app.token };
+}
+
+/** Run one workspace action against an engine (local hub or a remote's tunnel). */
+export async function runWorkspaceAction(
+  target: { base: string; token: string },
+  action: WorkspaceAction,
+  path: string,
+): Promise<{ status: number; body: unknown }> {
+  const rq = workspaceActionRequest(action, path);
+  const r = await fetch(`${target.base}${rq.route}${rq.route.includes("?") ? "&" : "?"}token=${target.token}`, {
+    method: rq.method,
+    headers: { "X-Crate-Token": target.token, "Content-Type": "application/json" },
+    ...(rq.body !== undefined ? { body: JSON.stringify(rq.body) } : {}),
+    signal: AbortSignal.timeout(90_000),
+  });
+  const body = (await r.json().catch(() => ({}))) as unknown;
+  // the fleet cache must not show the old state for 5s after an action
+  for (const l of links.values()) if (target.base.endsWith(`:${l.app?.port}`)) l.fetchedAt = undefined;
+  return { status: r.status, body };
 }

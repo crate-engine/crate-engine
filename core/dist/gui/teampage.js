@@ -160,8 +160,13 @@ header{padding:12px 22px;border-bottom:1px solid var(--line);display:flex;align-
 .wsitem.active .wsname{color:var(--amber-hi)}
 .wspath{font:400 10.5px/1.3 var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .wsstat{font:500 9px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--faint);flex:0 0 auto}
-.wsrm{background:transparent;border:0;color:var(--faint);cursor:pointer;font-size:14px;flex:0 0 auto;opacity:0}
-.wsitem:hover .wsrm{opacity:1}.wsrm:hover{color:var(--bad)}
+.wsacts{display:flex;gap:6px;margin-top:5px;opacity:0;transition:opacity .12s}
+.wsitem:hover .wsacts,.wsitem.active .wsacts{opacity:1}
+.wsact{background:transparent;border:1px solid var(--line);color:var(--faint);cursor:pointer;font:500 10px/1 var(--mono);letter-spacing:.04em;padding:4px 7px;border-radius:4px}
+.wsact:hover{color:var(--fg);border-color:var(--faint)}
+.wsact[data-act="stop"]:hover,.wsact[data-act="archive"]:hover{color:var(--bad);border-color:var(--bad)}
+.wsarch{padding:10px 14px 6px;color:var(--faint);font:500 10px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;cursor:pointer}
+.wsarch:hover{color:var(--fg)}
 .railft{padding:12px;border-top:1px solid var(--line)}
 .wsadd{width:100%;background:var(--panel2);border:1px dashed var(--line2);border-radius:0;color:var(--dim);padding:11px;font:600 10px/1 var(--body);letter-spacing:.1em;text-transform:uppercase;cursor:pointer}
 .wsadd:hover{color:var(--amber);border-color:var(--amber)}
@@ -1731,32 +1736,77 @@ window.addEventListener("keydown",e=>{
 // every row says Running (with its live seat count) or Parked, straight from
 // the record + the peeked process truth. Switching is a pure view re-point;
 // N workspaces run at once and the rail is where that becomes visible. ──
+function wsAgo(ms){if(!ms)return"";const m=Math.max(0,Math.round((Date.now()-ms)/60000));return m<1?"just now":m<60?m+"m":m<1440?Math.round(m/60)+"h":Math.round(m/1440)+"d";}
+function wsMem(mb){return !mb?"":mb>=1024?(mb/1024).toFixed(1)+" GB":mb+" MB";}
 function wsStatus(w){
   if(!w.exists)return{cls:"gone",label:"missing"};
   if(!w.rig)return{cls:"gone",label:"not a rig"};
-  if(w.liveSeats>0)return{cls:"live",label:w.liveSeats+" live"};
+  if(w.liveSeats>0){
+    const busy=(w.busySeats||[]).length>0;
+    const parts=[busy?"working":("idle"+(w.lastActivityMs?" "+wsAgo(w.lastActivityMs):"")),w.liveSeats+" agents"];
+    if(w.memMB)parts.push(wsMem(w.memMB));
+    return{cls:busy?"live":"live",label:parts.join(" · ")};
+  }
   if(w.desired==="running")return{cls:"idle",label:"resuming"}; // the record says running; seats are on their way (or the engine just came up)
-  return{cls:"idle",label:"parked"};
+  return{cls:"idle",label:"stopped"};
 }
+// Workspace Controls S2/S3 (Adam, 2026-09-24): every action goes through the
+// same engine routes the native Workspaces menu uses; stopping agents always
+// asks first, in plain words, and says what a mid-task stop would cost.
+async function wsStop(w,archive){
+  const n=w.liveSeats||0;
+  const busy=(w.busySeats||[]);
+  let msg=(archive?"Archive ":"Stop ")+w.name+"?";
+  if(n>0)msg+=" This closes its "+n+" agent session"+(n===1?"":"s")+".";
+  msg+=" Everything is saved"+(archive?" — it moves to Archived, and one click restores it.":" — you can resume it anytime.");
+  if(busy.length)msg+=" ⚠ "+busy.join(", ")+(busy.length===1?" is":" are")+" in the middle of a task — that turn will be lost.";
+  if(n>0||archive){if(!(await uiConfirm(msg,archive?"Archive Workspace":"Stop Workspace",true)))return;}
+  const r=archive
+    ?await fetch(api("/api/workspaces/archive"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({path:w.path})}).then(r=>r.json())
+    :await fetch(api("/api/team/stop?project="+encodeURIComponent(w.path)),{method:"POST",headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());
+  if(r&&r.teardown&&r.teardown.remaining>0)await uiNotice(w.name+" stopped, but "+r.teardown.remaining+" process(es) would not close — the engine's sweep will retry within 5 minutes.");
+  loadWorkspaces();if(w.path===PROJECT){renderTeamMenu();refresh();}
+}
+async function wsPost(route,body){const r=await fetch(api(route),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify(body)}).then(r=>r.json()).catch(()=>({error:"the engine did not answer"}));if(r&&r.error)await uiNotice(r.error);loadWorkspaces();if(body.path===PROJECT){renderTeamMenu();refresh();}}
+const WS_ACTIONS={
+  stop:w=>wsStop(w,false),
+  archive:w=>wsStop(w,true),
+  resume:w=>wsPost("/api/workspaces/open",{path:w.path}),
+  fresh:async w=>{if(await uiConfirm("Resume "+w.name+" fresh? Every agent starts a clean conversation, reads the note written when it stopped, then scouts the project before doing anything.","Resume Fresh"))wsPost("/api/workspaces/open",{path:w.path,fresh:true});},
+  restore:w=>wsPost("/api/workspaces/unarchive",{path:w.path}),
+};
+function wsRow(w,active){
+  const st=wsStatus(w);
+  const live=w.liveSeats>0;
+  const acts=w.archived?[["restore","Restore"],["resume","Resume"]]
+    :live?[["stop","Stop"]]
+    :w.rig?[["resume","Resume"],["fresh","Resume fresh"],["archive","Archive"]]:[];
+  return '<div class="wsitem'+(w.path===active?' active':'')+'" data-path="'+encodeURIComponent(w.path)+'">'
+    +'<span class="wsdot '+st.cls+'"></span>'
+    +'<div class="wsmeta"><div class="wsname">'+esc(w.name)+'</div><div class="wspath">'+esc(w.path)+'</div>'
+    +'<div class="wsacts">'+acts.map(a=>'<button class="wsact" data-act="'+a[0]+'">'+a[1]+'</button>').join("")+'</div></div>'
+    +'<span class="wsstat">'+esc(st.label)+'</span></div>';
+}
+let WS_SHOW_ARCHIVED=false;
 function renderRail(){
   const list=document.getElementById("wslist");if(!list)return;
   if(!WORKSPACES.length){list.innerHTML='<div style="padding:18px;color:var(--faint);font-size:12.5px;line-height:1.6">No workspaces yet. Attach a repo, or add one below — each becomes its own team on the rail.</div>';return;}
   const active=PROJECT;
-  list.innerHTML=WORKSPACES.map(w=>{
-    const st=wsStatus(w);
-    return '<div class="wsitem'+(w.path===active?' active':'')+'" data-path="'+encodeURIComponent(w.path)+'">'
-      +'<span class="wsdot '+st.cls+'"></span>'
-      +'<div class="wsmeta"><div class="wsname">'+esc(w.name)+'</div><div class="wspath">'+esc(w.path)+'</div></div>'
-      +'<span class="wsstat">'+st.label+'</span>'
-      +'<button class="wsrm" data-rm="'+encodeURIComponent(w.path)+'" title="Remove from rail">×</button></div>';
-  }).join("");
+  const cur=WORKSPACES.filter(w=>!w.archived),arch=WORKSPACES.filter(w=>w.archived);
+  let html=cur.map(w=>wsRow(w,active)).join("");
+  if(arch.length){
+    html+='<div class="wsarch" id="wsarchtoggle">'+(WS_SHOW_ARCHIVED?"▾":"▸")+' Archived ('+arch.length+')</div>';
+    if(WS_SHOW_ARCHIVED)html+=arch.map(w=>wsRow(w,active)).join("");
+  }
+  list.innerHTML=html;
+  const byPath=p=>WORKSPACES.find(w=>w.path===p);
   list.querySelectorAll(".wsitem").forEach(el=>{
-    el.onclick=e=>{if(e.target.closest(".wsrm"))return;switchWorkspace(decodeURIComponent(el.getAttribute("data-path")));};
+    el.onclick=e=>{if(e.target.closest(".wsact"))return;switchWorkspace(decodeURIComponent(el.getAttribute("data-path")));};
   });
-  list.querySelectorAll(".wsrm").forEach(b=>{
-    b.onclick=async e=>{e.stopPropagation();const p=decodeURIComponent(b.getAttribute("data-rm"));
-      await fetch(api("/api/workspaces/remove"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({path:p})});loadWorkspaces();};
+  list.querySelectorAll(".wsact").forEach(b=>{
+    b.onclick=async e=>{e.stopPropagation();const w=byPath(decodeURIComponent(b.closest(".wsitem").getAttribute("data-path")));if(w)await WS_ACTIONS[b.getAttribute("data-act")](w);};
   });
+  const t=document.getElementById("wsarchtoggle");if(t)t.onclick=()=>{WS_SHOW_ARCHIVED=!WS_SHOW_ARCHIVED;renderRail();};
 }
 async function loadWorkspaces(){
   try{const r=await fetch(api("/api/workspaces"),{headers:{"X-Crate-Token":TOKEN}}).then(r=>r.json());WORKSPACES=r.workspaces||[];renderRail();}catch(e){}
@@ -1949,7 +1999,7 @@ async function renderTeamMenu(){
   panel.innerHTML=h;
   const att=document.getElementById("tattach");if(att)att.onclick=()=>window.crateOpenDoor("open");
   const bootB=document.getElementById("tboot");if(bootB)bootB.onclick=bootWithPreflight;
-  const stopB=document.getElementById("tstop");if(stopB)stopB.onclick=async()=>{if(!(await uiConfirm("Stop the whole team? Runners exit; the loop resumes from state files on the next boot.","Stop team",true)))return;await fetch(api("/api/team/stop"),{method:"POST",headers:{"X-Crate-Token":TOKEN}});renderTeamMenu();refresh();};
+  const stopB=document.getElementById("tstop");if(stopB)stopB.onclick=async()=>{let w=WORKSPACES.find(x=>x.path===PROJECT);if(!w){await loadWorkspaces();w=WORKSPACES.find(x=>x.path===PROJECT);}await wsStop(w||{name:"this workspace",path:PROJECT,liveSeats:5,busySeats:[]},false);};
   panel.querySelectorAll("[data-relaunch]").forEach(b=>{b.onclick=async()=>{const seat=b.getAttribute("data-relaunch");b.textContent="…";await fetch(api("/api/team/relaunch"),{method:"POST",headers:{"X-Crate-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({seat})});renderTeamMenu();refresh();};});
   const ab=document.getElementById("tabandon");if(ab)ab.onclick=async()=>{
     if(!(await uiConfirm("Abandon the current loop back to idle? The branch is left as-is; nothing merges.","Abandon loop",true)))return;

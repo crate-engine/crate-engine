@@ -72,6 +72,10 @@ export declare class TeamProcess {
     /** Restart exactly one seat (the Team menu's per-seat Relaunch). Re-reads
      * rig.conf, so a restaffed or re-flagged seat lands on the right path. */
     relaunch(seat: Seat): TeamProcStatus;
+    /** Workspace Controls S2/S4 — the "mid-task" signal: a blended seat whose
+     * live pane is mid-response, or a headless seat with an in-flight work
+     * record. Stop confirmations warn on it; a computer's Restart waits for it. */
+    busySeats(): Seat[];
     /** D12 refresh, blended form: the refresh IS a visible restart of the live
      * pane. Refused mid-response (a fresh session that tore a running turn in
      * half would lose work — the impeccable-context law); force overrides.
@@ -102,6 +106,8 @@ export declare function teamProcessFor(projectRoot: string, spawner: SeatSpawner
 /** Read one team's status WITHOUT creating a supervisor (the workspace
  * rail's live-count read — a peek must never instantiate lifecycle). */
 export declare function peekTeam(projectRoot: string): TeamProcStatus | undefined;
+/** The mid-task seats of a supervised team (never instantiates one). */
+export declare function peekBusy(projectRoot: string): Seat[];
 /** The idle knob's minutes from rig.conf — undefined = OFF (the default:
  * cmux never reaps your idle terminals; a team runs until Adam parks it). */
 export declare function idleParkMinutes(conf: Record<string, string>): number | undefined;

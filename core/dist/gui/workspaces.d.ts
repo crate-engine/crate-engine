@@ -19,11 +19,18 @@ export interface Workspace {
     desired: WorkspaceDesired;
     /** View default: when a window last focused this workspace (ms), if ever. */
     focusedAt?: number;
+    /** Workspace Controls S3 (Adam, 2026-09-24 — Conductor's pattern): stopped
+     * AND tucked into the Archived section; one click restores it. Never a
+     * delete — the project's files always stay on disk. Implies desired=parked. */
+    archived?: boolean;
 }
 export declare function workspacesFile(home: string): string;
 /** Record the lifecycle intent — boot/staff mark running, a scoped stop
  * marks parked. This is the ONLY thing restart-resume reads. */
 export declare function setWorkspaceDesired(home: string, projectPath: string, desired: WorkspaceDesired): void;
+/** Archive (stopped + tucked away) or restore to the plain Stopped list.
+ * Archiving never leaves a workspace desired-running. */
+export declare function setWorkspaceArchived(home: string, projectPath: string, archived: boolean): void;
 /** Record a focus (a VIEW default — used only to pick where a bare
  * `crate open` / project-less window lands; never touches lifecycle). */
 export declare function setWorkspaceFocused(home: string, projectPath: string): void;

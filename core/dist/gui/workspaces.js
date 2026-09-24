@@ -43,7 +43,13 @@ function patchEntry(home, projectPath, patch) {
 /** Record the lifecycle intent — boot/staff mark running, a scoped stop
  * marks parked. This is the ONLY thing restart-resume reads. */
 export function setWorkspaceDesired(home, projectPath, desired) {
-    patchEntry(home, projectPath, { desired });
+    // Running a workspace always brings it back out of the Archived section.
+    patchEntry(home, projectPath, desired === "running" ? { desired, archived: false } : { desired });
+}
+/** Archive (stopped + tucked away) or restore to the plain Stopped list.
+ * Archiving never leaves a workspace desired-running. */
+export function setWorkspaceArchived(home, projectPath, archived) {
+    patchEntry(home, projectPath, archived ? { archived: true, desired: "parked" } : { archived: false });
 }
 /** Record a focus (a VIEW default — used only to pick where a bare
  * `crate open` / project-less window lands; never touches lifecycle). */
@@ -126,6 +132,7 @@ function enrich(entry) {
         lastActivityMs: rig ? lastActivity(entry.path) : null,
         desired: entry.desired ?? "parked",
         ...(entry.focusedAt !== undefined ? { focusedAt: entry.focusedAt } : {}),
+        ...(entry.archived ? { archived: true } : {}),
     };
 }
 /** The registered workspaces, enriched with disk state (newest activity first). */

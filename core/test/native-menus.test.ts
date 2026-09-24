@@ -32,7 +32,8 @@ test("the page exposes the panel bridge, and the shell retires exactly the three
 
 test("the shell's View menu: Workspaces + the four panels, cmd-1/2/3/5, validated against cockpitReady", () => {
   assert.ok(shell.includes('NSMenu(title: "View")'), "a real View menu exists");
-  assert.ok(shell.includes('NSMenuItem(title: "Workspaces",') && shell.includes("[.command, .control]"), "Workspaces rides ⌃⌘S, the Mac's show-sidebar chord");
+  // Workspace Controls (2026-09-24): the drawer's ⌃⌘S moved into the top-level Workspaces menu
+  assert.ok(shell.includes('NSMenu(title: "Workspaces")') && shell.includes('"Show Workspaces Panel"') && shell.includes("[.command, .control]"), "Show Workspaces Panel rides ⌃⌘S, the Mac's show-sidebar chord");
   for (const [name, key] of [["Team", "1"], ["Context", "2"], ["Health", "3"], ["Dev Servers", "5"]] as const) {
     assert.ok(shell.includes(`NSMenuItem(title: "${name}",`), `${name} is a menu item`);
     assert.ok(shell.includes(`keyEquivalent: "${key}"`), `${name} rides cmd-${key}`);
@@ -63,11 +64,13 @@ test("Update Crate Engine lives in the APP menu on both shells (cmd/ctrl+U), fle
   const macUpd = shell.slice(shell.indexOf("@objc func updateFleet"));
   assert.ok(macUpd.includes("/api/fleet/update"), "mac: it updates the WHOLE fleet through the hub");
   assert.ok(macUpd.includes("timeout: 900"), "mac: npm-install-per-host honesty — minutes, off-thread");
-  assert.ok(macUpd.includes("next relaunch"), "mac: the report says how the update finishes");
+  // Workspace Controls S4: the update FINISHES in the app — computers still on the old engine are named, Restart Now is one click
+  assert.ok(macUpd.includes("restartNeeded") && macUpd.includes("Restart Now") && macUpd.includes("restartHosts("), "mac: the report offers Restart Now for computers still behind");
   // linux: same shape
   assert.ok(!pyShell.includes('label="Update"'), "linux: the top-level Update menu is gone");
   assert.ok(pyShell.includes("Update Crate Engine…") && pyShell.includes("on_fleet_update"), "linux: app-menu updater");
   assert.ok(pyShell.includes("/api/fleet/update") && pyShell.includes("timeout=900"), "linux: fleet-wide, off-thread");
+  assert.ok(pyShell.includes('"Restart Now"') && pyShell.includes("restart_hosts("), "linux: the same Restart Now");
 });
 
 test("the installer ends with a NATIVE APP on both platforms — plain-words fallbacks, never sudo", () => {

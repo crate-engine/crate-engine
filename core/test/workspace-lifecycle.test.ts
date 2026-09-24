@@ -175,7 +175,17 @@ test("the rail's glass reads the record: live seat counts, parked, resuming", ()
   const fn = html.slice(html.indexOf("function wsStatus"), html.indexOf("function renderRail"));
   assert.match(fn, /w\.liveSeats>0/, "Running shows its live seat count");
   assert.match(fn, /"resuming"/, "record-running with no seats yet reads as resuming, not dead");
-  assert.match(fn, /"parked"/, "and a seat-less workspace is PARKED — calm, never a crash costume");
+  // Workspace Controls (Adam, 2026-09-24): the operator's word is STOPPED
+  // ("parked" stays the record's internal name) — calm, never a crash costume
+  assert.match(fn, /"stopped"/, "and a seat-less workspace reads STOPPED");
+  assert.match(fn, /busySeats[\s\S]*"working"/, "a mid-task team says working, an idle one says idle + since");
+  const rail = html.slice(html.indexOf("function renderRail"), html.indexOf("async function loadWorkspaces"));
+  assert.match(rail, /Archived \(/, "archived workspaces live in their own section");
+  assert.doesNotMatch(html, /workspaces\/remove/, "the rail can no longer hide a running team behind a bare remove");
+  const stop = html.slice(html.indexOf("async function wsStop"), html.indexOf("async function wsPost"));
+  assert.match(stop, /uiConfirm\(/, "stopping agents always asks first");
+  assert.match(stop, /agent session/, "and says how many agent sessions close");
+  assert.match(stop, /middle of a task/, "and warns when a seat is mid-task");
 });
 
 test("/api/fleet (fleet rail F1): the hub's local row carries its workspaces with the record + live counts", async () => {

@@ -225,6 +225,27 @@ export class TeamProcess {
     return this.status();
   }
 
+  /** Workspace Controls S2/S4 — the "mid-task" signal: a blended seat whose
+   * live pane is mid-response, or a headless seat with an in-flight work
+   * record. Stop confirmations warn on it; a computer's Restart waits for it. */
+  busySeats(): Seat[] {
+    const out: Seat[] = [];
+    for (const [seat, b] of this.blends) if (b.alive() && b.responding()) out.push(seat);
+    for (const seat of this.procs.keys()) {
+      if (out.includes(seat)) continue;
+      try {
+        const w = readWork(this.projectRoot, seat);
+        if (w && w.phase !== "completed") out.push(seat);
+      } catch {
+        // an unreadable record is preserved for inspection (work-recovery) —
+        // uncertain = busy: it blocks a restart rather than risk lost work,
+        // and it must never break the workspace list that asks
+        out.push(seat);
+      }
+    }
+    return out;
+  }
+
   /** D12 refresh, blended form: the refresh IS a visible restart of the live
    * pane. Refused mid-response (a fresh session that tore a running turn in
    * half would lose work — the impeccable-context law); force overrides.
@@ -323,6 +344,11 @@ export function teamProcessFor(
  * rail's live-count read — a peek must never instantiate lifecycle). */
 export function peekTeam(projectRoot: string): TeamProcStatus | undefined {
   return registry.get(projectRoot)?.status();
+}
+
+/** The mid-task seats of a supervised team (never instantiates one). */
+export function peekBusy(projectRoot: string): Seat[] {
+  return registry.get(projectRoot)?.busySeats() ?? [];
 }
 
 /** The idle knob's minutes from rig.conf — undefined = OFF (the default:

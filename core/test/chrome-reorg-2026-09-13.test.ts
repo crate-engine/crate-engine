@@ -58,7 +58,9 @@ test("linux shell mirrors it: File doors, View gains Workspaces + Servers, Fleet
   assert.ok(py.includes('Gtk.MenuItem(label="File")'), "File menu");
   for (const t of ["New Project…", "Open Project…", "Clone from GitHub…", "Add a Computer…"]) assert.ok(py.includes(`"${t}"`), t);
   assert.ok(py.includes('def open_door(self, door, computer="")') && py.includes('"&card=1&door=" + door'), "card doors deep-link the card; dialog doors open in place");
-  assert.ok(py.includes('("Workspaces", Gdk.KEY_w, "workspaces")') && py.includes('("Dev Servers", Gdk.KEY_5, "servers")'), "View items");
+  // Workspace Controls (2026-09-24): the drawer moved into the Workspaces menu — one home per control
+  assert.ok(py.includes('Gtk.MenuItem(label="Workspaces")') && py.includes('"Show Workspaces Panel"'), "Workspaces menu owns the drawer");
+  assert.ok(!py.includes('("Workspaces", Gdk.KEY_w, "workspaces")') && py.includes('("Dev Servers", Gdk.KEY_5, "servers")'), "View keeps the panels");
   assert.ok(py.includes('Gtk.MenuItem(label="Computers")') && !py.includes('Gtk.MenuItem(label="Fleet")'), "Fleet is now Computers");
   assert.ok(py.includes('not host.get("local")'), "this machine's new-rig row left the Servers menu");
 });

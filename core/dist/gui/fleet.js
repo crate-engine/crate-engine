@@ -136,11 +136,17 @@ async function refreshRemoteRows(link, exec) {
         const v = (await exec.fetchJson(`${base}/api/version?token=${tok}`, 2_000));
         link.engineSha = v.loadedSha;
         const w = (await exec.fetchJson(`${base}/api/workspaces?token=${tok}`, 2_000));
-        link.workspaces = (w.workspaces ?? []).map((x) => ({
+        if (w.host?.restartNeeded !== undefined)
+            link.restartNeeded = w.host.restartNeeded;
+        link.workspaces = (w.workspaces ?? []).filter((x) => x.rig !== false).map((x) => ({
             name: x.name,
             path: x.path,
             ...(x.desired !== undefined ? { desired: x.desired } : {}),
             ...(x.liveSeats !== undefined ? { liveSeats: x.liveSeats } : {}),
+            ...(x.archived ? { archived: true } : {}),
+            ...(x.busySeats !== undefined ? { busySeats: x.busySeats } : {}),
+            ...(x.memMB !== undefined ? { memMB: x.memMB } : {}),
+            ...(x.lastActivityMs !== undefined ? { lastActivityMs: x.lastActivityMs } : {}),
             url: `${base}/team?token=${tok}&project=${encodeURIComponent(x.path)}`,
         }));
         link.fetchedAt = Date.now();
@@ -152,6 +158,7 @@ async function refreshRemoteRows(link, exec) {
         link.note = "stopped answering through the tunnel — Retry reconnects";
     }
 }
+const busyNames = (rows) => rows.filter((w) => (w.busySeats?.length ?? 0) > 0).map((w) => w.name);
 /**
  * The whole fleet, cache-first: the local row is always fresh; remote rows
  * render last-known state while unknown hosts get a BACKGROUND dial kicked
@@ -166,6 +173,8 @@ export function fleetView(deps, exec = defaultFleetExec()) {
             state: "connected",
             engineSha: deps.hubSha,
             skew: false,
+            ...(deps.localRestartNeeded !== undefined ? { restartNeeded: deps.localRestartNeeded } : {}),
+            busy: busyNames(deps.localWorkspaces.map((w) => ({ ...w, url: "" }))),
             workspaces: deps.localWorkspaces.map((w) => ({
                 ...w,
                 url: `${deps.hubOrigin}/team?token=${deps.hubToken}&project=${encodeURIComponent(w.path)}`,
@@ -190,6 +199,8 @@ export function fleetView(deps, exec = defaultFleetExec()) {
             ...(link.note !== undefined ? { note: link.note } : {}),
             ...(link.engineSha !== undefined ? { engineSha: link.engineSha } : {}),
             skew: link.engineSha !== undefined && link.engineSha !== deps.hubSha,
+            ...(link.restartNeeded !== undefined ? { restartNeeded: link.restartNeeded } : {}),
+            busy: busyNames(link.workspaces ?? []),
             workspaces: link.workspaces ?? [],
             ...(link.app ? { cockpitUrl: `http://127.0.0.1:${link.app.port}/team?token=${link.app.token}` } : {}),
         });
@@ -257,5 +268,42 @@ export async function connectHost(host, deps, exec = defaultFleetExec()) {
         workspaces: link.workspaces ?? [],
         ...(link.app ? { cockpitUrl: `http://127.0.0.1:${link.app.port}/team?token=${link.app.token}` } : {}),
     };
+}
+export function workspaceActionRequest(action, path) {
+    switch (action) {
+        case "stop":
+            return { method: "POST", route: `/api/team/stop?project=${encodeURIComponent(path)}` };
+        case "resume":
+            return { method: "POST", route: "/api/workspaces/open", body: { path } };
+        case "resume-fresh":
+            return { method: "POST", route: "/api/workspaces/open", body: { path, fresh: true } };
+        case "archive":
+            return { method: "POST", route: "/api/workspaces/archive", body: { path } };
+        case "unarchive":
+            return { method: "POST", route: "/api/workspaces/unarchive", body: { path } };
+    }
+}
+/** The tokened origin of a CONNECTED remote host's engine (via its tunnel). */
+export function remoteTarget(host) {
+    const link = links.get(host);
+    if (!link || link.state !== "connected" || !link.app)
+        return undefined;
+    return { base: `http://127.0.0.1:${link.app.port}`, token: link.app.token };
+}
+/** Run one workspace action against an engine (local hub or a remote's tunnel). */
+export async function runWorkspaceAction(target, action, path) {
+    const rq = workspaceActionRequest(action, path);
+    const r = await fetch(`${target.base}${rq.route}${rq.route.includes("?") ? "&" : "?"}token=${target.token}`, {
+        method: rq.method,
+        headers: { "X-Crate-Token": target.token, "Content-Type": "application/json" },
+        ...(rq.body !== undefined ? { body: JSON.stringify(rq.body) } : {}),
+        signal: AbortSignal.timeout(90_000),
+    });
+    const body = (await r.json().catch(() => ({})));
+    // the fleet cache must not show the old state for 5s after an action
+    for (const l of links.values())
+        if (target.base.endsWith(`:${l.app?.port}`))
+            l.fetchedAt = undefined;
+    return { status: r.status, body };
 }
 //# sourceMappingURL=fleet.js.map

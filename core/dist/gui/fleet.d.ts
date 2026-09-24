@@ -6,6 +6,12 @@ export interface FleetWorkspaceRow {
      * engine (honest degrade: name-only rows, the skew marker says why). */
     desired?: "running" | "parked";
     liveSeats?: number;
+    /** Workspace Controls S2–S4 (absent on an older remote engine — honest
+     * degrade): archived, the mid-task seats, memory held, last activity. */
+    archived?: boolean;
+    busySeats?: string[];
+    memMB?: number;
+    lastActivityMs?: number | null;
     /** The cockpit URL the window loads to view this workspace. */
     url: string;
 }
@@ -19,6 +25,12 @@ export interface FleetHostRow {
     /** True when this host's engine sha differs from the hub's (decision 5:
      * shown honestly, never auto-fixed — the UPDATE menu fans out). */
     skew: boolean;
+    /** S4: this computer's server runs an older engine than its disk has —
+     * "Restart to finish". Absent when unknown (older remote engine). */
+    restartNeeded?: boolean;
+    /** S4: names of this computer's workspaces with a seat mid-task — the
+     * Restart button waits for these and names them. */
+    busy?: string[];
     workspaces: FleetWorkspaceRow[];
     /** CE-136: the host's cockpit door — the "＋ new rig on this host" row
      * loads this + &card=1 (the summonable card), so an EMPTY host is never
@@ -60,6 +72,7 @@ interface HostLink {
         alive(): boolean;
     };
     engineSha?: string;
+    restartNeeded?: boolean;
     /** last successful workspace read (cache — the menu renders this while a
      * background refresh runs; an asleep host shows its last-known rows). */
     workspaces?: FleetWorkspaceRow[];
@@ -85,7 +98,13 @@ export interface FleetLocalDeps {
         path: string;
         desired: "running" | "parked";
         liveSeats: number;
+        archived?: boolean;
+        busySeats?: string[];
+        memMB?: number;
+        lastActivityMs?: number | null;
     }>;
+    /** S4: the hub's own server is behind its disk engine. */
+    localRestartNeeded?: boolean;
 }
 /**
  * The whole fleet, cache-first: the local row is always fresh; remote rows
@@ -118,4 +137,27 @@ export declare function updateArgv(host: string): string[];
 /** The explicit connect (POST /api/fleet/connect and the menu's Retry):
  * dial NOW, refresh rows, answer with the row. */
 export declare function connectHost(host: string, deps: Pick<FleetLocalDeps, "hubSha" | "home">, exec?: FleetExec): Promise<FleetHostRow>;
+/** Workspace Controls S3 — the per-workspace actions every menu offers, on ANY
+ * computer. Each maps onto that computer's own route, so a remote workspace is
+ * acted on by ITS engine (the record, the teardown and the note stay local to
+ * where the agents run). */
+export type WorkspaceAction = "stop" | "resume" | "resume-fresh" | "archive" | "unarchive";
+export declare function workspaceActionRequest(action: WorkspaceAction, path: string): {
+    method: "POST";
+    route: string;
+    body?: unknown;
+};
+/** The tokened origin of a CONNECTED remote host's engine (via its tunnel). */
+export declare function remoteTarget(host: string): {
+    base: string;
+    token: string;
+} | undefined;
+/** Run one workspace action against an engine (local hub or a remote's tunnel). */
+export declare function runWorkspaceAction(target: {
+    base: string;
+    token: string;
+}, action: WorkspaceAction, path: string): Promise<{
+    status: number;
+    body: unknown;
+}>;
 export {};

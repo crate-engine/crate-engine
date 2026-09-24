@@ -363,6 +363,46 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
     true // the window IS the app; the engine + team keep running without us
   }
+
+  /// S4 — quitting SAYS what happens (Adam, 2026-09-24): teams keep running by
+  /// law (cmux), but never invisibly. Once, with "don't show again".
+  func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    let key = "crate.quitNote.suppressed"
+    if UserDefaults.standard.bool(forKey: key) { return .terminateNow }
+    let f = FleetActions.shared
+    guard let url = f.hubFleetURL("/api/fleet"), let data = f.fetchJSON(url, timeout: 1.0),
+      let hosts = data["hosts"] as? [[String: Any]] else { return .terminateNow }
+    var running: [(host: String, row: [String: Any])] = []
+    for h in hosts {
+      for w in (h["workspaces"] as? [[String: Any]]) ?? [] where (w["liveSeats"] as? Int ?? 0) > 0 {
+        running.append((h["host"] as? String ?? "", w))
+      }
+    }
+    if running.isEmpty { return .terminateNow }
+    let a = NSAlert()
+    a.messageText = "\(running.count) workspace\(running.count == 1 ? "" : "s") keep\(running.count == 1 ? "s" : "") running in the background"
+    a.informativeText = running.map { "• \($0.row["name"] as? String ?? "?") on \($0.host)" }.joined(separator: "\n")
+      + "\n\nYour agents keep working after the app closes. Reopen Crate Engine anytime to check on them."
+    a.addButton(withTitle: "Quit")
+    a.addButton(withTitle: "Stop Them Too")
+    a.addButton(withTitle: "Cancel")
+    a.showsSuppressionButton = true
+    a.suppressionButton?.title = "Don't show this again"
+    let choice = a.runModal()
+    if a.suppressionButton?.state == .on { UserDefaults.standard.set(true, forKey: key) }
+    switch choice {
+    case .alertFirstButtonReturn:
+      return .terminateNow
+    case .alertSecondButtonReturn:
+      DispatchQueue.global(qos: .userInitiated).async {
+        for r in running { if let p = r.row["path"] as? String { _ = WorkspacesMenu.shared.post(host: r.host, path: p, action: "stop") } }
+        DispatchQueue.main.async { NSApp.reply(toApplicationShouldTerminate: true) }
+      }
+      return .terminateLater
+    default:
+      return .terminateCancel
+    }
+  }
 }
 
 enum LaunchResult {
@@ -538,7 +578,7 @@ final class PanelActions: NSObject, NSMenuItemValidation {
 final class FleetActions: NSObject, NSMenuDelegate {
   static let shared = FleetActions()
 
-  private func hubFleetURL(_ path: String) -> URL? {
+  func hubFleetURL(_ path: String) -> URL? {
     guard let d = NSApp.delegate as? AppDelegate, let hub = d.hubURL,
       let comps = URLComponents(url: hub, resolvingAgainstBaseURL: false),
       let token = comps.queryItems?.first(where: { $0.name == "token" })?.value
@@ -546,7 +586,7 @@ final class FleetActions: NSObject, NSMenuDelegate {
     return URL(string: "http://127.0.0.1:\(comps.port ?? 0)\(path)?token=\(token)")
   }
 
-  private func fetchJSON(_ url: URL, method: String = "GET", body: Data? = nil, timeout: Double) -> [String: Any]? {
+  func fetchJSON(_ url: URL, method: String = "GET", body: Data? = nil, timeout: Double) -> [String: Any]? {
     var req = URLRequest(url: url, timeoutInterval: timeout)
     req.httpMethod = method
     if let b = body {
@@ -586,22 +626,30 @@ final class FleetActions: NSObject, NSMenuDelegate {
         // the card (＋ new rig), loading the host's cockpit with &card=1.
         // This machine's doors live in File; another computer's row opens the
         // Open Project dialog with that computer selected (PDR open-project-doors).
+        // Workspace Controls (Adam, 2026-09-24): Computers is about MACHINES —
+        // projects live in the Workspaces menu. Each computer says plainly
+        // whether its engine is current, and "Restart to finish" is one click.
+        if let restart = host["restartNeeded"] as? Bool {
+          if restart {
+            let r = NSMenuItem(title: "   Restart to finish update…", action: #selector(restartHostItem(_:)), keyEquivalent: "")
+            r.target = self
+            r.representedObject = host
+            menu.addItem(r)
+          } else {
+            let ok = NSMenuItem(title: "   Up to date", action: nil, keyEquivalent: "")
+            ok.isEnabled = false
+            menu.addItem(ok)
+          }
+        }
+        let running = workspaces.filter { ($0["liveSeats"] as? Int ?? 0) > 0 }.count
+        let summary = NSMenuItem(title: "   \(workspaces.filter { $0["archived"] as? Bool != true }.count) workspaces · \(running) running — see Workspaces", action: nil, keyEquivalent: "")
+        summary.isEnabled = false
+        menu.addItem(summary)
         if host["local"] as? Bool != true, host["cockpitUrl"] != nil {
           let add = NSMenuItem(title: "   Open a project on \(name)…", action: #selector(AppActions.openProjectOn(_:)), keyEquivalent: "")
           add.target = AppActions.shared
           add.representedObject = name
           menu.addItem(add)
-        }
-        for w in workspaces {
-          let live = w["liveSeats"] as? Int ?? 0
-          let desired = w["desired"] as? String
-          let stateLabel = live > 0 ? "\(live) live" : (desired == "running" ? "resuming" : "parked")
-          let item = NSMenuItem(
-            title: "   \(w["name"] as? String ?? "?") · \(stateLabel)",
-            action: #selector(switchTo(_:)), keyEquivalent: "")
-          item.target = self
-          item.representedObject = w["url"] as? String
-          menu.addItem(item)
         }
       } else {
         // asleep/failed/unknown/connecting: one calm row; click = Connect
@@ -635,6 +683,59 @@ final class FleetActions: NSObject, NSMenuDelegate {
     }
   }
 
+  // ── S4: Restart to finish (Adam, 2026-09-24: one click, never automatic,
+  // offered only when no team on that computer is mid-task — busy ones are
+  // named). Restart = the proven launch flow (`crate open [--remote]`), which
+  // detects the stale server and restarts it in place; running workspaces
+  // stop for a few seconds and come straight back.
+  @objc func restartHostItem(_ sender: NSMenuItem) {
+    guard let host = sender.representedObject as? [String: Any] else { return }
+    restartHosts([host], confirm: true)
+  }
+
+  func restartHosts(_ hosts: [[String: Any]], confirm: Bool) {
+    let blocked = hosts.filter { !(($0["busy"] as? [String]) ?? []).isEmpty }
+    let ready = hosts.filter { (($0["busy"] as? [String]) ?? []).isEmpty }
+    if !blocked.isEmpty {
+      let a = NSAlert()
+      a.messageText = ready.isEmpty ? "Not yet — a team is in the middle of a task" : "Some computers must wait"
+      a.informativeText = blocked.map { h in
+        let names = (h["busy"] as? [String] ?? []).joined(separator: ", ")
+        return "\(h["host"] as? String ?? "?"): \(names) \((h["busy"] as? [String] ?? []).count == 1 ? "is" : "are") mid-task."
+      }.joined(separator: "\n") + "\n\nRestarting now would cut those turns off. Try again when they finish."
+      a.runModal()
+    }
+    if ready.isEmpty { return }
+    if confirm {
+      let a = NSAlert()
+      let names = ready.map { $0["host"] as? String ?? "?" }.joined(separator: " and ")
+      a.messageText = "Restart \(names) to finish the update?"
+      a.informativeText = "Running workspaces stop for a few seconds and come straight back on the new engine. Nothing is lost."
+      a.addButton(withTitle: "Restart")
+      a.addButton(withTitle: "Cancel")
+      if a.runModal() != .alertFirstButtonReturn { return }
+    }
+    guard let d = NSApp.delegate as? AppDelegate else { return }
+    let remotes = ready.filter { $0["local"] as? Bool != true }
+    let local = ready.contains { $0["local"] as? Bool == true }
+    let viewing = d.webView.url
+    DispatchQueue.global(qos: .userInitiated).async { [self] in
+      for h in remotes {
+        let name = h["host"] as? String ?? ""
+        let oldPort = (h["cockpitUrl"] as? String).flatMap { URL(string: $0)?.port }
+        if case .success(let door) = launchEngine(remote: name) {
+          if let u = hubFleetURL("/api/fleet/connect"), let body = try? JSONSerialization.data(withJSONObject: ["host": name]) {
+            _ = fetchJSON(u, method: "POST", body: body, timeout: 150) // re-dial the fleet link onto the new server
+          }
+          if let old = oldPort, viewing?.port == old {
+            DispatchQueue.main.async { d.webView.load(URLRequest(url: door)) } // the window was showing that computer
+          }
+        }
+      }
+      if local { DispatchQueue.main.async { d.startLaunch() } } // this Mac's engine last: the window rides it
+    }
+  }
+
   /// Adam's ask (2026-08-18): crate-update lives IN the app — the app-menu
   /// item (where Preferences would be) updates the hub + EVERY remembered
   /// host in one click, then reports per host. Running engines keep their
@@ -653,21 +754,221 @@ final class FleetActions: NSObject, NSMenuDelegate {
     DispatchQueue.global(qos: .userInitiated).async { [self] in
       // npm install per host — minutes, not seconds
       let res = fetchJSON(url, method: "POST", body: Data("{}".utf8), timeout: 900)
-      DispatchQueue.main.async {
+      // S4: read which computers still run the old engine HERE, off the main thread
+      let hosts = (hubFleetURL("/api/fleet").flatMap { fetchJSON($0, timeout: 3) }?["hosts"] as? [[String: Any]]) ?? []
+      DispatchQueue.main.async { [self] in
         let a = NSAlert()
         if let results = res?["results"] as? [[String: Any]] {
-          a.messageText = "Crate Engine updated across the fleet"
+          // S4: the update FINISHES here — which computers still run the old
+          // engine, and a one-click Restart for them (busy teams are named).
+          let behind = hosts.filter { $0["restartNeeded"] as? Bool == true }
+          a.messageText = behind.isEmpty ? "Crate Engine is up to date everywhere" : "Crate Engine updated — restart to finish"
           a.informativeText = results.map { r in
             let host = r["local"] as? Bool == true ? "This Mac" : (r["host"] as? String ?? "?")
             let ok = r["ok"] as? Bool == true ? "✓" : "✗"
             return "\(ok) \(host) — \(r["note"] as? String ?? "")"
-          }.joined(separator: "\n") + "\n\nRunning engines pick this up at their next relaunch (the Fleet menu shows ⚠ on anyone still behind)."
+          }.joined(separator: "\n") + (behind.isEmpty ? "" : "\n\nStill running the old engine: \(behind.map { $0["host"] as? String ?? "?" }.joined(separator: ", ")). Restart finishes it — workspaces stop for a few seconds and come straight back.")
+          if !behind.isEmpty {
+            a.addButton(withTitle: "Restart Now")
+            a.addButton(withTitle: "Later")
+            if a.runModal() == .alertFirstButtonReturn { restartHosts(behind, confirm: false) }
+            return
+          }
         } else {
           a.messageText = "Fleet update did not answer"
           a.informativeText = "The hub stopped responding mid-update — check the Fleet menu, or run `crate update` in a terminal to see the detail."
         }
         a.runModal()
       }
+    }
+  }
+}
+
+/// THE WORKSPACES MENU (Workspace Controls S3 — Adam, 2026-09-24): every
+/// project on every computer, its plain status, and Open · Stop · Resume ·
+/// Resume Fresh · Archive — the same engine routes the drawer uses, so the two
+/// can never disagree. Rebuilt from the hub's /api/fleet on every open.
+/// Stopping agents always asks first and says what a mid-task stop costs.
+final class WorkspacesMenu: NSObject, NSMenuDelegate {
+  static let shared = WorkspacesMenu()
+  private var fleet: FleetActions { FleetActions.shared }
+
+  static func ago(_ ms: Double?) -> String {
+    guard let ms = ms, ms > 0 else { return "" }
+    let m = max(0, Int((Date().timeIntervalSince1970 * 1000 - ms) / 60000))
+    return m < 1 ? "just now" : m < 60 ? "\(m)m" : m < 1440 ? "\(m / 60)h" : "\(m / 1440)d"
+  }
+  static func status(_ w: [String: Any]) -> String {
+    let live = w["liveSeats"] as? Int ?? 0
+    if live > 0 {
+      let busy = !((w["busySeats"] as? [String]) ?? []).isEmpty
+      var parts = [busy ? "working" : "idle" + { let a = ago(w["lastActivityMs"] as? Double); return a.isEmpty ? "" : " \(a)" }(), "\(live) agents"]
+      if let mb = w["memMB"] as? Int, mb > 0 { parts.append(mb >= 1024 ? String(format: "%.1f GB", Double(mb) / 1024) : "\(mb) MB") }
+      return parts.joined(separator: " · ")
+    }
+    return w["desired"] as? String == "running" ? "resuming" : "stopped"
+  }
+
+  private func actionItem(_ title: String, _ action: String, _ ctx: [String: Any]) -> NSMenuItem {
+    let it = NSMenuItem(title: title, action: #selector(act(_:)), keyEquivalent: "")
+    it.target = self
+    var c = ctx
+    c["action"] = action
+    it.representedObject = c
+    return it
+  }
+
+  func menuNeedsUpdate(_ menu: NSMenu) {
+    menu.removeAllItems()
+    guard let url = fleet.hubFleetURL("/api/fleet"), let data = fleet.fetchJSON(url, timeout: 1.5),
+      let hosts = data["hosts"] as? [[String: Any]]
+    else {
+      menu.addItem(withTitle: "The local engine isn't answering yet — give it a moment", action: nil, keyEquivalent: "")
+      return
+    }
+    for host in hosts {
+      let name = host["host"] as? String ?? "?"
+      let reachable = host["local"] as? Bool == true || host["state"] as? String == "connected"
+      let header = NSMenuItem(title: name, action: nil, keyEquivalent: "")
+      header.isEnabled = false
+      menu.addItem(header)
+      if !reachable {
+        let note = host["note"] as? String ?? (host["state"] as? String ?? "not connected")
+        let c = NSMenuItem(title: "   \(note) — Connect", action: #selector(FleetActions.connectHost(_:)), keyEquivalent: "")
+        c.target = fleet
+        c.representedObject = name
+        menu.addItem(c)
+        menu.addItem(NSMenuItem.separator())
+        continue
+      }
+      let rows = (host["workspaces"] as? [[String: Any]]) ?? []
+      let current = rows.filter { $0["archived"] as? Bool != true }
+      let archived = rows.filter { $0["archived"] as? Bool == true }
+      if current.isEmpty {
+        let none = NSMenuItem(title: "   No workspaces", action: nil, keyEquivalent: "")
+        none.isEnabled = false
+        menu.addItem(none)
+      }
+      for w in current {
+        let live = (w["liveSeats"] as? Int ?? 0) > 0
+        let item = NSMenuItem(title: "\(live ? "●" : "○")  \(w["name"] as? String ?? "?")  —  \(WorkspacesMenu.status(w))", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        let ctx: [String: Any] = ["host": name, "row": w]
+        sub.addItem(actionItem("Open", "open", ctx))
+        sub.addItem(NSMenuItem.separator())
+        if live {
+          sub.addItem(actionItem("Stop…", "stop", ctx))
+        } else {
+          sub.addItem(actionItem("Resume", "resume", ctx))
+          sub.addItem(actionItem("Resume Fresh…", "resume-fresh", ctx))
+          sub.addItem(actionItem("Archive…", "archive", ctx))
+        }
+        item.submenu = sub
+        menu.addItem(item)
+      }
+      if !archived.isEmpty {
+        let arch = NSMenuItem(title: "   Archived (\(archived.count))", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        for w in archived {
+          let row = NSMenuItem(title: w["name"] as? String ?? "?", action: nil, keyEquivalent: "")
+          let rs = NSMenu()
+          let ctx: [String: Any] = ["host": name, "row": w]
+          rs.addItem(actionItem("Restore", "unarchive", ctx))
+          rs.addItem(actionItem("Resume", "resume", ctx))
+          row.submenu = rs
+          sub.addItem(row)
+        }
+        arch.submenu = sub
+        menu.addItem(arch)
+      }
+      let running = current.filter { ($0["liveSeats"] as? Int ?? 0) > 0 }
+      if !running.isEmpty {
+        let all = NSMenuItem(title: "   Stop All on \(name)…", action: #selector(stopAll(_:)), keyEquivalent: "")
+        all.target = self
+        all.representedObject = ["host": name, "rows": running]
+        menu.addItem(all)
+      }
+      menu.addItem(NSMenuItem.separator())
+    }
+    let panel = NSMenuItem(title: "Show Workspaces Panel", action: #selector(PanelActions.openWorkspaces(_:)), keyEquivalent: "s")
+    panel.keyEquivalentModifierMask = [.command, .control] // ⌃⌘S — the Mac's "Show Sidebar" chord
+    panel.target = PanelActions.shared
+    menu.addItem(panel)
+  }
+
+  /// Plain-words confirmation for anything that closes agent sessions.
+  static func confirmStop(_ name: String, host: String, row: [String: Any], archive: Bool) -> Bool {
+    let live = row["liveSeats"] as? Int ?? 0
+    let busy = (row["busySeats"] as? [String]) ?? []
+    if live == 0 && !archive { return true }
+    let a = NSAlert()
+    a.messageText = "\(archive ? "Archive" : "Stop") \(name)?"
+    var info = live > 0 ? "This closes its \(live) agent session\(live == 1 ? "" : "s") on \(host). " : ""
+    info += archive ? "Everything is saved — it moves to Archived, and one click restores it." : "Everything is saved — resume it anytime from the Workspaces menu."
+    if !busy.isEmpty { info += "\n\n⚠ \(busy.joined(separator: ", ")) \(busy.count == 1 ? "is" : "are") in the middle of a task — that turn will be lost." }
+    a.informativeText = info
+    a.alertStyle = busy.isEmpty ? .informational : .warning
+    a.addButton(withTitle: archive ? "Archive Workspace" : "Stop Workspace")
+    a.addButton(withTitle: "Cancel")
+    return a.runModal() == .alertFirstButtonReturn
+  }
+
+  func post(host: String, path: String, action: String) -> [String: Any]? {
+    guard let u = fleet.hubFleetURL("/api/fleet/workspace"),
+      let body = try? JSONSerialization.data(withJSONObject: ["host": host, "path": path, "action": action])
+    else { return nil }
+    return fleet.fetchJSON(u, method: "POST", body: body, timeout: 120)
+  }
+
+  @objc func act(_ sender: NSMenuItem) {
+    guard let c = sender.representedObject as? [String: Any], let action = c["action"] as? String,
+      let host = c["host"] as? String, let row = c["row"] as? [String: Any], let path = row["path"] as? String
+    else { return }
+    let name = row["name"] as? String ?? "this workspace"
+    switch action {
+    case "open":
+      if let s = row["url"] as? String, let u = URL(string: s), let d = NSApp.delegate as? AppDelegate { d.webView.load(URLRequest(url: u)) }
+      return
+    case "stop", "archive":
+      if !WorkspacesMenu.confirmStop(name, host: host, row: row, archive: action == "archive") { return }
+    case "resume-fresh":
+      let a = NSAlert()
+      a.messageText = "Resume \(name) fresh?"
+      a.informativeText = "Every agent starts a clean conversation, reads the note written when it stopped, then scouts the project before doing anything."
+      a.addButton(withTitle: "Resume Fresh")
+      a.addButton(withTitle: "Cancel")
+      if a.runModal() != .alertFirstButtonReturn { return }
+    default:
+      break
+    }
+    DispatchQueue.global(qos: .userInitiated).async { [self] in
+      let r = post(host: host, path: path, action: action)
+      DispatchQueue.main.async {
+        if let err = r?["error"] as? String {
+          let a = NSAlert(); a.messageText = "\(name): that didn't work"; a.informativeText = err; a.runModal()
+        } else if let left = (r?["teardown"] as? [String: Any])?["remaining"] as? Int, left > 0 {
+          let a = NSAlert(); a.messageText = "\(name) stopped — \(left) process(es) held on"
+          a.informativeText = "The engine's sweep retries within 5 minutes."; a.runModal()
+        }
+      }
+    }
+  }
+
+  @objc func stopAll(_ sender: NSMenuItem) {
+    guard let c = sender.representedObject as? [String: Any], let host = c["host"] as? String,
+      let rows = c["rows"] as? [[String: Any]] else { return }
+    let busy = rows.flatMap { r in ((r["busySeats"] as? [String]) ?? []).isEmpty ? [] : [r["name"] as? String ?? "?"] }
+    let agents = rows.reduce(0) { $0 + ($1["liveSeats"] as? Int ?? 0) }
+    let a = NSAlert()
+    a.messageText = "Stop all \(rows.count) workspace\(rows.count == 1 ? "" : "s") on \(host)?"
+    a.informativeText = "This closes \(agents) agent session\(agents == 1 ? "" : "s"). Everything is saved — resume any of them from the Workspaces menu."
+      + (busy.isEmpty ? "" : "\n\n⚠ Mid-task right now: \(busy.joined(separator: ", ")) — those turns will be lost.")
+    a.alertStyle = busy.isEmpty ? .informational : .warning
+    a.addButton(withTitle: "Stop All")
+    a.addButton(withTitle: "Cancel")
+    if a.runModal() != .alertFirstButtonReturn { return }
+    DispatchQueue.global(qos: .userInitiated).async { [self] in
+      for r in rows { if let p = r["path"] as? String { _ = post(host: host, path: p, action: "stop") } }
     }
   }
 }
@@ -805,12 +1106,8 @@ editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)
 editItem.submenu = editMenu
 let viewItem = NSMenuItem(); mainMenu.addItem(viewItem)
 let viewMenu = NSMenu(title: "View")
-// View = what is shown: the Workspaces drawer, the four panels, the studio.
-let wsMenuItem = NSMenuItem(title: "Workspaces", action: #selector(PanelActions.openWorkspaces(_:)), keyEquivalent: "s")
-wsMenuItem.keyEquivalentModifierMask = [.command, .control] // ⌃⌘S — the Mac's "Show Sidebar" chord
-wsMenuItem.target = PanelActions.shared
-viewMenu.addItem(wsMenuItem)
-viewMenu.addItem(NSMenuItem.separator())
+// View = what is shown: the four panels, the studio. (The Workspaces drawer's
+// ⌃⌘S moved into the Workspaces menu — one home per control, 2026-09-24.)
 let teamMenuItem = NSMenuItem(title: "Team", action: #selector(PanelActions.openTeam(_:)), keyEquivalent: "1")
 teamMenuItem.target = PanelActions.shared
 viewMenu.addItem(teamMenuItem)
@@ -828,6 +1125,12 @@ let studioMenuItem = NSMenuItem(title: "Design Studio", action: #selector(PanelA
 studioMenuItem.target = PanelActions.shared
 viewMenu.addItem(studioMenuItem)
 viewItem.submenu = viewMenu
+// Workspaces (Workspace Controls S3): projects on every computer + their actions.
+let workspacesItem = NSMenuItem(); mainMenu.addItem(workspacesItem)
+let workspacesMenu = NSMenu(title: "Workspaces")
+workspacesMenu.delegate = WorkspacesMenu.shared // rebuilt from /api/fleet each open
+workspacesMenu.autoenablesItems = false
+workspacesItem.submenu = workspacesMenu
 let fleetItem = NSMenuItem(); mainMenu.addItem(fleetItem)
 let fleetMenu = NSMenu(title: "Computers") // was "Fleet", then "Servers" (Adam, 2026-09-13): the operator's word
 fleetMenu.delegate = FleetActions.shared // rows rebuilt from /api/fleet each open

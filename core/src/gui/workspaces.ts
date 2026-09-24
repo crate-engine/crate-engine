@@ -30,6 +30,10 @@ export interface Workspace {
   desired: WorkspaceDesired;
   /** View default: when a window last focused this workspace (ms), if ever. */
   focusedAt?: number;
+  /** Workspace Controls S3 (Adam, 2026-09-24 — Conductor's pattern): stopped
+   * AND tucked into the Archived section; one click restores it. Never a
+   * delete — the project's files always stay on disk. Implies desired=parked. */
+  archived?: boolean;
 }
 
 interface RawEntry {
@@ -37,6 +41,7 @@ interface RawEntry {
   name?: string;
   desired?: WorkspaceDesired;
   focusedAt?: number;
+  archived?: boolean;
 }
 
 export function workspacesFile(home: string): string {
@@ -80,7 +85,14 @@ function patchEntry(home: string, projectPath: string, patch: Partial<RawEntry>)
 /** Record the lifecycle intent — boot/staff mark running, a scoped stop
  * marks parked. This is the ONLY thing restart-resume reads. */
 export function setWorkspaceDesired(home: string, projectPath: string, desired: WorkspaceDesired): void {
-  patchEntry(home, projectPath, { desired });
+  // Running a workspace always brings it back out of the Archived section.
+  patchEntry(home, projectPath, desired === "running" ? { desired, archived: false } : { desired });
+}
+
+/** Archive (stopped + tucked away) or restore to the plain Stopped list.
+ * Archiving never leaves a workspace desired-running. */
+export function setWorkspaceArchived(home: string, projectPath: string, archived: boolean): void {
+  patchEntry(home, projectPath, archived ? { archived: true, desired: "parked" } : { archived: false });
 }
 
 /** Record a focus (a VIEW default — used only to pick where a bare
@@ -162,6 +174,7 @@ function enrich(entry: RawEntry): Workspace {
     lastActivityMs: rig ? lastActivity(entry.path) : null,
     desired: entry.desired ?? "parked",
     ...(entry.focusedAt !== undefined ? { focusedAt: entry.focusedAt } : {}),
+    ...(entry.archived ? { archived: true } : {}),
   };
 }
 

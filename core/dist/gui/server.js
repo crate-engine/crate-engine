@@ -4,7 +4,7 @@
 // same core functions the CLI calls (the thin law) — no business logic here.
 import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import { connect as netConnect } from "node:net";
 import { stringify } from "yaml";
@@ -642,6 +642,41 @@ export async function startGuiServer(opts = {}) {
         guiLog(home, `stop: ${projectRoot} — closed ${r.closed}, ${r.remaining} left${r.devServer ? ` · dev server: ${r.devServer}` : ""}`);
         return r;
     };
+    // ONE stop path (Stop · Archive · Remove — workspace-controls S1/S2): read the
+    // mid-task signal BEFORE stopping (the response says what was interrupted),
+    // stop + park, write "where we left off" (engine-written, no agent turn),
+    // then prove zero with the teardown.
+    const stopWorkspace = async (projectRoot) => {
+        const { teamProcessFor, peekTeam, defaultBlendStarter } = await import("./teamproc.js");
+        const interrupted = peekTeam(projectRoot) ? teamProcessFor(projectRoot, spawnerFor(), defaultBlendStarter(home), home).busySeats() : [];
+        const status = teamProcessFor(projectRoot, spawnerFor(), defaultBlendStarter(home), home).stop();
+        (await import("./workspaces.js")).setWorkspaceDesired(home, projectRoot, "parked");
+        stopMirror(projectRoot);
+        const { writeLeftOff } = await import("../leftoff.js");
+        const note = writeLeftOff(projectRoot);
+        const teardown = await stopWorkspaceProcesses(projectRoot);
+        return { ...status, teardown, interrupted, ...(note ? { note } : {}) };
+    };
+    // The workspace rows every surface reads (rail, Workspaces menu, the hub's
+    // fleet view of THIS computer): lifecycle record + live count + the S2–S4
+    // facts — mid-task seats, memory held, archived. One scan per call.
+    const workspaceRows = async () => {
+        const { listWorkspaces } = await import("./workspaces.js");
+        const { peekTeam, peekBusy } = await import("./teamproc.js");
+        const { canonProject, memoryByProject } = await import("./reap.js");
+        const mem = memoryByProject();
+        return listWorkspaces(home).map((w) => {
+            const st = peekTeam(w.path);
+            const liveSeats = st ? st.seats.filter((x) => x.alive).length : 0;
+            return { ...w, liveSeats, busySeats: liveSeats ? peekBusy(w.path) : [], memMB: mem.get(canonProject(w.path)) ?? 0 };
+        });
+    };
+    // S4: does THIS computer's server run the engine on disk? (an update lands
+    // on disk; the server loads it only on restart)
+    const hostStatus = () => {
+        const disk = diskEngineSha(home);
+        return { loadedSha: state.loadedSha ?? "unknown", diskSha: disk, restartNeeded: serverIsStale(state.loadedSha, disk) };
+    };
     // Repair is automatic (CE-178 completion): a workspace whose links dangle or
     // whose state dir predates this engine is healed before its team boots — on a
     // restart, an open, or a boot, not only through Open Project. Best-effort:
@@ -791,18 +826,12 @@ export async function startGuiServer(opts = {}) {
                     }
                 }
                 case "POST /api/team/stop": {
-                    const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
                     const proj = url.searchParams.get("project") ?? state.project;
                     if (!proj)
                         return json(res, 400, { error: "no project" });
-                    const st = teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home), state.home).stop();
-                    // a scoped stop parks exactly THIS workspace on the record
-                    (await import("./workspaces.js")).setWorkspaceDesired(state.home, proj, "parked");
-                    stopMirror(proj);
-                    // "Stopped means zero" (workspace-controls S1): dev server down, every
-                    // process still tagged to this workspace closed, and the count PROVEN.
-                    const teardown = await stopWorkspaceProcesses(proj);
-                    return json(res, 200, { ...st, teardown });
+                    // a scoped stop parks exactly THIS workspace; "stopped means zero"
+                    // (S1) + the "where we left off" note (S2) ride the same path
+                    return json(res, 200, await stopWorkspace(proj));
                 }
                 case "POST /api/team/relaunch": {
                     // T7-3: restart exactly one seat's runner (headless per-seat relaunch).
@@ -841,14 +870,8 @@ export async function startGuiServer(opts = {}) {
                     // Lifecycle S1: each row carries its desired state + LIVE seat
                     // count (peeked, never instantiated), so the glass can tell
                     // Running from Parked without touching lifecycle.
-                    const { listWorkspaces } = await import("./workspaces.js");
-                    const { peekTeam } = await import("./teamproc.js");
                     const active = url.searchParams.get("project") ?? state.project ?? null;
-                    const workspaces = listWorkspaces(state.home).map((w) => {
-                        const st = peekTeam(w.path);
-                        return { ...w, liveSeats: st ? st.seats.filter((s) => s.alive).length : 0 };
-                    });
-                    return json(res, 200, { workspaces, active });
+                    return json(res, 200, { workspaces: await workspaceRows(), active, host: hostStatus() });
                 }
                 case "POST /api/workspaces/view": {
                     // Returning to a project is a view change, never a team lifecycle action.
@@ -880,11 +903,43 @@ export async function startGuiServer(opts = {}) {
                     if (!state.project)
                         state.project = p; // a project-less server adopts a view default; never a rebind
                     healIfNeeded(p); // workspace-controls S1 / CE-178
+                    // Workspace Controls S2 — RESUME FRESH: clean conversations for every
+                    // seat (the existing fresh-start lever: drop session.json), then the
+                    // orchestrator is told to read "where we left off" and scout. Only on
+                    // a stopped team — a live team's sessions are never torn mid-flight.
+                    const fresh = body.fresh === true;
+                    const wasLive = (await import("./teamproc.js")).peekTeam(p)?.seats.some((x) => x.alive) ?? false;
+                    if (fresh && wasLive)
+                        return json(res, 409, { error: "Resume fresh is for a stopped workspace — this one is running. Stop it first." });
+                    if (fresh) {
+                        const { sessionFile } = await import("../runner.js");
+                        for (const seat of ["orchestrator", "coder", "reviewer", "designer", "tester"]) {
+                            try {
+                                rmSync(sessionFile(p, seat));
+                            }
+                            catch {
+                                /* already fresh */
+                            }
+                        }
+                    }
                     try {
                         const st = teamProcessFor(p, spawnerFor(), defaultBlendStarter(state.home), state.home).boot(); // idempotent — live seats are left alone
                         ensureMirror(p);
                         await ensureProxyFor(p);
-                        return json(res, 200, { ok: true, booted: st.booted, alive: st.seats.filter((s) => s.alive).length });
+                        if (fresh) {
+                            const { leftOffPath } = await import("../leftoff.js");
+                            const note = existsSync(leftOffPath(p)) ? ".agents/state/checkpoints/LEFT-OFF.md" : "(no note — this workspace was stopped before notes existed)";
+                            const msg = `[RESUME_FRESH] The operator resumed this workspace FRESH — every seat starts a clean conversation. ` +
+                                `Read ${note} first (the engine wrote it when the workspace stopped), then scout the project to confirm where things stand ` +
+                                `(git log, open branches, state files), then tell the operator in plain words where we are and what you propose next. Do not start work until they answer.`;
+                            try {
+                                execFileSync("python3", [join(p, ".agents", "bin", "agentctl.py"), "deliver", "orchestrator", "--from", "engine", msg], { cwd: p, stdio: "ignore" });
+                            }
+                            catch {
+                                /* the note is on disk regardless; the orchestrator's boot orientation still reads state files */
+                            }
+                        }
+                        return json(res, 200, { ok: true, booted: st.booted, alive: st.seats.filter((s) => s.alive).length, ...(fresh ? { fresh: true } : {}) });
                     }
                     catch (e) {
                         return json(res, 400, { error: e instanceof Error ? e.message : String(e) });
@@ -918,6 +973,28 @@ export async function startGuiServer(opts = {}) {
                     }
                     return json(res, 200, { workspaces: registerWorkspace(state.home, p) });
                 }
+                case "POST /api/workspaces/archive": {
+                    // Workspace Controls S3 (Conductor's pattern): stopped + tucked into the
+                    // Archived section. Same stop path (note + zero proof); never a delete.
+                    const body = await readBody(req);
+                    const p = String(body.path ?? "").trim();
+                    if (!p)
+                        return json(res, 400, { error: "path required" });
+                    const stopped = await stopWorkspace(p);
+                    const { setWorkspaceArchived, listWorkspaces } = await import("./workspaces.js");
+                    setWorkspaceArchived(state.home, p, true);
+                    return json(res, 200, { ...stopped, workspaces: listWorkspaces(state.home) });
+                }
+                case "POST /api/workspaces/unarchive": {
+                    // Restore: back to the plain list as Stopped — Resume is a separate click.
+                    const body = await readBody(req);
+                    const p = String(body.path ?? "").trim();
+                    if (!p)
+                        return json(res, 400, { error: "path required" });
+                    const { setWorkspaceArchived, listWorkspaces } = await import("./workspaces.js");
+                    setWorkspaceArchived(state.home, p, false);
+                    return json(res, 200, { workspaces: listWorkspaces(state.home) });
+                }
                 case "POST /api/workspaces/remove": {
                     // T7-1: drop a workspace from the rail (never touches the repo).
                     const { removeWorkspace, lastFocusedWorkspace } = await import("./workspaces.js");
@@ -928,12 +1005,7 @@ export async function startGuiServer(opts = {}) {
                     // workspace-controls S1: removing a RUNNING workspace used to only
                     // rewrite the list — its agents kept running, invisible, and vanished
                     // at the next restart. Remove now stops it first (same as Stop).
-                    {
-                        const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
-                        teamProcessFor(p, spawnerFor(), defaultBlendStarter(state.home), state.home).stop();
-                        stopMirror(p);
-                        await stopWorkspaceProcesses(p);
-                    }
+                    await stopWorkspace(p);
                     const remaining = removeWorkspace(state.home, p);
                     // CE-142: removing the workspace you are LOOKING AT left the server
                     // pointed at it — every route that defaults to state.project (team
@@ -1571,8 +1643,6 @@ export async function startGuiServer(opts = {}) {
                 // never hang the menu); connect is the explicit dial. ──
                 case "GET /api/fleet": {
                     const { fleetView } = await import("./fleet.js");
-                    const { listWorkspaces } = await import("./workspaces.js");
-                    const { peekTeam } = await import("./teamproc.js");
                     const { hostname, platform } = await import("node:os");
                     return json(res, 200, fleetView({
                         home: state.home,
@@ -1580,15 +1650,39 @@ export async function startGuiServer(opts = {}) {
                         hubOrigin: `http://127.0.0.1:${hubPort}`,
                         hubToken: token,
                         hostLabel: platform() === "darwin" ? "This Mac" : hostname(),
-                        localWorkspaces: listWorkspaces(state.home)
+                        localWorkspaces: (await workspaceRows())
                             .filter((w) => w.rig)
                             .map((w) => ({
                             name: w.name,
                             path: w.path,
                             desired: w.desired,
-                            liveSeats: peekTeam(w.path)?.seats.filter((s) => s.alive).length ?? 0,
+                            liveSeats: w.liveSeats,
+                            ...(w.archived ? { archived: true } : {}),
+                            busySeats: w.busySeats,
+                            memMB: w.memMB,
+                            lastActivityMs: w.lastActivityMs,
                         })),
+                        localRestartNeeded: hostStatus().restartNeeded,
                     }));
+                }
+                case "POST /api/fleet/workspace": {
+                    // Workspace Controls S3: the Workspaces menu's actions on ANY
+                    // computer — this hub's own workspaces, or a connected remote's via
+                    // its tunnel. The action runs on the engine where the agents live.
+                    const { remoteTarget, runWorkspaceAction } = await import("./fleet.js");
+                    const { hostname, platform } = await import("node:os");
+                    const body = await readBody(req);
+                    const host = String(body.host ?? "");
+                    const path = String(body.path ?? "").trim();
+                    const action = String(body.action ?? "");
+                    if (!path || !["stop", "resume", "resume-fresh", "archive", "unarchive"].includes(action))
+                        return json(res, 400, { error: "host, path and a known action are required" });
+                    const local = host === "" || host === "local" || host === (platform() === "darwin" ? "This Mac" : hostname());
+                    const target = local ? { base: `http://127.0.0.1:${hubPort}`, token } : remoteTarget(host);
+                    if (!target)
+                        return json(res, 502, { error: `${host} is not connected right now — Computers ▸ Connect first` });
+                    const r = await runWorkspaceAction(target, action, path);
+                    return json(res, r.status, r.body);
                 }
                 case "POST /api/fleet/update": {
                     // Adam's ask (2026-08-18): crate-update lives IN the app — one
