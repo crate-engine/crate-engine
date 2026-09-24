@@ -241,7 +241,7 @@ test("listDirs: folders only, repos badged, hidden skipped, jailed to home (run 
   assert.ok(proj.parent, "non-root has a parent");
 
   // outside home → plain refusal; a vanished path falls back to home
-  assert.throws(() => listDirs("/private/tmp", { home }), /inside your home/);
+  assert.throws(() => listDirs("/", { home }), /inside your home/); // "/" exists on every OS and is outside every jail (CE-186: "/private/tmp" is macOS-only — on Linux it VANISHES, which falls back instead of refusing)
   assert.equal(listDirs(join(home, "no-such-dir"), { home }).path, listDirs(undefined, { home }).path);
 });
 
@@ -259,7 +259,7 @@ test("makeDir: creates inside the jail and steps in; junk names + duplicates ref
     assert.throws(() => makeDir(join(home, "Projects"), bad, { home }), /plain name/, `must refuse ${JSON.stringify(bad)}`);
   }
   assert.throws(() => makeDir(join(home, "Projects"), "my-new-app", { home }), /already exists/);
-  assert.throws(() => makeDir("/private/tmp", "x", { home }), /inside your home/);
+  assert.throws(() => makeDir("/", "x", { home }), /inside your home/);
 });
 
 // ── FLAWS (Adam's gate-day run #1 request, pulled forward 2026-08-13):
@@ -338,7 +338,7 @@ test("listDirs: the headless-era jail — extra roots browse, the picker STARTS 
   assert.equal(listDirs(undefined, opts).path, root.path, "no path = start where rigs LIVE, not home");
   assert.ok(listDirs(join(rigsRoot, "site-rig"), opts).parent, "a child inside the root has a parent");
   assert.equal(listDirs(home, opts).parent, undefined, "home stays a browsable jail root too");
-  assert.throws(() => listDirs("/private/tmp", opts), /inside your home/); // an EXISTING outside path refuses (a vanished one falls back, pinned above)
+  assert.throws(() => listDirs("/", opts), /inside your home/); // an EXISTING outside path refuses (a vanished one falls back, pinned above)
 
   const made = makeDir(rigsRoot, "fresh-rig", opts);
   assert.ok(made.path.endsWith("fresh-rig"), "New-folder works inside the projects root");

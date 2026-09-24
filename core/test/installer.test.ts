@@ -13,6 +13,7 @@ import { test } from "node:test";
 
 const REPO = join(import.meta.dirname, "..", "..");
 const SCRIPT = join(REPO, "installer", "get-crate.sh");
+const PROFILES = process.platform === "darwin" ? [".zprofile"] : [".profile", ".bashrc"];
 
 function makeSandbox(opts: { brew: boolean; pi?: boolean; gitRefusesSource?: string }): {
   home: string;
@@ -90,6 +91,14 @@ function runInstaller(sb: { home: string; path: string }, args: string[]): { cod
 
 test("installer: something to install + no Homebrew → the actionable brew.sh stop (never auto-installs)", () => {
   const sb = makeSandbox({ brew: false }); // cmux absent (env override) and no brew
+  if (process.platform !== "darwin") {
+    // CE-186: Homebrew is a macOS requirement. Linux fetches node in user-space
+    // and never asks for brew — the stop must NOT fire there.
+    const r = runInstaller(sb, ["--no-open", "--engine-source", REPO]);
+    assert.equal(r.code, 0, r.out);
+    assert.doesNotMatch(r.out, /Homebrew/);
+    return;
+  }
   const r = runInstaller(sb, ["--no-open"]);
   assert.equal(r.code, 1);
   assert.match(r.out, /requires Homebrew/);
@@ -115,9 +124,12 @@ test("installer: fresh run installs the 3 steps + reports agent detection honest
   assert.match(r1.out, /pi: installed, NOT signed in/);
   assert.match(r1.out, /claude code: not found on this machine/);
   assert.match(r1.out, /no ready agents detected/);
-  // PATH persisted, once
-  const zprofile = readFileSync(join(sb.home, ".zprofile"), "utf8");
-  assert.equal(zprofile.match(/added by crate-engine installer/g)!.length, 1);
+  // PATH persisted, once — in the platform's login profiles (CE-186: macOS
+  // zsh reads ~/.zprofile; Linux shells read ~/.profile and ~/.bashrc)
+  for (const p of PROFILES) {
+    const prof = readFileSync(join(sb.home, p), "utf8");
+    assert.equal(prof.match(/added by crate-engine installer/g)!.length, 1, p);
+  }
 
   // the user signs into pi + installs/finishes claude THEMSELVES → re-run reports ready
   mkdirSync(join(sb.home, ".pi", "agent"), { recursive: true });
@@ -136,10 +148,12 @@ test("installer: fresh run installs the 3 steps + reports agent detection honest
   assert.match(r2.out, /claude code: installed \+ signed in — ready/);
   assert.doesNotMatch(r2.out, /no ready agents detected/);
   assert.match(r2.out, /crate CLI: installed/); // shim refresh is idempotent-safe
-  // .zprofile carries the PATH line once, and NO cmux bootstrap hook (T8)
-  const zp = readFileSync(join(sb.home, ".zprofile"), "utf8");
-  assert.equal(zp.match(/added by crate-engine installer/g)!.length, 1);
-  assert.doesNotMatch(zp, /crate-engine app bootstrap|CMUX_PANEL_ID/);
+  // each profile carries the PATH line once, and NO cmux bootstrap hook (T8)
+  for (const p of PROFILES) {
+    const zp = readFileSync(join(sb.home, p), "utf8");
+    assert.equal(zp.match(/added by crate-engine installer/g)!.length, 1, p);
+    assert.doesNotMatch(zp, /crate-engine app bootstrap|CMUX_PANEL_ID/);
+  }
 });
 
 test("installer: a local source git refuses (cross-user dubious ownership) gets trusted, then clones", () => {

@@ -32,7 +32,11 @@ usage() {
 [ -d .agents ] || { echo "rig-wait: run from the project root (no .agents/ here)." >&2; exit 2; }
 [ $# -ge 1 ] || usage
 
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+# GNU form FIRST (CE-186): on Linux `stat -f` means FILESYSTEM status — it
+# prints free-block counts to stdout before failing over, so every disk write
+# "changed" every watched file and --files released the join on ONE verdict.
+# BSD stat rejects -c with nothing on stdout, so this order is clean on both.
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
 
 if [ "$1" = "--files" ]; then
   [ $# -ge 2 ] || usage

@@ -172,7 +172,7 @@ test("cloneRepo refusals are plain: bad url; a destination outside the jail; an 
   mkdirSync(join(home, "Projects", "repo"), { recursive: true });
   try {
     await assert.rejects(() => cloneRepo("not-a-url", undefined, { home }), /doesn't look like a git URL/);
-    await assert.rejects(() => cloneRepo("https://github.com/you/repo", "/private/tmp", { home }), /inside your home/);
+    await assert.rejects(() => cloneRepo("https://github.com/you/repo", "/", { home }), /inside your home/);
     await assert.rejects(
       () => cloneRepo("https://github.com/you/repo", join(home, "Projects"), { home }),
       /already exists/,
