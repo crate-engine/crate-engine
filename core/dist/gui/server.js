@@ -631,6 +631,34 @@ export async function startGuiServer(opts = {}) {
     };
     if (state.project)
         ensureMirror(state.project);
+    // ── workspace-controls S1 (PDR dev/pdr/workspace-controls.md) ──────────────
+    // "Stopped means zero": after a stop, the workspace's dev server goes down and
+    // every process still tagged CRATE_PROJECT=<it> is closed — the count is the
+    // proof. Logged either way so a leak is never silent.
+    const stopWorkspaceProcesses = async (projectRoot) => {
+        const { teardownWorkspace } = await import("./reap.js");
+        const { guiLog } = await import("./guilog.js");
+        const r = await teardownWorkspace(projectRoot);
+        guiLog(home, `stop: ${projectRoot} — closed ${r.closed}, ${r.remaining} left${r.devServer ? ` · dev server: ${r.devServer}` : ""}`);
+        return r;
+    };
+    // Repair is automatic (CE-178 completion): a workspace whose links dangle or
+    // whose state dir predates this engine is healed before its team boots — on a
+    // restart, an open, or a boot, not only through Open Project. Best-effort:
+    // attach's own refusal (v1 real dirs) never blocks the boot.
+    const healIfNeeded = (projectRoot) => {
+        const { engineDir } = tierPaths(home);
+        try {
+            if (!existsSync(join(engineDir, "templates")) || projectState(projectRoot, engineDir) !== "heal")
+                return;
+            const plan = planAttach(resolveTarget(projectRoot, { home }), engineDir);
+            const report = executeAttach(plan, { gitInit: false, githubRepo: false });
+            void import("./guilog.js").then(({ guiLog }) => guiLog(home, `heal: ${projectRoot} — ${report.changed.join(", ") || "nothing to change"}`));
+        }
+        catch (e) {
+            void import("./guilog.js").then(({ guiLog }) => guiLog(home, `heal: ${projectRoot} SKIPPED — ${e instanceof Error ? e.message : String(e)}`));
+        }
+    };
     const server = createServer(async (req, res) => {
         try {
             const url = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -750,6 +778,7 @@ export async function startGuiServer(opts = {}) {
                     const proj = url.searchParams.get("project") ?? state.project;
                     if (!proj)
                         return json(res, 400, { error: "no project attached" });
+                    healIfNeeded(proj); // workspace-controls S1 / CE-178: no door is "the right one"
                     try {
                         const st = teamProcessFor(proj, spawnerFor(), defaultBlendStarter(state.home), state.home).boot();
                         // lifecycle record (PDR workspace-lifecycle): booting IS the intent
@@ -770,7 +799,10 @@ export async function startGuiServer(opts = {}) {
                     // a scoped stop parks exactly THIS workspace on the record
                     (await import("./workspaces.js")).setWorkspaceDesired(state.home, proj, "parked");
                     stopMirror(proj);
-                    return json(res, 200, st);
+                    // "Stopped means zero" (workspace-controls S1): dev server down, every
+                    // process still tagged to this workspace closed, and the count PROVEN.
+                    const teardown = await stopWorkspaceProcesses(proj);
+                    return json(res, 200, { ...st, teardown });
                 }
                 case "POST /api/team/relaunch": {
                     // T7-3: restart exactly one seat's runner (headless per-seat relaunch).
@@ -847,6 +879,7 @@ export async function startGuiServer(opts = {}) {
                     setWorkspaceDesired(state.home, p, "running");
                     if (!state.project)
                         state.project = p; // a project-less server adopts a view default; never a rebind
+                    healIfNeeded(p); // workspace-controls S1 / CE-178
                     try {
                         const st = teamProcessFor(p, spawnerFor(), defaultBlendStarter(state.home), state.home).boot(); // idempotent — live seats are left alone
                         ensureMirror(p);
@@ -892,6 +925,15 @@ export async function startGuiServer(opts = {}) {
                     const p = String(body.path ?? "").trim();
                     if (!p)
                         return json(res, 400, { error: "path required" });
+                    // workspace-controls S1: removing a RUNNING workspace used to only
+                    // rewrite the list — its agents kept running, invisible, and vanished
+                    // at the next restart. Remove now stops it first (same as Stop).
+                    {
+                        const { teamProcessFor, defaultBlendStarter } = await import("./teamproc.js");
+                        teamProcessFor(p, spawnerFor(), defaultBlendStarter(state.home), state.home).stop();
+                        stopMirror(p);
+                        await stopWorkspaceProcesses(p);
+                    }
                     const remaining = removeWorkspace(state.home, p);
                     // CE-142: removing the workspace you are LOOKING AT left the server
                     // pointed at it — every route that defaults to state.project (team
@@ -1921,6 +1963,28 @@ export async function startGuiServer(opts = {}) {
             teamProcessFor(state.project, spawnerFor(), defaultBlendStarter(state.home), state.home).relaunch(seat);
         },
     });
+    // workspace-controls S1 — THE SWEEP: anything tagged to a workspace this
+    // engine records as NOT running is closed (at start, then every 5 minutes).
+    // Catches what no stop path imagined (the CE-188 class). Only this engine's
+    // own record is consulted, so a test engine's scratch rigs are never touched.
+    const runSweep = async () => {
+        try {
+            const { listWorkspaces } = await import("./workspaces.js");
+            const { canonProject, sweepStopped } = await import("./reap.js");
+            const stopped = new Set(listWorkspaces(home).filter((w) => w.desired !== "running").map((w) => canonProject(w.path)));
+            const swept = await sweepStopped(stopped);
+            if (swept.length) {
+                const { guiLog } = await import("./guilog.js");
+                for (const r of swept)
+                    guiLog(home, `sweep: ${r.project} is not running — closed ${r.closed} leftover process(es)`);
+            }
+        }
+        catch {
+            /* the sweep must never crash the server */
+        }
+    };
+    const sweepTimer = setInterval(() => void runSweep(), 5 * 60_000);
+    sweepTimer.unref();
     const reviveTimer = setInterval(async () => {
         try {
             if (!state.project || !autoReviveEnabled(state.project))
@@ -2012,6 +2076,7 @@ export async function startGuiServer(opts = {}) {
     const { stopAllTeams } = await import("./teamproc.js");
     server.on("close", () => {
         clearInterval(reviveTimer);
+        clearInterval(sweepTimer);
         clearInterval(idleTimer);
         clearFleetLinks(); // owned tunnels die with the hub (fleet PDR d.4)
         for (const m of mirrors.values())
@@ -2040,6 +2105,7 @@ export async function startGuiServer(opts = {}) {
         const { guiLog } = await import("./guilog.js");
         for (const p of ws.desiredRunning(home)) {
             try {
+                healIfNeeded(p); // workspace-controls S1 / CE-178: a restart repairs, not just a door
                 const st = teamProcessFor(p, spawnerFor(), defaultBlendStarter(home), home).boot();
                 ensureMirror(p);
                 guiLog(home, `restart-resume: ${p} — ${st.seats.filter((s) => s.alive).length}/${st.seats.length} seats back (desired=running)`);
@@ -2049,6 +2115,7 @@ export async function startGuiServer(opts = {}) {
             }
         }
     }
+    await runSweep(); // leftovers from before this start (a crash, an old engine's stop)
     // ── the preview proxies (satellite windows + Launch in Chrome, 2026-08-13;
     // PER WORKSPACE since the lifecycle PDR): previews live on THIS host's
     // loopback (a rig dev server) — an address the operator's machine cannot

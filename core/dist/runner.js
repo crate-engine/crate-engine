@@ -352,12 +352,17 @@ export function seatEnv(projectRoot, seat) {
     // paths are the GUI gate card or the operator's own terminal, both
     // CRATE_SEAT-free). Set AFTER the process.env spread so an inherited
     // CRATE_SEAT (engine-nested-in-a-seat) is OVERWRITTEN, never leaked.
+    //
+    // CRATE_PROJECT (workspace-controls S1, 2026-09-24 — "stopped means zero"):
+    // every process a seat starts inherits the workspace it belongs to — tools,
+    // MCP servers, a bare dev server, a detached browser daemon. gui/reap.ts
+    // reads it to prove a stopped workspace owns nothing and to sweep leaks.
     try {
         const tools = join(deriveBrainRoot(projectRoot), "core", "tools");
-        return { ...process.env, PATH: `${tools}:${process.env.PATH ?? ""}`, DISABLE_AUTOUPDATER: "1", CRATE_SEAT: seat };
+        return { ...process.env, PATH: `${tools}:${process.env.PATH ?? ""}`, DISABLE_AUTOUPDATER: "1", CRATE_SEAT: seat, CRATE_PROJECT: projectRoot };
     }
     catch {
-        return { ...process.env, DISABLE_AUTOUPDATER: "1", CRATE_SEAT: seat };
+        return { ...process.env, DISABLE_AUTOUPDATER: "1", CRATE_SEAT: seat, CRATE_PROJECT: projectRoot };
     }
 }
 export function execTurn(inv, cwd, logPath, agent, timeoutMs, env, onSpawn) {

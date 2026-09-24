@@ -847,6 +847,10 @@ switch (command) {
     if (!existsSync(confFile)) fail(`no rig.conf at ${confFile} — run crate install first`);
     const conf = parseRigConf(readFileSync(confFile, "utf8"));
     const { runnerLoop, bootWall } = await import("./runner.js");
+    // workspace-controls S1: this team is hosted HERE, not by the app server —
+    // mark its seats so the app's sweep (which closes processes of workspaces
+    // it records as stopped) never claims them. seatEnv spreads process.env.
+    process.env.CRATE_SELF_HOSTED = "1";
     console.log(`crate team — ${projectRoot} headless (no cmux). Seats:`);
     const ac = new AbortController();
     process.on("SIGINT", () => { console.log("\ncrate team: stopping seats…"); ac.abort(); });

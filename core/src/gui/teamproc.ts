@@ -81,7 +81,7 @@ export function defaultSeatSpawner(cliPath: string, home?: string): SeatSpawner 
       // a supervisor dying inside that window meant the runner captured the
       // REPARENTED ppid (init) and could never notice the death — the immortal
       // orphan. Comparing against this env value closes the race.
-      env: { ...process.env, CRATE_SUPERVISOR_PID: String(process.pid) },
+      env: { ...process.env, CRATE_SUPERVISOR_PID: String(process.pid), CRATE_PROJECT: projectRoot }, // S1: the runner is the workspace's too
     });
     if (logPath) {
       const lp = logPath;

@@ -20,7 +20,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { defaultCacheRoots, chromiumFromCache } from "../src/tools/qa-sweep.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -38,6 +38,14 @@ const PAGE = `<!doctype html><html><body><div id="log">none</div>
 </a>
 <script>var log=document.getElementById('log')</script></body></html>`;
 
+// CE-188: the browser helper DETACHES (a daemon) — a suite run left it and six
+// headless Chromes alive for 16 h on Superman. Own session (never the shared
+// "default" a real QA seat uses) and close it when the file is done.
+const SESSION = `crate2-ce108-${process.pid}`;
+after(() => {
+  if (CAN_RUN) ab("close");
+});
+
 let pageUrl = "";
 if (CAN_RUN) {
   const dir = mkdtempSync(join(tmpdir(), "crate2-ce108-"));
@@ -52,7 +60,7 @@ function ab(...args: string[]): { out: string; code: number } {
       out: execFileSync(BIN, args, {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, AGENT_BROWSER_EXECUTABLE_PATH: chromium, AGENT_BROWSER_ARGS: "--no-sandbox,--disable-crashpad" },
+        env: { ...process.env, AGENT_BROWSER_EXECUTABLE_PATH: chromium, AGENT_BROWSER_ARGS: "--no-sandbox,--disable-crashpad", AGENT_BROWSER_SESSION: SESSION },
         timeout: 60_000,
       }),
       code: 0,
