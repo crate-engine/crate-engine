@@ -299,6 +299,22 @@ export function fleetView(deps: FleetLocalDeps, exec: FleetExec = defaultFleetEx
   return { hubSha: deps.hubSha, hosts };
 }
 
+/** A FRESH fleet read (Adam's docket test, 2026-09-24): the cache-first view
+ * missed changes made outside the hub — a workspace resumed from a remote's own
+ * drawer, agents finishing — so the quit note counted 1 running when 2 were.
+ * Surfaces that must be right (every menu open, the quit note, the post-update
+ * check) ask for fresh rows; each connected host gets one re-read, capped so an
+ * asleep host can never stall a menu. */
+export async function refreshConnected(exec: FleetExec = defaultFleetExec(), capMs = 800): Promise<void> {
+  const work = [...links.values()]
+    .filter((l) => l.state === "connected" && l.app)
+    .map((l) => {
+      l.fetchedAt = undefined;
+      return refreshRemoteRows(l, exec).catch(() => undefined);
+    });
+  await Promise.race([Promise.all(work), new Promise((r) => setTimeout(r, capMs))]);
+}
+
 export interface FleetUpdateResult {
   host: string;
   local: boolean;

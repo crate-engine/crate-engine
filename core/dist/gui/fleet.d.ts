@@ -113,6 +113,13 @@ export interface FleetLocalDeps {
  * never dials and never blocks on ssh — the menu must open instantly.
  */
 export declare function fleetView(deps: FleetLocalDeps, exec?: FleetExec): FleetView;
+/** A FRESH fleet read (Adam's docket test, 2026-09-24): the cache-first view
+ * missed changes made outside the hub — a workspace resumed from a remote's own
+ * drawer, agents finishing — so the quit note counted 1 running when 2 were.
+ * Surfaces that must be right (every menu open, the quit note, the post-update
+ * check) ask for fresh rows; each connected host gets one re-read, capped so an
+ * asleep host can never stall a menu. */
+export declare function refreshConnected(exec?: FleetExec, capMs?: number): Promise<void>;
 export interface FleetUpdateResult {
     host: string;
     local: boolean;

@@ -370,7 +370,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     let key = "crate.quitNote.suppressed"
     if UserDefaults.standard.bool(forKey: key) { return .terminateNow }
     let f = FleetActions.shared
-    guard let url = f.hubFleetURL("/api/fleet"), let data = f.fetchJSON(url, timeout: 1.0),
+    guard let url = f.hubFleetURL("/api/fleet?fresh=1"), let data = f.fetchJSON(url, timeout: 2.0),
       let hosts = data["hosts"] as? [[String: Any]] else { return .terminateNow }
     var running: [(host: String, row: [String: Any])] = []
     for h in hosts {
@@ -583,7 +583,7 @@ final class FleetActions: NSObject, NSMenuDelegate {
       let comps = URLComponents(url: hub, resolvingAgainstBaseURL: false),
       let token = comps.queryItems?.first(where: { $0.name == "token" })?.value
     else { return nil }
-    return URL(string: "http://127.0.0.1:\(comps.port ?? 0)\(path)?token=\(token)")
+    return URL(string: "http://127.0.0.1:\(comps.port ?? 0)\(path)\(path.contains("?") ? "&" : "?")token=\(token)")
   }
 
   func fetchJSON(_ url: URL, method: String = "GET", body: Data? = nil, timeout: Double) -> [String: Any]? {
@@ -608,11 +608,11 @@ final class FleetActions: NSObject, NSMenuDelegate {
 
   func menuNeedsUpdate(_ menu: NSMenu) {
     menu.removeAllItems()
-    guard let url = hubFleetURL("/api/fleet") else {
+    guard let url = hubFleetURL("/api/fleet?fresh=1") else {
       menu.addItem(withTitle: "fleet brain starting — the local engine is not up yet", action: nil, keyEquivalent: "")
       return
     }
-    guard let fleet = fetchJSON(url, timeout: 1.2), let hosts = fleet["hosts"] as? [[String: Any]] else {
+    guard let fleet = fetchJSON(url, timeout: 2.0), let hosts = fleet["hosts"] as? [[String: Any]] else {
       menu.addItem(withTitle: "fleet brain unreachable — is the local engine up?", action: nil, keyEquivalent: "")
       return
     }
@@ -764,7 +764,7 @@ final class FleetActions: NSObject, NSMenuDelegate {
       // npm install per host — minutes, not seconds
       let res = fetchJSON(url, method: "POST", body: Data("{}".utf8), timeout: 900)
       // S4: read which computers still run the old engine HERE, off the main thread
-      let hosts = (hubFleetURL("/api/fleet").flatMap { fetchJSON($0, timeout: 3) }?["hosts"] as? [[String: Any]]) ?? []
+      let hosts = (hubFleetURL("/api/fleet?fresh=1").flatMap { fetchJSON($0, timeout: 3) }?["hosts"] as? [[String: Any]]) ?? []
       DispatchQueue.main.async { [self] in
         let a = NSAlert()
         if let results = res?["results"] as? [[String: Any]] {
@@ -843,7 +843,7 @@ final class WorkspacesMenu: NSObject, NSMenuDelegate {
 
   func menuNeedsUpdate(_ menu: NSMenu) {
     menu.removeAllItems()
-    guard let url = fleet.hubFleetURL("/api/fleet"), let data = fleet.fetchJSON(url, timeout: 1.5),
+    guard let url = fleet.hubFleetURL("/api/fleet?fresh=1"), let data = fleet.fetchJSON(url, timeout: 2.0),
       let hosts = data["hosts"] as? [[String: Any]]
     else {
       menu.addItem(withTitle: "The local engine isn't answering yet — give it a moment", action: nil, keyEquivalent: "")

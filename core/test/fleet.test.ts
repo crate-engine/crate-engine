@@ -247,3 +247,37 @@ test("after a workspace action on a remote, the very next fleet read already sho
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("a FRESH fleet read sees changes made outside the hub (the quit note counted 1 running when 2 were)", async () => {
+  clearFleetLinks();
+  const { createServer } = await import("node:http");
+  const { refreshConnected } = await import("../src/gui/fleet.js");
+  let docketLive = 0;
+  const remote = createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.url?.startsWith("/api/version")) return res.end(JSON.stringify({ loadedSha: "beefcafe" }));
+    if (req.url?.startsWith("/api/workspaces"))
+      return res.end(JSON.stringify({ workspaces: [{ name: "docket", path: "/mnt/p/docket", desired: docketLive ? "running" : "parked", liveSeats: docketLive }] }));
+    res.end("{}");
+  });
+  await new Promise<void>((r) => remote.listen(0, "127.0.0.1", r));
+  const port = (remote.address() as { port: number }).port;
+  const home = mkHome();
+  addRemote(home, "superman");
+  const { exec } = fakeExec({ appUrl: `http://127.0.0.1:${port}/team?token=rtok`, fetchJson: async (url) => (await fetch(url)).json() });
+  try {
+    await ensureLink("superman", exec);
+    fleetView({ ...HUB, home }, exec);
+    await new Promise((r) => setTimeout(r, 300));
+    docketLive = 5; // resumed from the remote's OWN drawer — the hub never saw the action
+    const cached = fleetView({ ...HUB, home }, exec).hosts.find((h) => h.host === "superman")!;
+    assert.equal(cached.workspaces[0]!.liveSeats, 0, "the cache-first view is stale");
+    await refreshConnected(exec);
+    const fresh = fleetView({ ...HUB, home }, exec).hosts.find((h) => h.host === "superman")!;
+    assert.equal(fresh.workspaces[0]!.liveSeats, 5, "a fresh read is current");
+  } finally {
+    clearFleetLinks();
+    await new Promise((r) => remote.close(r));
+    rmSync(home, { recursive: true, force: true });
+  }
+});

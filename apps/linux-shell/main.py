@@ -402,7 +402,7 @@ class Shell:
             return None
         u = urllib.parse.urlparse(self.hub_url)
         tok = urllib.parse.parse_qs(u.query).get("token", [""])[0]
-        return f"http://127.0.0.1:{u.port}{path}?token={tok}"
+        return f"http://127.0.0.1:{u.port}{path}{'&' if '?' in path else '?'}token={tok}"
 
     def on_fleet_open(self, menu):
         for child in menu.get_children():
@@ -414,11 +414,11 @@ class Shell:
             else:
                 it.connect("activate", lambda *_: cb(arg))
             menu.append(it)
-        api = self._hub_api("/api/fleet")
+        api = self._hub_api("/api/fleet?fresh=1")
         fleet = None
         if api:
             try:
-                with urllib.request.urlopen(api, timeout=1.2) as r:
+                with urllib.request.urlopen(api, timeout=2.0) as r:
                     fleet = json.load(r)
             except OSError:
                 fleet = None
@@ -526,8 +526,8 @@ class Shell:
         return False
 
     # ── Workspace Controls S2–S4 (PDR dev/pdr/workspace-controls.md) ──
-    def _fleet(self, timeout=1.5):
-        api = self._hub_api("/api/fleet")
+    def _fleet(self, timeout=2.0):
+        api = self._hub_api("/api/fleet?fresh=1")
         if not api:
             return None
         try:
@@ -749,7 +749,7 @@ class Shell:
                     return True
         except (OSError, ValueError):
             pass
-        fleet = self._fleet(timeout=1.0)
+        fleet = self._fleet(timeout=2.0)
         running = [(h.get("host", "?"), w) for h in (fleet or {}).get("hosts", [])
                    for w in h.get("workspaces", []) if w.get("liveSeats", 0) > 0]
         if not running:

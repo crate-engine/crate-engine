@@ -1642,7 +1642,9 @@ export async function startGuiServer(opts = {}) {
                 // the read is cache-first and NEVER blocks on ssh (asleep hosts must
                 // never hang the menu); connect is the explicit dial. ──
                 case "GET /api/fleet": {
-                    const { fleetView } = await import("./fleet.js");
+                    const { fleetView, refreshConnected } = await import("./fleet.js");
+                    if (url.searchParams.get("fresh") === "1")
+                        await refreshConnected(); // menus + the quit note: current, not cached
                     const { hostname, platform } = await import("node:os");
                     return json(res, 200, fleetView({
                         home: state.home,

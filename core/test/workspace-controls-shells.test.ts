@@ -69,3 +69,9 @@ test("a host mid-dial reads 'connecting…' — never a Connect button over a co
   assert.ok(mac.includes('"   connecting…"') && py.includes('"   connecting…"'), "both shells");
   assert.ok(!/state == "connecting"[^\n]*Connect"/.test(mac), "mac never pairs connecting with Connect");
 });
+
+test("every menu open and the quit note read the fleet FRESH, never the cache", () => {
+  assert.equal((mac.match(/hubFleetURL\("\/api\/fleet\?fresh=1"\)/g) ?? []).length, 4, "mac: Workspaces, Computers, quit note, post-update");
+  assert.ok(!/hubFleetURL\("\/api\/fleet"\)/.test(mac), "mac: no cached fleet read left behind a menu");
+  assert.ok(py.includes('self._hub_api("/api/fleet?fresh=1")') && !py.includes('self._hub_api("/api/fleet")'), "linux: the same");
+});
