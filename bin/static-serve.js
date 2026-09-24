@@ -64,4 +64,6 @@ http
     });
     req.method === 'HEAD' ? res.end() : fs.createReadStream(target).pipe(res);
   })
-  .listen(port, '127.0.0.1', () => console.log(`static-serve: ${root} on ${port}`));
+  // Loopback by default (the smoke rung). The Studio preview (CE-190) passes the
+  // rig's DEV_BIND so the phone QR on the LAN still reaches it.
+  .listen(port, process.env.STATIC_SERVE_BIND || '127.0.0.1', () => console.log(`static-serve: ${root} on ${port}`));

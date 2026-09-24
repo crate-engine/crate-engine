@@ -2061,6 +2061,18 @@ function renderServers(){
       +(s.killable?'<button class="crefresh" data-skill="'+s.port+':'+s.pid+'">Kill</button>':'')
       +'</div>';
   }).join("");
+  // CE-190: the engine's own Studio preview (static sites) — runs only while
+  // a Studio window, the preview link, or the designer is using it
+  const st=SERVERS.studio;
+  if(st){
+    const who=[];if(st.windows)who.push("open in "+st.windows+" window"+(st.windows>1?"s":""));if(st.designer)who.push("the designer is working on it");
+    const line=st.blocked?("can't start — "+st.blocked)
+      :st.running?(who.length?who.join(" · "):("nobody using it — stops in "+Math.ceil((st.stopsInMs||0)/60000)+" min"))
+      :"not running — starts when you open Design Studio";
+    h+='<div class="crow"><div style="flex:1;min-width:0"><div style="font:600 12px/1.3 var(--body)">Studio preview <span style="color:var(--faint);font:500 10.5px/1 var(--mono)">:'+st.port+'</span></div>'
+      +'<div style="font:400 10.5px/1.5 var(--mono);color:var(--faint)">'+esc(line)+'</div></div>'
+      +'<span class="stag">engine-managed</span></div>';
+  }
   const orphN=SERVERS.orphans||0;
   if(orphN)h+='<div class="cactions"><button id="svsweep">Sweep orphans ('+orphN+')</button></div>';
   h+='<div class="cpolicy">Registered previews + listeners born in this project. System services are visible, untouchable. Nothing dies without your click — Kill sends SIGTERM to the process group and verifies the port actually freed before reporting done.</div>';

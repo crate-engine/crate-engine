@@ -8,7 +8,10 @@ desktop AND mobile at once. (The emit comes FIRST — it is the designer saying 
 show", not "the human approved"; `config/designer.md` states the same ordering, and
 `reopen_design: design_locked -> designing` exists for exactly this window. CE-145.) Route = the page= from the design_locked event
 (page=<slug> -> /<slug>; page=home or homepage -> /). The preview uses the LIVE
-dev server, which during design serves the design branch's working tree.
+dev server, which during design serves the design branch's working tree — or,
+for a STATIC site with no dev command, the engine's on-demand Studio preview
+(`agentctl studio-serve`; it runs while Design Studio is open or the designer
+holds it, and stops on its own after — never a hand-started server, CE-190).
 
 Use the **build-preview** skill (`config/skills/build-preview.md`): route = the page= above,
 build-note = the design branch. It generates ONE branded card (a QR for the mobile test +

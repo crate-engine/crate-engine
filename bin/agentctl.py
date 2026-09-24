@@ -16,6 +16,7 @@ Usage:
                                     duty by hand (measure + dedup'd distillation
                                     mail to the orchestrator on any breach)
   agentctl.py deliver <role> [--from R] <message...>
+  agentctl.py studio-serve [minutes] the engine serves this static site's Studio preview while you work (CE-190)
       Durable delivery: appends to the role's inbox mirror AND queues a
       maildir message (state/inbox/<role>/new/) that the seat's runner wakes
       on. The file IS the delivery — nothing to verify beyond this command
@@ -1593,6 +1594,60 @@ def main():
                (now(), updates["SMOKE_ENFORCE"], exemption or "required"))
         print("Required gate settings enabled. Smoke: %s. Existing loop evidence was not changed." %
               ("explicit non-web exemption" if exemption else "required"))
+        return
+
+    if cmd == "studio-serve":
+        # CE-190 (Adam, 2026-09-24): the ENGINE owns the Design Studio preview
+        # for a static site and runs it only while someone uses it. The
+        # designer never starts its own server (it died with every restart and
+        # nothing ever closed it); it asks for the preview here — a lease the
+        # engine honours for N minutes (default 20), renewed by asking again.
+        # An open Studio window keeps it alive on its own.
+        minutes = 20
+        if len(args) > 1:
+            try:
+                minutes = max(1, min(120, int(args[1])))
+            except ValueError:
+                die("usage: studio-serve [minutes]  (1-120, default 20)")
+        root = os.getcwd()  # agentctl always runs from the project root (A is relative)
+        here = os.path.dirname(os.path.realpath(__file__))
+        def resolve(kind):
+            try:
+                out = subprocess.run(["bash", os.path.join(here, "serve-resolve"), kind, root],
+                                     capture_output=True, text=True, timeout=10).stdout
+            except Exception:
+                return {}
+            return dict(l.split("=", 1) for l in out.splitlines() if "=" in l)
+        dev = resolve("dev")
+        if dev.get("MODE") in ("dev", "prod"):
+            print("This project previews on its own dev server — use: bash .agents/bin/dev-server up. "
+                  "studio-serve is for static sites the engine serves itself.")
+            return
+        if dev.get("MODE") != "static":
+            die("studio-serve: nothing static to serve here (no root index.html and no dev command).")
+        port = int(dev.get("PORT") or 3000)
+        until = datetime.datetime.now().astimezone() + datetime.timedelta(minutes=minutes)
+        path = os.path.join(A, "state", "studio-demand.json")
+        tmp = path + ".tmp-%s" % uuid.uuid4().hex
+        with open(tmp, "w") as fh:
+            json.dump({"until": until.isoformat(timespec="seconds"), "by": seat_identity() or "operator"}, fh)
+        os.replace(tmp, path)
+        # the engine starts it within a few seconds — wait so the caller can use it at once
+        import socket
+        up = False
+        for _ in range(40):
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                    up = True
+                    break
+            except OSError:
+                time.sleep(0.5)
+        if up:
+            print("Studio preview UP at http://127.0.0.1:%d/ — held for you until %s (ask again to extend). "
+                  "It stops on its own when nobody is using it: never start your own server for it." % (port, until.strftime("%H:%M")))
+        else:
+            print("Asked the engine for the Studio preview (held until %s), but nothing answers on :%d yet — "
+                  "is the Crate Engine app running for this project? Do NOT start your own server; report it." % (until.strftime("%H:%M"), port))
         return
 
     if cmd == "preview":

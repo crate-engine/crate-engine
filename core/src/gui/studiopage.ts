@@ -50,10 +50,13 @@ const TOKEN=new URLSearchParams(location.search).get("token");
 const PROJECT=new URLSearchParams(location.search).get("project")||"";
 const tq="token="+TOKEN+(PROJECT?"&project="+encodeURIComponent(PROJECT):"");
 let SRC="";
+// CE-190: this window's check-in id — while it polls, the engine keeps a
+// static site's preview running; closed windows simply stop checking in.
+const VIEWER=(document.body.dataset.frame||"frame")+"-"+Math.random().toString(36).slice(2,8);
 function show(live){document.getElementById("stage").classList.toggle("on",!!live);document.getElementById("wait").style.display=live?"none":"flex";}
 async function poll(){
   let s=null;
-  try{s=await fetch("/api/studio/state?"+tq).then(r=>r.json());}catch(e){}
+  try{s=await fetch("/api/studio/state?"+tq+"&viewer="+encodeURIComponent(VIEWER)).then(r=>r.json());}catch(e){}
   if(!s){document.getElementById("reason").textContent="the engine is not answering — the frame reconnects on its own";show(false);SRC="";return;}
   if(s.mode!=="live"){document.getElementById("reason").textContent=s.reason||"awaiting the next design task";show(false);SRC="";return;}
   // the routing law: an http target renders through the engine's proxy —

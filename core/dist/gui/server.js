@@ -556,6 +556,7 @@ export async function startGuiServer(opts = {}) {
         if (got !== undefined)
             return got;
         const proxy = createServer((req, res) => {
+            studio.touchProxy(project); // CE-190: viewing through the link counts as use
             const target = state.previewTargets.get(project);
             if (!target) {
                 res.writeHead(503, { "Content-Type": "text/plain" });
@@ -631,6 +632,15 @@ export async function startGuiServer(opts = {}) {
     };
     if (state.project)
         ensureMirror(state.project);
+    // CE-190 — the engine-owned, on-demand Design Studio preview (static sites):
+    // runs only while a Studio window, the preview link, or the designer is
+    // using it; stops 2 minutes after the last use (gui/studioserve.ts).
+    const { StudioServers } = await import("./studioserve.js");
+    const studioBin = existsSync(join(tierPaths(home).engineDir, "bin", "serve-resolve"))
+        ? join(tierPaths(home).engineDir, "bin")
+        : join(import.meta.dirname, "..", "..", "..", "bin");
+    const studio = new StudioServers(studioBin, (line) => void import("./guilog.js").then(({ guiLog }) => guiLog(home, line)));
+    const studioRunning = async () => new Set((await import("./workspaces.js")).desiredRunning(home));
     // ── workspace-controls S1 (PDR dev/pdr/workspace-controls.md) ──────────────
     // "Stopped means zero": after a stop, the workspace's dev server goes down and
     // every process still tagged CRATE_PROJECT=<it> is closed — the count is the
@@ -1043,13 +1053,24 @@ export async function startGuiServer(opts = {}) {
                     const proj = url.searchParams.get("project") ?? state.project;
                     const previews = proj ? pendingPreviews(proj) : [];
                     const first = previews[previews.length - 1]; // newest wins the slot (LESSONS #7)
+                    // CE-190: an open Studio window checks in on this poll (viewer=<frame>);
+                    // for a static site that is what keeps the engine's preview running.
+                    const viewer = url.searchParams.get("viewer");
+                    if (proj && viewer && first && studio.touchViewer(proj, viewer))
+                        await studio.tick(await studioRunning());
                     let probeOk = false;
                     if (first && proj) {
                         if (first.url.startsWith("http://"))
                             state.previewTargets.set(proj, first.url);
                         probeOk = first.url.startsWith("http") ? await probePreviewTarget(first.url) : true;
                     }
-                    return json(res, 200, deriveStudioState(previews, probeOk, proj ? await ensureProxyFor(proj) : undefined));
+                    const st = deriveStudioState(previews, probeOk, proj ? await ensureProxyFor(proj) : undefined);
+                    const managed = proj ? studio.status(proj) : undefined;
+                    if (managed && st.mode === "waiting" && first) {
+                        // never "went down" for a preview the engine is bringing up on demand
+                        st.reason = managed.blocked ? `the preview can't start — ${managed.blocked}` : "starting the preview…";
+                    }
+                    return json(res, 200, { ...st, ...(managed ? { engineServed: managed } : {}) });
                 }
                 case "POST /api/preview/point": {
                     // Satellites + Launch in Chrome (2026-08-13): aim THIS workspace's
@@ -1074,7 +1095,16 @@ export async function startGuiServer(opts = {}) {
                     const proj = url.searchParams.get("project") ?? state.project;
                     if (!proj)
                         return json(res, 200, { servers: [], orphans: 0, lsofAvailable: false });
-                    const view = serversView(proj);
+                    // CE-190: the engine's own preview gets its own row (status, who is
+                    // using it, when it stops) — and is never "discovered" as a stray
+                    // listener, so the assist never nags the team to register it.
+                    const studioStatus = studio.status(proj) ?? null;
+                    const base = serversView(proj);
+                    const view = {
+                        ...base,
+                        servers: studioStatus?.running ? base.servers.filter((r) => r.port !== studioStatus.port) : base.servers,
+                        studio: studioStatus,
+                    };
                     // Engine assist (design-previews belt): an unregistered mid-task
                     // listener earns ONE dedup'd nudge to the orchestrator, riding the
                     // panel's own poll. Fail-open inside — never blocks the read.
@@ -2080,6 +2110,8 @@ export async function startGuiServer(opts = {}) {
         }
     };
     const sweepTimer = setInterval(() => void runSweep(), 5 * 60_000);
+    const studioTimer = setInterval(() => void studioRunning().then((r) => studio.tick(r)).catch(() => undefined), 3_000);
+    studioTimer.unref();
     sweepTimer.unref();
     const reviveTimer = setInterval(async () => {
         try {
@@ -2173,6 +2205,8 @@ export async function startGuiServer(opts = {}) {
     server.on("close", () => {
         clearInterval(reviveTimer);
         clearInterval(sweepTimer);
+        clearInterval(studioTimer);
+        studio.stopAll(); // CE-190: the engine's previews never outlive it
         clearInterval(idleTimer);
         clearFleetLinks(); // owned tunnels die with the hub (fleet PDR d.4)
         for (const m of mirrors.values())

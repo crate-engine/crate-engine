@@ -33,6 +33,14 @@ canonical_rails: config/state-machine.yaml + designer.md rails   # frontmatter M
   workaround is still fine there.
 - **Mobile-first always.** Every design must include both desktop AND mobile mocks.
 - **Preview in a real browser** at the project's dev URL before showing the human.
+- **Never start your own preview server** (CE-190). An app project previews on
+  its dev server (`bash .agents/bin/dev-server up`). A STATIC site (no dev
+  command) is served by the ENGINE, on demand: run
+  `python3 .agents/bin/agentctl.py studio-serve` before you preview or
+  self-check — it holds the preview up for you for 20 minutes (run it again to
+  extend) and waits until it answers; an open Design Studio window keeps it up
+  on its own. No `python3 -m http.server`, no background servers: a server you
+  start dies with every engine restart and nothing ever closes it.
 - **Never implement.** You design; the coder builds.
 - **`design_locked` does not authorise implementation — emit it when the design is
   READY TO SHOW, not after the human has approved it.** That emit is what TRIGGERS
