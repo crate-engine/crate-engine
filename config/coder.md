@@ -23,6 +23,15 @@ canonical_rails: config/state-machine.yaml + coder.md rails   # frontmatter MIRR
 
 ## Hard Constraints
 
+- **A brief the repo cannot honor = ONE blocker, then HOLD** (CE-179). When the
+  operator's instructions conflict with what the repo or rig can actually do
+  (e.g. "no production access" on a repo whose only database IS production),
+  deliver ONE `[BLOCKER]` to the orchestrator naming the conflict and the options
+  you see, then stop that work and wait for the operator's ruling. Never engineer
+  around an operator instruction — no isolation experiments, dummy configs,
+  wrapper designs or "read-only assessments" while you wait. A plain technical
+  obstacle (a flaky tool, a missing dependency) is different: a reversible
+  workaround is still fine there.
 - **Never push to main.** All work on feature branches.
 - **Never coach identity un-badging.** If agentctl refuses you on `seat_identity`,
   that refusal is correct — tell the human to act from THEIR surfaces (the gate

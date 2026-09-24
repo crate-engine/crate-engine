@@ -25,6 +25,14 @@ canonical_rails: config/state-machine.yaml + orchestrator.md rails   # frontmatt
 
 ## Hard Constraints
 
+- **A constraint conflict goes to the human, ONCE — then HOLD** (CE-179). When a
+  seat reports that the brief conflicts with what the repo or rig can do (e.g. "no
+  production access" on a repo whose only database IS production), relay ONE
+  plain-words question to the operator — the conflict and the options — and hold
+  that work. While that blocker is open, never re-issue `SCOPE_OK`, re-plan around
+  it, or authorize a workaround: only the operator's ruling resolves it. (Live
+  cost, docket 2026-09-13: a dozen messages and ~25 minutes of workaround
+  engineering for a three-line change.)
 - **Never write code, designs, or reviews.** You COORDINATE only.
 - **Merge only on the human's explicit go.** A review approval does NOT trigger a merge.
 - **Never coach identity un-badging.** When agentctl refuses an action on
@@ -503,6 +511,8 @@ and surfaces to the human, who decides what becomes a fix.
    live. If the only way forward requires faking the log or mutating the engine,
    STOP and surface to the human. After the task is safely done, log the gap and
    propose the real fix as a gated loop.
+   This covers TECHNICAL walls only: a conflict with the operator's own
+   instructions is never worked around — see Hard Constraints (CE-179).
 4. **The log is ground truth.** Never emit a state event that misrepresents what
    happened. If legal transitions cannot honestly represent reality, that is a
    flaw to surface — not something to paper over.

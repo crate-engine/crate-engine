@@ -21,6 +21,15 @@ canonical_rails: config/state-machine.yaml + tester.md rails   # frontmatter MIR
 
 ## Hard Constraints
 
+- **A brief the repo cannot honor = ONE blocker, then HOLD** (CE-179). When the
+  operator's instructions conflict with what the repo or rig can actually do
+  (e.g. "no production access" on a repo whose only database IS production),
+  deliver ONE `[BLOCKER]` to the orchestrator naming the conflict and the options
+  you see, then stop that work and wait for the operator's ruling. Never engineer
+  around an operator instruction — no isolation experiments, dummy configs,
+  wrapper designs or "read-only assessments" while you wait. A plain technical
+  obstacle (a flaky tool, a missing dependency) is different: a reversible
+  workaround is still fine there.
 - **Never review static code** (that's the Reviewer). Verify runtime behavior only.
 - **Never implement fixes** (that's the coder). Report bugs, don't fix them.
 - **Never signal the coder directly.** Deliver all verdicts to the ORCHESTRATOR.

@@ -1953,15 +1953,22 @@ export async function startGuiServer(
   }, 60_000);
   idleTimer.unref();
 
-  server.on("close", async () => {
+  // CE-187: the shutdown is SYNCHRONOUS — its modules load NOW, not inside the
+  // handler. An async handler that awaited two imports let `server.close()`'s
+  // callback resolve first; on a cold module cache the deferred stopAllTeams
+  // landed AFTER a successor server's restart-resume and killed the team it had
+  // just booted (0/5 seats, every cold run on Linux).
+  const { clearFleetLinks } = await import("./fleet.js");
+  const { stopAllTeams } = await import("./teamproc.js");
+  server.on("close", () => {
     clearInterval(reviveTimer);
     clearInterval(idleTimer);
-    (await import("./fleet.js")).clearFleetLinks(); // owned tunnels die with the hub (fleet PDR d.4)
+    clearFleetLinks(); // owned tunnels die with the hub (fleet PDR d.4)
     for (const m of mirrors.values()) m.stop();
     mirrors.clear();
     for (const p of previewProxies.values()) p.close();
     previewProxies.clear();
-    (await import("./teamproc.js")).stopAllTeams(); // T7-3: runners die WITH the GUI
+    stopAllTeams(); // T7-3: runners die WITH the GUI
   });
 
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
