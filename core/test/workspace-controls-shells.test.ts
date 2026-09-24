@@ -44,3 +44,28 @@ test("both shells: quitting says what keeps running — once, with Stop Them Too
   assert.ok(py.includes("def confirm_quit(") && py.includes('"Stop Them Too"') && py.includes("Don't show this again"), "linux: the same note");
   assert.ok(py.includes('connect("delete-event"'), "linux: closing the window asks too");
 });
+
+// Adam's docket test (2026-09-24): Stop from the menu worked, but (1) the open
+// drawer kept showing "5 agents" until reopened, (2) ⌃⌘S did nothing — the
+// lazily built Workspaces menu had no item to match — and (3) a dialing host
+// read "connecting — Connect".
+test("the drawer stays live and the shells poke it after every action", () => {
+  const page = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "gui", "teampage.ts"), "utf8");
+  assert.match(page, /RAIL_TIMER=setInterval\(/, "the open drawer refreshes itself");
+  assert.match(page, /window\.crateRefreshWorkspaces=/, "and exposes a refresh the shells can call");
+  assert.ok(mac.includes("window.crateRefreshWorkspaces && window.crateRefreshWorkspaces()"), "mac pokes it after an action");
+  assert.ok(py.includes("window.crateRefreshWorkspaces && window.crateRefreshWorkspaces()"), "linux pokes it after an action");
+});
+
+test("the drawer shortcut works before the menu was ever opened; no key event triggers a fleet fetch", () => {
+  const ws = mac.slice(mac.indexOf("final class WorkspacesMenu"));
+  assert.match(ws, /func menuHasKeyEquivalent[\s\S]*\[\.command, \.control\][\s\S]*openWorkspaces/, "mac: ⌃⌘S answered by the delegate");
+  const fleet = mac.slice(mac.indexOf("final class FleetActions"), mac.indexOf("final class WorkspacesMenu"));
+  assert.match(fleet, /func menuHasKeyEquivalent[^\n]*\{ false \}/, "mac: the Computers menu never populates on a keystroke");
+  assert.ok(py.includes("accel.connect(Gdk.KEY_w"), "linux: Ctrl+W at window level");
+});
+
+test("a host mid-dial reads 'connecting…' — never a Connect button over a connect", () => {
+  assert.ok(mac.includes('"   connecting…"') && py.includes('"   connecting…"'), "both shells");
+  assert.ok(!/state == "connecting"[^\n]*Connect"/.test(mac), "mac never pairs connecting with Connect");
+});

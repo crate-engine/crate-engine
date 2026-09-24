@@ -1825,7 +1825,14 @@ function switchWorkspace(path){
   // switching = reload /team pointed at the other project (each team is independent)
   location.href="/team?token="+TOKEN+"&project="+encodeURIComponent(path)+"&lens="+lens;
 }
-function openRail(){document.getElementById("rail").classList.add("open");document.getElementById("railback").classList.add("open");loadWorkspaces();}
+// Live while open (Adam's docket test, 2026-09-24: a Stop from the native menu
+// left the open drawer showing "5 agents" until it was reopened). Refresh every
+// 4s while the drawer is open — and the shells poke window.crateRefreshWorkspaces
+// the moment an action lands, so it never lags a click.
+let RAIL_TIMER=null;
+function openRail(){document.getElementById("rail").classList.add("open");document.getElementById("railback").classList.add("open");loadWorkspaces();
+  clearInterval(RAIL_TIMER);RAIL_TIMER=setInterval(()=>{if(document.getElementById("rail").classList.contains("open"))loadWorkspaces();else{clearInterval(RAIL_TIMER);RAIL_TIMER=null;}},4000);}
+window.crateRefreshWorkspaces=()=>{if(document.getElementById("rail")&&document.getElementById("rail").classList.contains("open"))loadWorkspaces();};
 function closeRail(){document.getElementById("rail").classList.remove("open");document.getElementById("railback").classList.remove("open");}
 async function addWorkspace(){
   // W3: a real folder picker (the wizard's /api/fs/dirs jail), not a prompt()

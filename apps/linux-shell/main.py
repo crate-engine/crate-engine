@@ -380,6 +380,11 @@ class Shell:
         ws_root.set_submenu(ws_menu)
         ws_menu.connect("show", self.on_workspaces_open)
         bar.append(ws_root)
+        # Ctrl+W opens the drawer at WINDOW level: the menu is built lazily on
+        # "show", so an accelerator on its item would not exist until opened
+        # (the Mac twin of this bug surfaced in Adam's docket test, 2026-09-24).
+        accel.connect(Gdk.KEY_w, Gdk.ModifierType.CONTROL_MASK, Gtk.AccelFlags.VISIBLE,
+                      lambda *_: (self.run_js("window.crateOpenPanel && window.crateOpenPanel('workspaces')"), True)[1])
 
         fleet_root = Gtk.MenuItem(label="Computers")  # was "Fleet", then "Servers" (Adam, 2026-09-13): the operator's word
         fleet_menu = Gtk.Menu()
@@ -442,6 +447,8 @@ class Shell:
                 if host.get("cockpitUrl") and not host.get("local"):
                     row(f"   Open a project on {host.get('host', '?')}…",
                         lambda h: self.open_door("open", h), host.get("host"))
+            elif host.get("state") == "connecting":
+                row("   connecting…")
             else:
                 note = host.get("note") or host.get("state", "unknown")
                 row(f"   {note} — Connect", self._fleet_connect, host.get("host"))
@@ -584,6 +591,11 @@ class Shell:
         except OSError as e:
             return {"error": str(e)}
 
+    def refresh_drawer(self):
+        """The open drawer re-reads its list the moment an action lands."""
+        self.run_js("window.crateRefreshWorkspaces && window.crateRefreshWorkspaces()")
+        return False
+
     def confirm_stop(self, host, w, archive):
         live = w.get("liveSeats", 0)
         busy = w.get("busySeats") or []
@@ -613,6 +625,7 @@ class Shell:
 
         def work():
             r = self._ws_post(host, w.get("path", ""), action) or {}
+            GLib.idle_add(self.refresh_drawer)
             if r.get("error"):
                 GLib.idle_add(self._tell, f"{name}: that didn't work", r["error"])
             elif (r.get("teardown") or {}).get("remaining", 0) > 0:
@@ -640,8 +653,11 @@ class Shell:
             name = host.get("host", "?")
             add(menu, name)
             if not (host.get("local") or host.get("state") == "connected"):
-                note = host.get("note") or host.get("state", "not connected")
-                add(menu, f"   {note} — Connect", lambda h=name: self._fleet_connect(h))
+                if host.get("state") == "connecting":
+                    add(menu, "   connecting…")  # a dial is in flight — never offer Connect over it
+                else:
+                    note = host.get("note") or host.get("state", "not connected")
+                    add(menu, f"   {note} — Connect", lambda h=name: self._fleet_connect(h))
                 menu.append(Gtk.SeparatorMenuItem())
                 continue
             rows = host.get("workspaces", [])
@@ -693,7 +709,8 @@ class Shell:
             text += f"\n\n⚠ Mid-task right now: {', '.join(busy)} — those turns will be lost."
         if not self._ask(f"Stop all {len(rows)} workspace{'' if len(rows) == 1 else 's'} on {host}?", text, "Stop All", warn=bool(busy)):
             return
-        threading.Thread(target=lambda: [self._ws_post(host, w.get("path", ""), "stop") for w in rows], daemon=True).start()
+        threading.Thread(target=lambda: ([self._ws_post(host, w.get("path", ""), "stop") for w in rows],
+                                         GLib.idle_add(self.refresh_drawer)), daemon=True).start()
 
     def restart_hosts(self, hosts, confirm):
         """S4: Restart to finish — the proven launch flow (`crate open [--remote]`)

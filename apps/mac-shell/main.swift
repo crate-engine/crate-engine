@@ -603,6 +603,9 @@ final class FleetActions: NSObject, NSMenuDelegate {
     return out
   }
 
+  // no shortcut lives here — answer key events without a fleet fetch
+  func menuHasKeyEquivalent(_ menu: NSMenu, for event: NSEvent, target: AutoreleasingUnsafeMutablePointer<AnyObject?>, action: UnsafeMutablePointer<Selector?>) -> Bool { false }
+
   func menuNeedsUpdate(_ menu: NSMenu) {
     menu.removeAllItems()
     guard let url = hubFleetURL("/api/fleet") else {
@@ -652,12 +655,18 @@ final class FleetActions: NSObject, NSMenuDelegate {
           menu.addItem(add)
         }
       } else {
-        // asleep/failed/unknown/connecting: one calm row; click = Connect
-        let note = host["note"] as? String ?? state
-        let item = NSMenuItem(title: "   \(note) — Connect", action: #selector(connectHost(_:)), keyEquivalent: "")
-        item.target = self
-        item.representedObject = name
-        menu.addItem(item)
+        // asleep/failed/unknown: one calm row; click = Connect. Connecting: say so.
+        if state == "connecting" {
+          let w = NSMenuItem(title: "   connecting…", action: nil, keyEquivalent: "")
+          w.isEnabled = false
+          menu.addItem(w)
+        } else {
+          let note = host["note"] as? String ?? state
+          let item = NSMenuItem(title: "   \(note) — Connect", action: #selector(connectHost(_:)), keyEquivalent: "")
+          item.target = self
+          item.representedObject = name
+          menu.addItem(item)
+        }
       }
       menu.addItem(NSMenuItem.separator())
     }
@@ -818,6 +827,20 @@ final class WorkspacesMenu: NSObject, NSMenuDelegate {
     return it
   }
 
+  /// ⌃⌘S must work before the menu was ever opened (Adam's docket test,
+  /// 2026-09-24): a lazily built menu has no item to match, so answer the key
+  /// equivalent here — and answer every OTHER key without populating, so no
+  /// shortcut anywhere in the app ever waits on a fleet fetch.
+  func menuHasKeyEquivalent(_ menu: NSMenu, for event: NSEvent, target: AutoreleasingUnsafeMutablePointer<AnyObject?>, action: UnsafeMutablePointer<Selector?>) -> Bool {
+    let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    if event.charactersIgnoringModifiers?.lowercased() == "s" && mods == [.command, .control] {
+      target.pointee = PanelActions.shared
+      action.pointee = #selector(PanelActions.openWorkspaces(_:))
+      return true
+    }
+    return false
+  }
+
   func menuNeedsUpdate(_ menu: NSMenu) {
     menu.removeAllItems()
     guard let url = fleet.hubFleetURL("/api/fleet"), let data = fleet.fetchJSON(url, timeout: 1.5),
@@ -833,11 +856,19 @@ final class WorkspacesMenu: NSObject, NSMenuDelegate {
       header.isEnabled = false
       menu.addItem(header)
       if !reachable {
-        let note = host["note"] as? String ?? (host["state"] as? String ?? "not connected")
-        let c = NSMenuItem(title: "   \(note) — Connect", action: #selector(FleetActions.connectHost(_:)), keyEquivalent: "")
-        c.target = fleet
-        c.representedObject = name
-        menu.addItem(c)
+        if host["state"] as? String == "connecting" {
+          // a dial is already in flight (e.g. the first minute after launch) —
+          // say so; offering "Connect" here read as broken
+          let w = NSMenuItem(title: "   connecting…", action: nil, keyEquivalent: "")
+          w.isEnabled = false
+          menu.addItem(w)
+        } else {
+          let note = host["note"] as? String ?? (host["state"] as? String ?? "not connected")
+          let c = NSMenuItem(title: "   \(note) — Connect", action: #selector(FleetActions.connectHost(_:)), keyEquivalent: "")
+          c.target = fleet
+          c.representedObject = name
+          menu.addItem(c)
+        }
         menu.addItem(NSMenuItem.separator())
         continue
       }
@@ -896,6 +927,11 @@ final class WorkspacesMenu: NSObject, NSMenuDelegate {
     menu.addItem(panel)
   }
 
+  /// The open drawer re-reads its list the moment an action lands.
+  static func refreshDrawer() {
+    (NSApp.delegate as? AppDelegate)?.webView.evaluateJavaScript("window.crateRefreshWorkspaces && window.crateRefreshWorkspaces()", completionHandler: nil)
+  }
+
   /// Plain-words confirmation for anything that closes agent sessions.
   static func confirmStop(_ name: String, host: String, row: [String: Any], archive: Bool) -> Bool {
     let live = row["liveSeats"] as? Int ?? 0
@@ -944,6 +980,7 @@ final class WorkspacesMenu: NSObject, NSMenuDelegate {
     DispatchQueue.global(qos: .userInitiated).async { [self] in
       let r = post(host: host, path: path, action: action)
       DispatchQueue.main.async {
+        WorkspacesMenu.refreshDrawer()
         if let err = r?["error"] as? String {
           let a = NSAlert(); a.messageText = "\(name): that didn't work"; a.informativeText = err; a.runModal()
         } else if let left = (r?["teardown"] as? [String: Any])?["remaining"] as? Int, left > 0 {
@@ -969,6 +1006,7 @@ final class WorkspacesMenu: NSObject, NSMenuDelegate {
     if a.runModal() != .alertFirstButtonReturn { return }
     DispatchQueue.global(qos: .userInitiated).async { [self] in
       for r in rows { if let p = r["path"] as? String { _ = post(host: host, path: p, action: "stop") } }
+      DispatchQueue.main.async { WorkspacesMenu.refreshDrawer() }
     }
   }
 }
