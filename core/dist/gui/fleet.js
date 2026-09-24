@@ -300,10 +300,16 @@ export async function runWorkspaceAction(target, action, path) {
         signal: AbortSignal.timeout(90_000),
     });
     const body = (await r.json().catch(() => ({})));
-    // the fleet cache must not show the old state for 5s after an action
-    for (const l of links.values())
-        if (target.base.endsWith(`:${l.app?.port}`))
+    // The menus read the fleet CACHE-FIRST (a background refresh per open), so
+    // after an action the next open showed the pre-action state (Adam's docket
+    // test, 2026-09-24: archived, yet the menu still listed it as stopped). Re-read
+    // the acted-on computer's rows BEFORE answering — the next open is current.
+    for (const l of links.values()) {
+        if (l.app && target.base.endsWith(`:${l.app.port}`)) {
             l.fetchedAt = undefined;
+            await refreshRemoteRows(l, defaultFleetExec()).catch(() => undefined);
+        }
+    }
     return { status: r.status, body };
 }
 //# sourceMappingURL=fleet.js.map

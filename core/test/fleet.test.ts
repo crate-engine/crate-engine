@@ -200,3 +200,50 @@ test("both shells ship the Fleet menu wired to the hub, and ensure the local hub
   assert.ok(py.includes('launch_engine("")'), "linux: the local hub is ensured even when the window is remote");
   assert.match(py, /engine differs — Update Crate Engine \(app menu\) fans out/, "linux: skew is honesty, not action");
 });
+
+// Workspace Controls (Adam's docket test, 2026-09-24): the menus read the fleet
+// cache-first, so right after Archive the NEXT menu open still listed the
+// workspace as stopped. An action must re-read that computer's rows before it
+// answers — the next open is current.
+test("after a workspace action on a remote, the very next fleet read already shows the new state", async () => {
+  clearFleetLinks();
+  const { createServer } = await import("node:http");
+  const { runWorkspaceAction, remoteTarget } = await import("../src/gui/fleet.js");
+  let archived = false;
+  const remote = createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.method === "POST" && req.url?.startsWith("/api/workspaces/archive")) {
+      archived = true;
+      return res.end(JSON.stringify({ ok: true }));
+    }
+    if (req.url?.startsWith("/api/version")) return res.end(JSON.stringify({ loadedSha: "beefcafe" }));
+    if (req.url?.startsWith("/api/workspaces"))
+      return res.end(JSON.stringify({ workspaces: [{ name: "docket", path: "/mnt/p/docket", desired: "parked", liveSeats: 0, ...(archived ? { archived: true } : {}) }] }));
+    res.end("{}");
+  });
+  await new Promise<void>((r) => remote.listen(0, "127.0.0.1", r));
+  const port = (remote.address() as { port: number }).port;
+  const home = mkHome();
+  addRemote(home, "superman");
+  const { exec } = fakeExec({
+    appUrl: `http://127.0.0.1:${port}/team?token=rtok`,
+    fetchJson: async (url) => (await fetch(url)).json(),
+  });
+  try {
+    await ensureLink("superman", exec);
+    fleetView({ ...HUB, home }, exec); // warm the cache (pre-action rows)
+    await new Promise((r) => setTimeout(r, 300));
+    const before = fleetView({ ...HUB, home }, exec).hosts.find((h) => h.host === "superman")!;
+    assert.ok(!before.workspaces[0]!.archived, "cache holds the pre-action row");
+    const target = remoteTarget("superman")!;
+    assert.ok(target, "the remote is connected");
+    const r = await runWorkspaceAction(target, "archive", "/mnt/p/docket");
+    assert.equal(r.status, 200);
+    const after = fleetView({ ...HUB, home }, exec).hosts.find((h) => h.host === "superman")!;
+    assert.equal(after.workspaces[0]!.archived, true, "the FIRST read after the action is already current");
+  } finally {
+    clearFleetLinks();
+    await new Promise((r) => remote.close(r));
+    rmSync(home, { recursive: true, force: true });
+  }
+});
