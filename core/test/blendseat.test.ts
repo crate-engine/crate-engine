@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, appendFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { createStaleTracker } from "../src/blend.js";
 import { BlendedSeat, type BlendedSeatHandle } from "../src/blendseat.js";
@@ -485,4 +485,66 @@ test("a quiet unfinished tool remains busy even when its session timestamp is ol
     appendFileSync(path, JSON.stringify({ type: "assistant", message: { stop_reason: "end_turn" } }) + "\n");
     assert.equal(bs.responding(), false);
   } finally { bs.stop(); }
+});
+
+// CE-189 (Adam's docket test, 2026-09-24): the fresh-per-task reset was lazy, so
+// a stale worker that got no mail re-opened its OLD conversation at every
+// engine restart — claude then stopped on its "session is 9d old — resume from
+// summary?" picker. Boot is a spawn: a stale worker with no work in flight
+// starts fresh; interrupted work still resumes.
+test("CE-189: a STALE worker with no work in flight boots FRESH — the old conversation is never re-opened", async () => {
+  const r = ptyRig("bs-boot-fresh");
+  mkdirSync(dirname(sessionFile(r.proj, "coder")), { recursive: true });
+  writeFileSync(sessionFile(r.proj, "coder"), JSON.stringify({ agent: "claude", sessionId: "nine-days-old", blended: true }));
+  const stale = createStaleTracker();
+  stale.markStale("coder"); // a task ended since that session
+  let resumedAtSpawn: boolean | undefined;
+  const bs = makeSeat(r, {
+    stale,
+    startTty: async (o) => {
+      resumedAtSpawn ??= existsSync(sessionFile(o.projectRoot, "coder"));
+      return r.startTty(o);
+    },
+  });
+  bs.start();
+  try {
+    await waitFor(() => r.ttys.length === 1, 5000, "boot spawn");
+    assert.equal(resumedAtSpawn, false, "the boot spawn saw no session file — a fresh conversation");
+    assert.equal(stale.isStale("coder"), false, "the boundary is acknowledged — the first delivery will not respawn again");
+    assert.match(readFileSync(join(r.proj, ".agents", "state", "turns", "coder", "turns.log"), "utf8"), /starting FRESH instead of resuming the old conversation \(CE-189\)/);
+  } finally {
+    bs.stop();
+  }
+});
+
+test("CE-189: a stale worker WITH work in flight still resumes at boot — never trade lost work for clean eyes", async () => {
+  const r = ptyRig("bs-boot-inflight");
+  mkdirSync(dirname(sessionFile(r.proj, "coder")), { recursive: true });
+  writeFileSync(sessionFile(r.proj, "coder"), JSON.stringify({ agent: "claude", sessionId: "mid-task", blended: true }));
+  writeFileSync(
+    join(r.proj, ".agents", "state", "turns", "coder", "work.json"),
+    JSON.stringify({ version: 1, mode: "blended", phase: "received", id: "m1", messages: ["1-a.msg"], at: new Date().toISOString() }),
+  );
+  const stale = createStaleTracker();
+  stale.markStale("coder");
+  let resumedAtSpawn: boolean | undefined;
+  const bs = makeSeat(r, {
+    stale,
+    startTty: async (o) => {
+      resumedAtSpawn ??= existsSync(sessionFile(o.projectRoot, "coder"));
+      return r.startTty(o);
+    },
+  });
+  bs.start();
+  try {
+    // An unfinished work record at boot puts the seat on the existing RECOVERY
+    // hold (crate recover decides) — CE-189 must not pre-empt that by dropping
+    // the conversation the recovery needs.
+    await new Promise((res) => setTimeout(res, 600));
+    assert.ok(existsSync(sessionFile(r.proj, "coder")), "the in-flight task's session is kept for recovery");
+    assert.equal(stale.isStale("coder"), true, "and the boundary is NOT consumed — recovery, then the reset, in that order");
+    assert.ok(resumedAtSpawn !== false, "no fresh spawn was forced over the interrupted work");
+  } finally {
+    bs.stop();
+  }
 });

@@ -165,6 +165,34 @@ export class BlendedSeat implements BlendedSeatHandle {
   }
 
   private async runOwned(lease: ConsumerLease): Promise<void> {
+    // CE-189 (Adam's docket test, 2026-09-24): the fresh-per-task reset is
+    // LAZY — a worker marked stale at a task end respawns fresh only at its
+    // NEXT delivery. A seat that got no mail since (crate-engine-site's QA,
+    // 9 days) therefore re-opened its OLD conversation at every engine
+    // restart, and claude stopped the pane on its "session is 9d old —
+    // resume from summary?" picker. Boot IS a spawn: a stale worker with no
+    // work in flight starts fresh here, exactly as its next delivery would
+    // have. Interrupted work (an unfinished work record, or one we cannot
+    // read) still resumes — never trade lost work for clean eyes.
+    if (this.o.stale.isStale(this.o.seat) && existsSync(sessionFile(this.o.projectRoot, this.o.seat))) {
+      let inFlight = false;
+      try {
+        const w = readWork(this.o.projectRoot, this.o.seat);
+        inFlight = !!w && w.phase !== "completed";
+      } catch {
+        inFlight = true; // unreadable record = preserve for inspection
+      }
+      if (!inFlight) {
+        try {
+          rmSync(sessionFile(this.o.projectRoot, this.o.seat));
+        } catch {
+          /* already fresh */
+        }
+        this.o.stale.clear(this.o.seat);
+        this.session = undefined;
+        this.stamp("boot — a task ended since this seat's last session; starting FRESH instead of resuming the old conversation (CE-189)");
+      }
+    }
     // Arm the external-drop lever from disk truth: a sessionFile that
     // survived an engine restart was persisted by a verified delivery — if
     // agentctl rm's it later, the drop must still read as fresh-eyes.
