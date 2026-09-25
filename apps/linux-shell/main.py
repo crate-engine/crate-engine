@@ -441,6 +441,8 @@ class Shell:
                     row("   Restart to finish update…", lambda h: self.restart_hosts([h], True), host)
                 elif host.get("restartNeeded") is False:
                     row("   Up to date")
+                for line in host.get("behind") or []:
+                    row(f"   ⚠ {line}")  # an agent tool older here than elsewhere — Crate never updates agents
                 ws = host.get("workspaces", [])
                 running = sum(1 for w in ws if w.get("liveSeats", 0) > 0)
                 row(f"   {sum(1 for w in ws if not w.get('archived'))} workspaces · {running} running — see Workspaces")

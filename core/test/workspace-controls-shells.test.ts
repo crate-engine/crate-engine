@@ -75,3 +75,8 @@ test("every menu open and the quit note read the fleet FRESH, never the cache", 
   assert.ok(!/hubFleetURL\("\/api\/fleet"\)/.test(mac), "mac: no cached fleet read left behind a menu");
   assert.ok(py.includes('self._hub_api("/api/fleet?fresh=1")') && !py.includes('self._hub_api("/api/fleet")'), "linux: the same");
 });
+
+test("both shells show a computer's out-of-date agent tools in the Computers menu (the Opus 5.5 lesson)", () => {
+  assert.ok(mac.includes('host["behind"] as? [String]') && mac.includes("⚠"), "mac");
+  assert.ok(py.includes('host.get("behind")') && py.includes("⚠"), "linux");
+});

@@ -17,9 +17,11 @@ import { autoReviveEnabled, makeAutoReviver } from "../health.js";
 import { deriveBrainRoot, resolveSeatStaffing } from "../launcher.js";
 import { loadLoadout, loadoutPath, SEATS } from "../manifest.js";
 import { discoverPiModels } from "../pidiscovery.js";
+import { claudeAliasModels, claudeDisplay, harnessVersions, learnClaudeAliases } from "../harness.js";
 import { loadUserDefaults, orderCatalog, parseRigConf, resolveSeatDetailed, RIG_PREFIX, updateRigStaffing } from "../staffing.js";
 import { appUrlPath, seedDefaultsIfAbsent, tierPaths, updateEngine } from "../usertier.js";
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 // ── the staffing catalog (P0-5 EVIDENCE + the ladder-proven verified defaults) ──
 // verified = what passed that seat's battle-test ladder (P1–P3). Everything
 // else is selectable but labeled "untested for this seat" by the page.
@@ -328,6 +330,13 @@ function sshReachable(host) {
 export function warmDeepVerdicts(home, pathOpt) {
     return Promise.all([...new Set(DEEP_PROBED)].map((a) => cachedDeepProblem(a, home, pathOpt).catch(() => undefined))).then(() => undefined);
 }
+const CLAUDE_BLURBS = { fable: "Anthropic's top tier", haiku: "fastest, lightest" };
+/** Only the REAL user tier learns what Claude's aliases mean (it asks Claude
+ * Code four one-line questions per version); scratch homes (tests, engine-qa)
+ * and faked PATHs never spend a request. */
+function learnsAliases(home, detectPath) {
+    return detectPath === undefined && resolve(home) === resolve(homedir());
+}
 /** GET /api/staffing — seats with current resolution+provenance, + the catalog
  * with per-entry detection (ready = its agent is installed + signed in for that
  * entry's provider), + a per-agent summary for the page's honest note. */
@@ -367,11 +376,20 @@ async function staffingCatalog(state, detectPath, project) {
         };
     });
     const pathOpt = detectPath !== undefined ? { path: detectPath } : {};
+    // what Claude's aliases mean on THIS computer (cached per Claude Code
+    // version); unknown → learn in the background, the next read names them
+    const claudeVersion = harnessVersions(pathOpt).claude;
+    const claudeResolved = claudeAliasModels(state.home, claudeVersion);
+    if (learnsAliases(state.home, detectPath))
+        void learnClaudeAliases(state.home, claudeVersion).catch(() => undefined);
     // Rows resolve in PARALLEL, and the in-flight dedupe means five rows of one
     // agent share one probe. Shallow verdicts are still synchronous file reads.
     const curated = await Promise.all(MODELS.map(async (m) => {
         const problem = agentProblem(m.agent, state.home, [m.model], pathOpt) ?? (await cachedDeepProblem(m.agent, state.home, pathOpt));
-        return { ...m, ready: problem === undefined, ...(problem ? { fix: problem.fix } : {}) };
+        // Claude entries are ALIASES — name the model the alias means on THIS
+        // computer's Claude Code ("Claude Opus 5.5"), learned once per version.
+        const display = m.agent === "claude" ? claudeDisplay(m.model, claudeResolved, CLAUDE_BLURBS[m.model]) : m.display;
+        return { ...m, display, ready: problem === undefined, ...(problem ? { fix: problem.fix } : {}) };
     }));
     // Pi model discovery (PDR pi-model-discovery, 2026-07-26): whatever Pi can
     // run TODAY (credentialed providers only) joins the catalog AFTER the
@@ -685,7 +703,9 @@ export async function startGuiServer(opts = {}) {
     // on disk; the server loads it only on restart)
     const hostStatus = () => {
         const disk = diskEngineSha(home);
-        return { loadedSha: state.loadedSha ?? "unknown", diskSha: disk, restartNeeded: serverIsStale(state.loadedSha, disk) };
+        // harness versions ride along: the Computers menu flags a computer whose
+        // Claude Code / Pi / Codex is behind another's (the Opus 5.5 lesson)
+        return { loadedSha: state.loadedSha ?? "unknown", diskSha: disk, restartNeeded: serverIsStale(state.loadedSha, disk), harness: harnessVersions() };
     };
     // Repair is automatic (CE-178 completion): a workspace whose links dangle or
     // whose state dir predates this engine is healed before its team boots — on a
@@ -1695,6 +1715,7 @@ export async function startGuiServer(opts = {}) {
                             lastActivityMs: w.lastActivityMs,
                         })),
                         localRestartNeeded: hostStatus().restartNeeded,
+                        localHarness: harnessVersions(),
                     }));
                 }
                 case "POST /api/fleet/workspace": {
@@ -2224,6 +2245,9 @@ export async function startGuiServer(opts = {}) {
     // Re-install run 2026-09-13: pay the deep sign-in probes NOW, off the
     // request path, so the operator's first picker click opens instantly.
     void warmDeepVerdicts(home, opts.detectPath !== undefined ? { path: opts.detectPath } : {});
+    // name Claude's aliases for this computer's Claude Code before the picker opens
+    if (learnsAliases(home, opts.detectPath))
+        void learnClaudeAliases(home, harnessVersions().claude).catch(() => undefined);
     // ── RESTART-RESUME (lifecycle PDR decision 5): the server comes back and
     // resumes EVERY workspace whose record says running — cmux's "app relaunch
     // restores your sessions", by record. Never more than the record, never a

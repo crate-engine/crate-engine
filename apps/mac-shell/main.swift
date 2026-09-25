@@ -644,6 +644,13 @@ final class FleetActions: NSObject, NSMenuDelegate {
             menu.addItem(ok)
           }
         }
+        // an agent tool this computer runs OLDER than another computer does
+        // (the Opus 5.5 lesson) — Crate never updates agents; it says so
+        for line in (host["behind"] as? [String]) ?? [] {
+          let w = NSMenuItem(title: "   ⚠ \(line)", action: nil, keyEquivalent: "")
+          w.isEnabled = false
+          menu.addItem(w)
+        }
         let running = workspaces.filter { ($0["liveSeats"] as? Int ?? 0) > 0 }.count
         let summary = NSMenuItem(title: "   \(workspaces.filter { $0["archived"] as? Bool != true }.count) workspaces · \(running) running — see Workspaces", action: nil, keyEquivalent: "")
         summary.isEnabled = false

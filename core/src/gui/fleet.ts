@@ -14,6 +14,7 @@
 import { spawn } from "node:child_process";
 import { addRemote, appUrlArgv, bootArgv, listRemotes } from "./remotes.js";
 import { parseAppUrl, tunnelPlan } from "./remote.js";
+import { compareVersions } from "../harness.js";
 
 export type FleetHostState = "connected" | "connecting" | "asleep" | "failed" | "unknown";
 
@@ -47,6 +48,12 @@ export interface FleetHostRow {
   /** S4: this computer's server runs an older engine than its disk has —
    * "Restart to finish". Absent when unknown (older remote engine). */
   restartNeeded?: boolean;
+  /** Installed harness versions on this computer (claude / pi / codex) —
+   * the menus compare them across computers. Absent on older engines. */
+  harness?: { claude?: string; pi?: string; codex?: string };
+  /** Plain lines for each harness this computer runs OLDER than another
+   * computer does, with the command to update it (computed across the fleet). */
+  behind?: string[];
   /** S4: names of this computer's workspaces with a seat mid-task — the
    * Restart button waits for these and names them. */
   busy?: string[];
@@ -109,6 +116,7 @@ interface HostLink {
   tunnel?: { kill(): void; alive(): boolean };
   engineSha?: string;
   restartNeeded?: boolean;
+  harness?: { claude?: string; pi?: string; codex?: string };
   /** last successful workspace read (cache — the menu renders this while a
    * background refresh runs; an asleep host shows its last-known rows). */
   workspaces?: FleetWorkspaceRow[];
@@ -210,9 +218,10 @@ async function refreshRemoteRows(link: HostLink, exec: FleetExec): Promise<void>
         name: string; path: string; rig?: boolean; desired?: "running" | "parked"; liveSeats?: number;
         archived?: boolean; busySeats?: string[]; memMB?: number; lastActivityMs?: number | null;
       }>;
-      host?: { restartNeeded?: boolean };
+      host?: { restartNeeded?: boolean; harness?: { claude?: string; pi?: string; codex?: string } };
     };
     if (w.host?.restartNeeded !== undefined) link.restartNeeded = w.host.restartNeeded;
+    if (w.host?.harness) link.harness = w.host.harness;
     link.workspaces = (w.workspaces ?? []).filter((x) => x.rig !== false).map((x) => ({
       name: x.name,
       path: x.path,
@@ -247,6 +256,7 @@ export interface FleetLocalDeps {
   }>;
   /** S4: the hub's own server is behind its disk engine. */
   localRestartNeeded?: boolean;
+  localHarness?: { claude?: string; pi?: string; codex?: string };
 }
 
 const busyNames = (rows: FleetWorkspaceRow[]): string[] => rows.filter((w) => (w.busySeats?.length ?? 0) > 0).map((w) => w.name);
@@ -266,6 +276,7 @@ export function fleetView(deps: FleetLocalDeps, exec: FleetExec = defaultFleetEx
       engineSha: deps.hubSha,
       skew: false,
       ...(deps.localRestartNeeded !== undefined ? { restartNeeded: deps.localRestartNeeded } : {}),
+      ...(deps.localHarness ? { harness: deps.localHarness } : {}),
       busy: busyNames(deps.localWorkspaces.map((w) => ({ ...w, url: "" }))),
       workspaces: deps.localWorkspaces.map((w) => ({
         ...w,
@@ -291,11 +302,14 @@ export function fleetView(deps: FleetLocalDeps, exec: FleetExec = defaultFleetEx
       ...(link.engineSha !== undefined ? { engineSha: link.engineSha } : {}),
       skew: link.engineSha !== undefined && link.engineSha !== deps.hubSha,
       ...(link.restartNeeded !== undefined ? { restartNeeded: link.restartNeeded } : {}),
+      ...(link.harness ? { harness: link.harness } : {}),
       busy: busyNames(link.workspaces ?? []),
       workspaces: link.workspaces ?? [],
       ...(link.app ? { cockpitUrl: `http://127.0.0.1:${link.app.port}/team?token=${link.app.token}` } : {}),
     });
   }
+  const behind = harnessBehind(hosts);
+  for (const h of hosts) if (behind.has(h.host)) h.behind = behind.get(h.host);
   return { hubSha: deps.hubSha, hosts };
 }
 
@@ -445,4 +459,27 @@ export async function runWorkspaceAction(
     }
   }
   return { status: r.status, body };
+}
+
+/** Harness skew across the fleet (the Opus 5.5 lesson): for each computer, the
+ * tools that are OLDER than the newest copy elsewhere — with the fix a person
+ * types. Crate never updates an agent itself; it only says so, plainly. */
+export function harnessBehind(hosts: Array<{ host: string; harness?: { claude?: string; pi?: string; codex?: string } }>): Map<string, string[]> {
+  const tools: Array<{ key: "claude" | "pi" | "codex"; name: string; fix: string }> = [
+    { key: "claude", name: "Claude Code", fix: "claude update" },
+    { key: "pi", name: "Pi", fix: "pi update" },
+    { key: "codex", name: "Codex", fix: "npm install -g @openai/codex" },
+  ];
+  const out = new Map<string, string[]>();
+  for (const t of tools) {
+    const have = hosts.filter((h) => h.harness?.[t.key]).map((h) => ({ host: h.host, v: h.harness![t.key]! }));
+    if (have.length < 2) continue;
+    const newest = have.reduce((a, b) => (compareVersions(b.v, a.v) > 0 ? b : a));
+    for (const h of have) {
+      if (compareVersions(h.v, newest.v) < 0) {
+        out.set(h.host, [...(out.get(h.host) ?? []), `${t.name} ${h.v} is older than on ${newest.host} (${newest.v}) — update it there: ${t.fix}`]);
+      }
+    }
+  }
+  return out;
 }

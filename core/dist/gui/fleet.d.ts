@@ -28,6 +28,16 @@ export interface FleetHostRow {
     /** S4: this computer's server runs an older engine than its disk has —
      * "Restart to finish". Absent when unknown (older remote engine). */
     restartNeeded?: boolean;
+    /** Installed harness versions on this computer (claude / pi / codex) —
+     * the menus compare them across computers. Absent on older engines. */
+    harness?: {
+        claude?: string;
+        pi?: string;
+        codex?: string;
+    };
+    /** Plain lines for each harness this computer runs OLDER than another
+     * computer does, with the command to update it (computed across the fleet). */
+    behind?: string[];
     /** S4: names of this computer's workspaces with a seat mid-task — the
      * Restart button waits for these and names them. */
     busy?: string[];
@@ -73,6 +83,11 @@ interface HostLink {
     };
     engineSha?: string;
     restartNeeded?: boolean;
+    harness?: {
+        claude?: string;
+        pi?: string;
+        codex?: string;
+    };
     /** last successful workspace read (cache — the menu renders this while a
      * background refresh runs; an asleep host shows its last-known rows). */
     workspaces?: FleetWorkspaceRow[];
@@ -105,6 +120,11 @@ export interface FleetLocalDeps {
     }>;
     /** S4: the hub's own server is behind its disk engine. */
     localRestartNeeded?: boolean;
+    localHarness?: {
+        claude?: string;
+        pi?: string;
+        codex?: string;
+    };
 }
 /**
  * The whole fleet, cache-first: the local row is always fresh; remote rows
@@ -167,4 +187,15 @@ export declare function runWorkspaceAction(target: {
     status: number;
     body: unknown;
 }>;
+/** Harness skew across the fleet (the Opus 5.5 lesson): for each computer, the
+ * tools that are OLDER than the newest copy elsewhere — with the fix a person
+ * types. Crate never updates an agent itself; it only says so, plainly. */
+export declare function harnessBehind(hosts: Array<{
+    host: string;
+    harness?: {
+        claude?: string;
+        pi?: string;
+        codex?: string;
+    };
+}>): Map<string, string[]>;
 export {};

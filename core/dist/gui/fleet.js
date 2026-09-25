@@ -14,6 +14,7 @@
 import { spawn } from "node:child_process";
 import { addRemote, appUrlArgv, bootArgv, listRemotes } from "./remotes.js";
 import { parseAppUrl, tunnelPlan } from "./remote.js";
+import { compareVersions } from "../harness.js";
 export function defaultFleetExec() {
     return {
         async run(cmd, args, timeoutMs) {
@@ -138,6 +139,8 @@ async function refreshRemoteRows(link, exec) {
         const w = (await exec.fetchJson(`${base}/api/workspaces?token=${tok}`, 2_000));
         if (w.host?.restartNeeded !== undefined)
             link.restartNeeded = w.host.restartNeeded;
+        if (w.host?.harness)
+            link.harness = w.host.harness;
         link.workspaces = (w.workspaces ?? []).filter((x) => x.rig !== false).map((x) => ({
             name: x.name,
             path: x.path,
@@ -174,6 +177,7 @@ export function fleetView(deps, exec = defaultFleetExec()) {
             engineSha: deps.hubSha,
             skew: false,
             ...(deps.localRestartNeeded !== undefined ? { restartNeeded: deps.localRestartNeeded } : {}),
+            ...(deps.localHarness ? { harness: deps.localHarness } : {}),
             busy: busyNames(deps.localWorkspaces.map((w) => ({ ...w, url: "" }))),
             workspaces: deps.localWorkspaces.map((w) => ({
                 ...w,
@@ -200,11 +204,16 @@ export function fleetView(deps, exec = defaultFleetExec()) {
             ...(link.engineSha !== undefined ? { engineSha: link.engineSha } : {}),
             skew: link.engineSha !== undefined && link.engineSha !== deps.hubSha,
             ...(link.restartNeeded !== undefined ? { restartNeeded: link.restartNeeded } : {}),
+            ...(link.harness ? { harness: link.harness } : {}),
             busy: busyNames(link.workspaces ?? []),
             workspaces: link.workspaces ?? [],
             ...(link.app ? { cockpitUrl: `http://127.0.0.1:${link.app.port}/team?token=${link.app.token}` } : {}),
         });
     }
+    const behind = harnessBehind(hosts);
+    for (const h of hosts)
+        if (behind.has(h.host))
+            h.behind = behind.get(h.host);
     return { hubSha: deps.hubSha, hosts };
 }
 /** A FRESH fleet read (Adam's docket test, 2026-09-24): the cache-first view
@@ -326,5 +335,28 @@ export async function runWorkspaceAction(target, action, path) {
         }
     }
     return { status: r.status, body };
+}
+/** Harness skew across the fleet (the Opus 5.5 lesson): for each computer, the
+ * tools that are OLDER than the newest copy elsewhere — with the fix a person
+ * types. Crate never updates an agent itself; it only says so, plainly. */
+export function harnessBehind(hosts) {
+    const tools = [
+        { key: "claude", name: "Claude Code", fix: "claude update" },
+        { key: "pi", name: "Pi", fix: "pi update" },
+        { key: "codex", name: "Codex", fix: "npm install -g @openai/codex" },
+    ];
+    const out = new Map();
+    for (const t of tools) {
+        const have = hosts.filter((h) => h.harness?.[t.key]).map((h) => ({ host: h.host, v: h.harness[t.key] }));
+        if (have.length < 2)
+            continue;
+        const newest = have.reduce((a, b) => (compareVersions(b.v, a.v) > 0 ? b : a));
+        for (const h of have) {
+            if (compareVersions(h.v, newest.v) < 0) {
+                out.set(h.host, [...(out.get(h.host) ?? []), `${t.name} ${h.v} is older than on ${newest.host} (${newest.v}) — update it there: ${t.fix}`]);
+            }
+        }
+    }
+    return out;
 }
 //# sourceMappingURL=fleet.js.map
